@@ -9,9 +9,12 @@ export default function Game({ state, code }: { state: State; code: string }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // A note belongs to the round that earned it. Without this reset, round 3's score and
-  // comment stay on screen under the round-4 target, unlabelled, and read as though they
-  // graded the current prompt. Same for a stale 409 left in the error slot.
+  // A note belongs to the round that earned it, and a prompt belongs to the target it was
+  // written against. Without this reset, round 3's score and comment stay on screen under
+  // the round-4 target, unlabelled, and read as though they graded the current prompt; and a
+  // half-written draft carries into a round it cannot possibly answer — submitted there, it
+  // is judged against the wrong target and that score lands in the ranking under the
+  // player's name. Same for a stale 409 left in the error slot.
   useEffect(() => {
     setPrompt('')
     setResult(null)
