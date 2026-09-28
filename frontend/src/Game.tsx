@@ -13,6 +13,7 @@ export default function Game({ state, code }: { state: State; code: string }) {
   // comment stay on screen under the round-4 target, unlabelled, and read as though they
   // graded the current prompt. Same for a stale 409 left in the error slot.
   useEffect(() => {
+    setPrompt('')
     setResult(null)
     setErr('')
   }, [state.current])
