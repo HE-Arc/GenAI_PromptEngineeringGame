@@ -13,8 +13,12 @@ SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
 INSTALLED_APPS = ["game"]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # SessionMiddleware is what puts `request.session` on the request. It is middleware, not the
+    # app: with the signed_cookies engine it needs no INSTALLED_APPS entry, no table, no migration.
+    "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
 ]
+APPEND_SLASH = False
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 
