@@ -116,7 +116,7 @@ def maybe_advance(room: Room) -> None:
 
 
 @require_POST
-def join(request: HttpRequest, code: str):
+def join(request: HttpRequest, code: str) -> JsonResponse:
     room = get_object_or_404(Room, code=code)
     name = str(body(request).get("name", "")).strip()[:32]
     if not name:
@@ -130,7 +130,7 @@ def join(request: HttpRequest, code: str):
 
 
 @require_GET
-def events(request: HttpRequest, code: str):
+def events(request: HttpRequest, code: str) -> StreamingHttpResponse:
     """Push the whole room snapshot whenever it changes. Ends when the client disconnects."""
     get_object_or_404(Room, code=code)
 
@@ -153,7 +153,7 @@ def events(request: HttpRequest, code: str):
 
 
 @require_POST
-def answer(request: HttpRequest, code: str):
+def answer(request: HttpRequest, code: str) -> JsonResponse:
     room = get_object_or_404(Room, code=code)
     if room.status != Room.Status.PLAYING:
         return json_error("not playing", 409)

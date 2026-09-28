@@ -35,6 +35,18 @@ class PlayTest(TestCase):
             content_type="application/json",
         )
 
+    def _answered_state(self) -> dict:
+        """Room state mid-round: ana answered round 0, bob has not. Bob is the spectator that
+        keeps the round open, so ana's answer is still the current round's and stays visible."""
+        _, t = self._join("ana")
+        self._join("bob")
+        self._play()
+        with patch("game.llm.answer", return_value="quarante-deux"), patch(
+            "game.llm.score", return_value=Verdict(8, "tres proche")
+        ):
+            self._answer(t, "repete 42")
+        return room_state("ABCD")
+
     def test_join_creates_player(self) -> None:
         r, token = self._join("ana")
         self.assertEqual(r.status_code, 200)
@@ -98,6 +110,36 @@ class PlayTest(TestCase):
         self.assertIsNone(p["prompt"])
         self.assertFalse(p["answered"])
 
+    def test_state_pins_every_field_of_an_answered_player(self) -> None:
+        st = self._answered_state()
+        self.assertEqual((st["current"], st["target"]), (0, "42"))
+        ana = next(p for p in st["players"] if p["name"] == "ana")
+        # Whole-dict equality, so a renamed, dropped or nulled key all fail here.
+        self.assertEqual(
+            ana,
+            {
+                "name": "ana",
+                "score": 8,
+                "answered": True,
+                "prompt": "repete 42",
+                "output": "quarante-deux",
+                "comment": "tres proche",
+                "round_score": 8,
+            },
+        )
+
+    def test_state_gives_an_unanswered_player_int_zero(self) -> None:
+        st = self._answered_state()
+        bob = next(p for p in st["players"] if p["name"] == "bob")
+        # `or 0` in room_state is what makes this an int. Task 5 types score as `number`,
+        # so a null here is a type error in the client, not a cosmetic null.
+        self.assertIsInstance(bob["score"], int)
+        self.assertEqual(bob["score"], 0)
+        self.assertEqual(
+            {k: bob[k] for k in ("prompt", "output", "comment", "round_score")},
+            {"prompt": None, "output": None, "comment": None, "round_score": None},
+        )
+
     def test_state_ranks_by_score_desc(self) -> None:
         _, ta = self._join("ana")
         _, tb = self._join("bob")
@@ -112,10 +154,49 @@ class PlayTest(TestCase):
         self.assertEqual([p["name"] for p in room_state("ABCD")["players"]], ["bob", "ana"])
 
     def test_events_endpoint_streams_json(self) -> None:
+        self._answered_state()  # non-empty players list, so the frame's per-player keys are exercised
         r = self.c.get("/api/rooms/ABCD/events")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r["Content-Type"], "text/event-stream")
-        first = next(r.streaming_content)
-        payload = json.loads(first.decode().removeprefix("data: ").strip())
-        self.assertEqual(payload["code"], "ABCD")
+        self.assertEqual(r["Cache-Control"], "no-cache")
+        self.assertEqual(r["X-Accel-Buffering"], "no")
+        # Exactly one frame, never two. The first is produced before the generator reaches
+        # time.sleep, so this returns immediately; a second next() would block for 0.5s.
+        frame = next(r.streaming_content)
+        self.assertTrue(frame.startswith(b"data: "), frame)
+        # EventSource only dispatches onmessage after a blank line, so the terminator is the
+        # endpoint's whole reason to work. Never parse this frame through strip().
+        self.assertTrue(frame.endswith(b"\n\n"), frame)
+        payload = json.loads(frame[len(b"data: ") : -2])
+        self.assertEqual(set(payload), {"code", "status", "current", "total", "target", "players"})
+        self.assertEqual(
+            payload,
+            {
+                "code": "ABCD",
+                "status": "playing",
+                "current": 0,
+                "total": 2,
+                "target": "42",
+                "players": [
+                    {
+                        "name": "ana",
+                        "score": 8,
+                        "answered": True,
+                        "prompt": "repete 42",
+                        "output": "quarante-deux",
+                        "comment": "tres proche",
+                        "round_score": 8,
+                    },
+                    {
+                        "name": "bob",
+                        "score": 0,
+                        "answered": False,
+                        "prompt": None,
+                        "output": None,
+                        "comment": None,
+                        "round_score": None,
+                    },
+                ],
+            },
+        )
         r.close()
