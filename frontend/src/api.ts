@@ -20,6 +20,8 @@ export type State = {
 export const tokenKey = (code: string) => `jeu-genai:${code}`
 export const getToken = (code: string) => localStorage.getItem(tokenKey(code))
 export const setToken = (code: string, t: string) => localStorage.setItem(tokenKey(code), t)
+export const nameKey = (code: string) => `jeu-genai:${code}:name`
+export const getName = (code: string) => localStorage.getItem(nameKey(code)) ?? ''
 
 export async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {

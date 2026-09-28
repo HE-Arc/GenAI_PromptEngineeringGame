@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { post, setToken } from './api'
+import { nameKey, post, setToken } from './api'
 
 export default function Join({ onJoined }: { onJoined: (code: string) => void }) {
   const [code, setCode] = useState('')
@@ -13,8 +13,9 @@ export default function Join({ onJoined }: { onJoined: (code: string) => void })
     setBusy(true)
     try {
       const c = code.trim().toUpperCase()
-      const res = await post<{ token: string }>(`/api/rooms/${c}/join`, { name })
+      const res = await post<{ token: string; name: string }>(`/api/rooms/${c}/join`, { name })
       setToken(c, res.token)
+      localStorage.setItem(nameKey(c), res.name)
       onJoined(c)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'join failed')
