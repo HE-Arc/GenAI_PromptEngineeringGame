@@ -1,3 +1,10 @@
 from django.urls import path
 
-urlpatterns = []
+from game import views
+
+urlpatterns = [
+    path("api/admin/login", views.admin_login),
+    path("api/admin/rooms", views.admin_create_room),
+    path("api/admin/rooms/<str:code>/start", views.admin_start),
+    path("api/admin/rooms/<str:code>/next", views.admin_next),
+]
