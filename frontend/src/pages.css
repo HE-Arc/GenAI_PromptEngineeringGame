@@ -19,5 +19,5 @@ button.ghost { background: #262d3b; }
 .cols { display: grid; gap: 1rem; grid-template-columns: 1fr; }
 @media (min-width: 48rem) { .cols { grid-template-columns: 3fr 2fr; } }
 .target { margin: 0 0 .5rem; font-size: 1.6rem; font-weight: 700; color: #ffd479; }
-.output { margin: 0; padding: .6rem; background: #0e1218; border-radius: 8px; white-space: pre-wrap; font-size: .85rem; }
+.output { margin: 0; padding: .6rem; background: #0e1218; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
 h2 { margin: 0; font-size: 1rem; color: #8b95a7; }

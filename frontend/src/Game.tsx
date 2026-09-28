@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { getName, getToken, post, type Player, type State } from './api'
 
 type Result = { score: number; comment: string; output: string }
@@ -8,6 +8,14 @@ export default function Game({ state, code }: { state: State; code: string }) {
   const [result, setResult] = useState<Result | null>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+
+  // A note belongs to the round that earned it. Without this reset, round 3's score and
+  // comment stay on screen under the round-4 target, unlabelled, and read as though they
+  // graded the current prompt. Same for a stale 409 left in the error slot.
+  useEffect(() => {
+    setResult(null)
+    setErr('')
+  }, [state.current])
 
   const me: Player | undefined = state.players.find((p) => p.name === getName(code))
   const alreadyDone = me?.answered ?? false
@@ -34,7 +42,7 @@ export default function Game({ state, code }: { state: State; code: string }) {
       <div className="cols">
         <div>
           <p className="muted">Repone a atteindre</p>
-          <p className="target">{state.target}</p>
+          <p className="target">{state.target ?? '—'}</p>
           <form onSubmit={send} className="rows">
             <textarea
               value={prompt}
