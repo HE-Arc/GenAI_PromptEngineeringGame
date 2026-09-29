@@ -1,9 +1,16 @@
+import os
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
 from game import llm
 from game.llm import Verdict
+
+# `answer` and `score` fall back to a local stub when no key is present, so the real-path
+# tests pin one. The stub tests blank it instead, which holds whether or not the machine
+# running the suite happens to have a real key in its environment.
+KEYED = patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+UNKEYED = patch.dict(os.environ, {"OPENAI_API_KEY": ""})
 
 
 def _completion(content: str) -> MagicMock:
@@ -27,6 +34,7 @@ def _client(content: str) -> MagicMock:
     return client
 
 
+@KEYED
 class ScoreTest(SimpleTestCase):
     def test_parses_json_and_returns_a_verdict(self) -> None:
         with patch.object(llm, "OpenAI", return_value=_client('{"score": 7, "comment": "proche"}')):
@@ -70,7 +78,42 @@ class ScoreTest(SimpleTestCase):
             self.assertEqual(llm.score("p", "o", "t"), Verdict(7, "proche"))
 
 
+@KEYED
 class AnswerTest(SimpleTestCase):
     def test_strips_whitespace(self) -> None:
         with patch.object(llm, "OpenAI", return_value=_client("  bonjour  ")):
             self.assertEqual(llm.answer("salut"), "bonjour")
+
+
+@UNKEYED
+class StubTest(SimpleTestCase):
+    """No key means no model. The game must still be playable, and must say so."""
+
+    def test_answer_echoes_the_prompt_without_a_key(self) -> None:
+        self.assertIn("un escargot", llm.answer("un escargot sur un clavier"))
+
+    def test_answer_never_builds_a_client_without_a_key(self) -> None:
+        with patch.object(llm, "OpenAI", side_effect=AssertionError("client built")):
+            llm.answer("peu importe")
+
+    def test_exact_target_scores_ten(self) -> None:
+        self.assertEqual(llm.score("p", "un escargot sur un clavier", "un escargot sur un clavier").score, 10)
+
+    def test_partial_overlap_scores_proportionally(self) -> None:
+        # Target is 4 words {un, escargot, sur, clavier}; "un escargot" hits 2 of them.
+        self.assertEqual(llm.score("p", "un escargot", "un escargot sur un clavier").score, 5)
+
+    def test_unrelated_output_scores_zero(self) -> None:
+        self.assertEqual(llm.score("p", "une voiture rouge", "un escargot sur un clavier").score, 0)
+
+    def test_never_builds_a_client_without_a_key(self) -> None:
+        with patch.object(llm, "OpenAI", side_effect=AssertionError("client built")):
+            llm.score("p", "o", "t")
+
+    def test_comment_tells_the_player_it_is_local(self) -> None:
+        # The game's honesty surface: this string is what the game screen shows.
+        self.assertEqual(llm.score("p", "o", "t").comment, llm.STUB_COMMENT)
+        self.assertIn("pas de cle API", llm.STUB_COMMENT)
+
+    def test_ignores_case_and_accents_are_matched_as_letters(self) -> None:
+        self.assertEqual(llm.score("p", "UN ESCARGOT SUR UN CLAVIER", "un escargot sur un clavier").score, 10)

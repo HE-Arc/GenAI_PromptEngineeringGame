@@ -6,8 +6,18 @@ un prompt, le modele repond, un jury note la proximite sur 10.
 ## Lancer
 
 ```bash
-cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD et SECRET_KEY
 ./run.sh
+```
+
+**Aucune cle n'est necessaire.** Sans `OPENAI_API_KEY`, le jeu tourne sur une doublure
+locale: le modele est remplace par un echo du prompt, et le jury note par chevauchement de
+mots. La partie est donc jouable de bout en bout hors ligne, et le commentaire du jury,
+affiche sous la note, dit explicitement qu'il ne s'agit pas d'un vrai modele.
+
+Pour le vrai modele, et seulement lui:
+
+```bash
+cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD et SECRET_KEY
 ```
 
 - Joueur: ouvrir http://<IP-LAN>:5173 depuis le telephone -> code de partie + pseudo
@@ -23,8 +33,10 @@ en direct: garde le code pour le groupe.
 `backend/.env` n'est lu que par `run.sh`, qui fait `set -a; . backend/.env; set +a`.
 `settings.py` lit `os.environ` directement et il n'y a pas de python-dotenv: lancer
 `manage.py runserver` ou `manage.py test` directement depuis `backend/` ignore donc ce
-fichier, et l'on retombe silencieusement sur `ADMIN_PASSWORD=genai` sans `OPENAI_API_KEY`.
-Toujours passer par `run.sh`, ou exporter les variables soi-meme avant.
+fichier. Toujours passer par `run.sh`, ou exporter les variables soi-meme avant.
+`ADMIN_PASSWORD` sans valeur vaut `genai` et `SECRET_KEY` vaut une valeur de dev: changez
+les deux avant d'exposer la partie, sinon n'importe qui ayant lu le depot peut forger une
+session d'admin.
 
 ## Regles
 
