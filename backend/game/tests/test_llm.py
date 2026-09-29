@@ -58,6 +58,16 @@ class ScoreTest(SimpleTestCase):
         with patch.object(llm, "OpenAI", return_value=_client('{"score": "proche", "comment": "x"}')):
             self.assertEqual(llm.score("p", "o", "t"), Verdict(0, "x"))
 
+    def test_quoted_numeric_score_is_read_not_discarded(self) -> None:
+        # Pins the judgement recorded in the try/except's comment: a quoted number is read,
+        # not thrown away. It does NOT distinguish that guard from a bare `int(...)` — both
+        # return 7 here; only the prose case ("proche") needs the except, and that is
+        # test_non_numeric_score_scores_zero. This guards the other way round: a future
+        # strict-type fix (isinstance, or dropping the `or 0`) that discards a quoted
+        # judgement would fail here.
+        with patch.object(llm, "OpenAI", return_value=_client('{"score": "7", "comment": "proche"}')):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(7, "proche"))
+
 
 class AnswerTest(SimpleTestCase):
     def test_strips_whitespace(self) -> None:
