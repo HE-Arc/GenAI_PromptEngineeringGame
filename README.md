@@ -13,6 +13,12 @@ cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY et ADMIN_PASSWOR
 - Joueur: http://localhost:5173 -> code de partie + pseudo
 - Admin: http://localhost:5173/#/admin -> mot de passe, creer la partie, demarrer, manche suivante
 
+`backend/.env` n'est lu que par `run.sh`, qui fait `set -a; . backend/.env; set +a`.
+`settings.py` lit `os.environ` directement et il n'y a pas de python-dotenv: lancer
+`manage.py runserver` ou `manage.py test` directement depuis `backend/` ignore donc ce
+fichier, et l'on retombe silencieusement sur `ADMIN_PASSWORD=genai` sans `OPENAI_API_KEY`.
+Toujours passer par `run.sh`, ou exporter les variables soi-meme avant.
+
 ## Regles
 
 - 10 manches tirees au sort parmi `backend/game/targets.py`.
@@ -26,4 +32,6 @@ cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY et ADMIN_PASSWOR
 cd backend && uv run python manage.py test game
 ```
 
-Les tests n'appellent pas l'API: `game.llm.answer` et `game.llm.score` sont mockes.
+Les tests n'appellent jamais l'API, mais pas toujours au meme niveau: `test_play.py` mocke
+`game.llm.answer` et `game.llm.score`, tandis que `test_llm.py` mocke `llm.OpenAI` lui-meme
+pour que le vrai `_chat` s'execute. Aucun test n'ouvre de connexion reseau.
