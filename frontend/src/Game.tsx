@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, Readout, ScoreScale, Section, Step } from './ui'
 import { absent, describe, getName, getToken, post, present, type Player, type State } from './api'
 import type { Link } from './useRoom'
@@ -20,6 +20,12 @@ export default function Game({
   const [result, setResult] = useState<Result | null>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  // The score has to be somewhere the player is already looking. Two refs: the composer,
+  // which is holding the keyboard, and the verdict, which is what the submit earned.
+  const areaRef = useRef<HTMLTextAreaElement>(null)
+  const verdictRef = useRef<HTMLDivElement>(null)
+  // True the moment the POST has answered, before the stream has said so. See `send`.
+  const [sent, setSent] = useState(false)
 
   // A prompt belongs to the target it was written against, and an error to the round that
   // caused it, so both are cleared when the round moves on. This used to be an effect keyed
@@ -72,11 +78,16 @@ export default function Game({
     }
     setPrompt('')
     setErr('')
+    setSent(false)
   }
 
   const myName = getName(code)
   const me: Player | undefined = state.players.find((p) => p.name === myName)
-  const alreadyDone = me?.answered ?? false
+  // This player's own send, OR the stream. The stream alone is the event that put the score
+  // below the fold: the button label is the only feedback still inside the viewport after a
+  // submit, and it sat unchanged for the length of a model call, waiting on an SSE frame that
+  // this same POST has already made unnecessary. The POST is the authority on its own outcome.
+  const alreadyDone = sent || (me?.answered ?? false)
 
   // The meter counts players who are present, so it can actually finish; the ones who are not
   // get said out loud underneath instead. This is not a display preference: the round closes
@@ -114,6 +125,14 @@ export default function Game({
       ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
       : ''
 
+  function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
+    if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
+    // Same refusals as the button, so a shortcut can never send what a click would not.
+    if (busy || alreadyDone || stale || !prompt.trim()) return
+    e.preventDefault()
+    e.currentTarget.requestSubmit()
+  }
+
   async function send(e: FormEvent) {
     e.preventDefault()
     setErr('')
@@ -121,6 +140,8 @@ export default function Game({
     try {
       const res = await post<Omit<Result, 'round'>>(`/api/rooms/${code}/answer`, { token: getToken(code), prompt })
       setResult({ ...res, round: state.current })
+      // The answer is in; the round knows it now whether or not the stream has caught up.
+      setSent(true)
       setPrompt('')
     } catch (e) {
       setErr(describe(e))
@@ -129,31 +150,95 @@ export default function Game({
     }
   }
 
+  // The score lands where the eye already is, which takes three things that all used to be
+  // missing. The verdict now sits above the composer in the document rather than under it; the
+  // composer gives the keyboard back, because iOS keeps it up across a type="submit" and the
+  // bottom 400px of the document stay covered; and the verdict is then brought into the visual
+  // viewport by the smallest scroll that will do it, so a short phone does not get yanked
+  // past the score it just earned.
+  //
+  // In an effect keyed on the result rather than at the end of `send`, because the node it
+  // acts on does not exist yet at the point the promise resolves — React has not committed the
+  // render that creates it.
+  useEffect(() => {
+    if (!result) return
+    areaRef.current?.blur()
+    const v = verdictRef.current
+    if (!v) return
+    v.scrollIntoView({ block: 'nearest' })
+    // Focus as well as scroll: `block: 'nearest'` moves the page, focus is what tells a
+    // screen reader the player has just been handed something.
+    v.focus()
+  }, [result])
+
   return (
     <div className="deck">
       <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
-      <main className={`screen${stale ? ' screen--stale' : ''}`}>
+      <main className={`screen screen--split${stale ? ' screen--stale' : ''}`}>
         <Step current={state.current} total={state.total} />
+
+        {/* The only heading on this screen, and the target a route change moves focus to. The
+            round track above says the same thing visibly, so this one says what the *screen*
+            is rather than which round it is on — otherwise a player arriving mid-game would
+            hear the number twice and nothing about what they are meant to do. */}
+        <h1 className="visually-hidden" tabIndex={-1}>
+          Répondre à la manche {state.current + 1}
+        </h1>
 
         {notice && <p className="notice">{notice}</p>}
 
+        {/* One permanent live region for the whole screen, always in the tree even when it has
+            nothing to say. A live region that is mounted at the same moment as its first
+            message is not reliably announced — the region has to already exist for the change
+            to be a change — so this one carries the empty string until a score lands. */}
+        <p className="visually-hidden" aria-live="polite">
+          {result ? `Note obtenue : ${result.score} sur 10, à la manche ${result.round + 1}.` : ''}
+        </p>
+
+        {/* The score, and it is above the target and above the field rather than under them.
+            Under, it rendered at roughly y690 with a long target, and the visual viewport with
+            the keyboard up is about 400px: the one thing the player had just earned, invisible,
+            with no scroll, no focus move and nothing to say so. Above, it is in the first
+            screenful. It keeps its `manche N` label because it survives a round change. */}
+        {result && (
+          <div className="verdict" ref={verdictRef} tabIndex={-1}>
+            <div className="verdict__top">
+              <span className="verdict__score num">{result.score}</span>
+              <span className="verdict__den">sur 10</span>
+              <span className="verdict__round">manche {result.round + 1}</span>
+            </div>
+            <ScoreScale score={result.score} />
+            <p className="prose prose--sm">{result.comment}</p>
+            <div>
+              <p className="label">Le modèle a répondu</p>
+              <pre className="slot">{result.output}</pre>
+            </div>
+          </div>
+        )}
+
         {/* The target and the field it is written against, kept as one block: on a phone
-            turned sideways they sit side by side, and on a phone held upright they are the
-            first two things on the screen, so a player is always composing against the words
-            they can actually see. */}
+            turned sideways they sit side by side, on a phone held upright they are the first
+            two things on the screen, and on a desktop they head the column. A player is
+            always composing against the words they can actually see. */}
         <div className="playgrid">
           {/* The one illuminated panel. The label says what the words below are for, which
               is the piece the old "Reponse a atteindre" never did: this is not a response to
               match, it is the answer you have to make the model produce. */}
           <Readout label="Le modèle doit répondre" value={state.target ?? '—'} />
 
-          <form className="form" onSubmit={send}>
+          {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
+              reaching for the mouse is a textarea half-used. Cmd/Ctrl+Enter submits; a bare
+              Enter does not, because a prompt is instruction text and often wants line
+              breaks. The chord is also the guard the shortcut needs: it cannot be hit by
+              accident while a thumb or a hand is mid-word, which a bare-Enter submit could. */}
+          <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
             <div className="field">
               <label className="label" htmlFor="prompt">
                 Ton prompt
               </label>
               <textarea
                 id="prompt"
+                ref={areaRef}
                 className="area"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -167,9 +252,18 @@ export default function Game({
                 autoCorrect="off"
                 spellCheck={false}
                 disabled={alreadyDone}
+                // The message is a sentence about this field, so the field points at it. The
+                // prompt is never cleared on a failure — it is the work, and a rejected
+                // submission that ate it would be the real defect.
+                aria-invalid={err ? true : undefined}
+                aria-describedby={err ? 'prompt-err' : undefined}
               />
             </div>
-            {err && <p className="err err--inline">{err}</p>}
+            {err && (
+              <p className="err err--inline" id="prompt-err" role="alert">
+                {err}
+              </p>
+            )}
             <button
               type="submit"
               className="btn btn--signal btn--wide"
@@ -183,6 +277,9 @@ export default function Game({
                     ? 'En attente de la reconnexion…'
                     : 'Envoyer au modèle'}
             </button>
+            <p className="hint">
+              <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
+            </p>
           </form>
         </div>
 
@@ -205,25 +302,11 @@ export default function Game({
           </p>
         )}
 
-        {result && (
-          <div className="verdict">
-            <div className="verdict__top">
-              <span className="verdict__score num">{result.score}</span>
-              <span className="verdict__den">sur 10</span>
-              <span className="verdict__round">manche {result.round + 1}</span>
-            </div>
-            <ScoreScale score={result.score} />
-            <p className="prose prose--sm">{result.comment}</p>
-            <div>
-              <p className="label">Le modèle a répondu</p>
-              <pre className="slot">{result.output}</pre>
-            </div>
-          </div>
-        )}
-
-        <Section title="Classement">
-          <Board players={state.players} myName={myName} />
-        </Section>
+        <div className="railcol">
+          <Section title="Classement">
+            <Board players={state.players} myName={myName} />
+          </Section>
+        </div>
       </main>
     </div>
   )

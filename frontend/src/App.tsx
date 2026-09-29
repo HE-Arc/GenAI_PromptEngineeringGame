@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Join from './Join'
 import Lobby from './Lobby'
 import Admin from './Admin'
@@ -28,6 +28,38 @@ function Gate({ code, onJoined }: { code: string; onJoined: (code: string) => vo
   return <Join preset={code} onJoined={onJoined} />
 }
 
+// The one control that is on every screen and belongs to none of them, so it lives here
+// rather than in the six components it has to precede. It is `position: fixed`, which means
+// it does not need a wrapper and does not disturb the grid of whatever it is rendered
+// alongside — and it is rendered as the first sibling in each branch below, so it is the
+// first tab stop on every screen, which is the entire reason a skip link exists.
+//
+// The target is resolved at activation rather than left to the `#main` fragment, and the id
+// is stamped then, because the id cannot be authored: five of the six screens render their
+// own `<main>` in a file this change cannot reach. A fragment-only link would be a dead link
+// on exactly the screens it exists for. `main` is also not focusable without a tabindex, for
+// the same reason — see the note in the report; this is the one place the console mutates
+// markup at runtime, and it is a consequence of the write scope rather than a preference.
+function SkipLink() {
+  return (
+    <a
+      className="skiplink"
+      href="#main"
+      onClick={(e) => {
+        e.preventDefault()
+        const main = document.querySelector<HTMLElement>('main')
+        if (!main) return
+        main.id = 'main'
+        main.tabIndex = -1
+        main.focus()
+        main.scrollIntoView()
+      }}
+    >
+      Aller au contenu
+    </a>
+  )
+}
+
 // Reached when the stream has failed three times over without ever opening. The browser
 // retries on its own and we let it, so this is the state for a room that is not answering at
 // all, with a way back instead of an indefinite "Connexion…". It deliberately does not claim
@@ -39,7 +71,7 @@ function Fault({ code, onRetry, onLeave }: { code: string; onRetry: () => void; 
     <div className="deck">
       <ConsoleBar meta={`Partie ${code}`} />
       <main className="screen screen--solo">
-        <h1 className="title">La partie ne répond pas</h1>
+        <h1 className="title" tabIndex={-1}>La partie ne répond pas</h1>
         <p className="prose prose--dim">
           Rien n’est revenu de la partie <strong>{code}</strong>. Si la machine qui l’héberge
           s’est éteinte ou a redémarré, elle répondra dès qu’elle sera relancée. Sinon,
@@ -60,12 +92,49 @@ function Fault({ code, onRetry, onLeave }: { code: string; onRetry: () => void; 
 
 export default function App() {
   const [{ screen, code }, setRoute] = useState(route)
+
   // The stream is identified by the player's own token, so the server can tell whose phone is
   // on it. Without it every player reads as offline, this one included. The admin passes no
   // token at all and connects anonymously, which is the difference between a missing
   // argument and a null one.
   const token = code ? getToken(code) : null
   const { state, link, retry } = useRoom(code, token)
+
+  // The screen changed and nothing else about the page did, so a keyboard or screen-reader
+  // user was given a different screen with no signal whatsoever: the same URL bar, the same
+  // chrome, and focus sitting wherever the last control left it — quite possibly on a button
+  // that is no longer in the document. Moving focus to the new screen's heading is the
+  // smallest thing that says "you are here now", and it also puts the top of the new screen
+  // in view, which a page swapped in under a scrolled position otherwise would not.
+  //
+  // Not on the first pass. The admin console deliberately puts the cursor in the password on
+  // mount, and taking it back for a heading would undo the one thing that screen exists to
+  // do; the first render is a page load, which the browser has already announced.
+  //
+  // The heading is found rather than threaded down as a ref: it lives in five components,
+  // two of which are rendered by other components in turn, and a ref per screen would be five
+  // props and five effects to say one thing. One query on one screen change is not the place
+  // to be precious about it.
+  //
+  // The dependency is the *screen*, not the route, and the two are not the same thing. A
+  // round ending moves Game -> Results with the URL unchanged, which is the largest swap in
+  // the game and the one where a player most needs to be told; keyed on the route alone it
+  // was the one transition where this effect never ran, and a keyboard user was left focused
+  // on a send button that was no longer in the document. `status` is null until the first
+  // frame lands, so this also picks up Connecting -> Lobby — the same kind of change by the
+  // same test, and the first frame is not a "first pass" in the sense guarded above, which is
+  // about the very first render only.
+  const first = useRef(true)
+  const key = code ? `${screen}/${code}` : screen
+  useEffect(() => {
+    if (first.current) {
+      first.current = false
+      return
+    }
+    const h = document.querySelector<HTMLElement>('.screen h1')
+    if (!h) return
+    h.focus()
+  }, [key, state?.status])
 
   useEffect(() => {
     const on = () => setRoute(route())
@@ -82,18 +151,18 @@ export default function App() {
 
   // No navigation callback: the console never leaves /admin. Every exit is a state reset in
   // Admin, which is why nothing here has to hand it a router.
-  if (screen === 'admin') return <Admin />
-  if (screen === 'join') return <Join onJoined={(c) => go(`/room/${c}`)} />
+  if (screen === 'admin') return <><SkipLink /><Admin /></>
+  if (screen === 'join') return <><SkipLink /><Join onJoined={(c) => go(`/room/${c}`)} /></>
 
   // No token means this phone is not, or was never, in the room. The join form comes back
   // with the code already filled in, which also covers someone following a shared link
   // before they have joined, at no cost.
-  if (!token) return <Gate code={code!} onJoined={(c) => go(`/room/${c}`)} />
-  if (link === 'failed') return <Fault code={code!} onRetry={retry} onLeave={() => go('/')} />
-  if (!state) return <Connecting code={code!} link={link} />
-  if (state.status === 'waiting') return <Lobby state={state} link={link} onRetry={retry} onLeave={() => go('/')} />
-  if (state.status === 'done') return <Results state={state} link={link} onRetry={retry} onLeave={() => go('/')} />
-  return <Game state={state} code={code!} link={link} onRetry={retry} />
+  if (!token) return <><SkipLink /><Gate code={code!} onJoined={(c) => go(`/room/${c}`)} /></>
+  if (link === 'failed') return <><SkipLink /><Fault code={code!} onRetry={retry} onLeave={() => go('/')} /></>
+  if (!state) return <><SkipLink /><Connecting code={code!} link={link} /></>
+  if (state.status === 'waiting') return <><SkipLink /><Lobby state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
+  if (state.status === 'done') return <><SkipLink /><Results state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
+  return <><SkipLink /><Game state={state} code={code!} link={link} onRetry={retry} /></>
 }
 
 // The stream is open but no frame has arrived yet. This is the only state that is genuinely a

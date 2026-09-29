@@ -68,7 +68,7 @@ export default function Admin() {
       <div className="deck">
         <ConsoleBar />
         <main className="screen screen--solo">
-          <h1 className="title">Console d’animation</h1>
+          <h1 className="title" tabIndex={-1}>Console d’animation</h1>
           <p className="prose prose--dim">
             Une partie se crée ici. Le code sera affiché à l’écran pour que tu le donnes au
             groupe.
@@ -99,9 +99,19 @@ export default function Admin() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
+                aria-required="true"
+                aria-invalid={err ? true : undefined}
+                aria-describedby={err ? 'admin-login-err' : undefined}
               />
             </div>
-            {err && <p className="err">{err}</p>}
+            {/* The one field on this form, so the message is unambiguously about it: marked,
+                linked, and announced on arrival. The typed password is kept — an admin who
+                mistyped a nine-character password should retype one character, not nine. */}
+            {err && (
+              <p className="err" id="admin-login-err" role="alert">
+                {err}
+              </p>
+            )}
             <button
               type="submit"
               className="btn btn--signal btn--wide"
@@ -173,7 +183,7 @@ export default function Admin() {
       <div className="deck">
         <ConsoleBar meta="Console" link={link} onRetry={retry} />
         <main className="screen screen--solo">
-          <h1 className="title">Cette partie n’existe plus</h1>
+          <h1 className="title" tabIndex={-1}>Cette partie n’existe plus</h1>
           <p className="prose prose--dim">
             Le code <strong>{code}</strong> ne mène plus à aucune partie. La machine qui
             héberge la partie a peut-être redémarré, ou la base a été remise à zéro.
@@ -204,7 +214,6 @@ export default function Admin() {
     <div className="deck deck--wide">
       <ConsoleBar meta="Console" link={link} onRetry={retry} />
       <main className="screen">
-        {err && <p className="err">{err}</p>}
         <div className="split split--console">
           <div className="stack">
             <Readout label="Code de la partie" value={code} code />
@@ -333,6 +342,18 @@ export default function Admin() {
                 <p className="prose prose--dim">Lecture de la partie…</p>
               )}
             </div>
+
+            {/* Beside the controls rather than pinned to the top of <main>. It used to be at
+                the top, which in the two-column console is some 400px above the button that
+                caused it and a full column away from it: the admin pressed a button, nothing
+                visibly happened, and the reason was somewhere the eye had just left. There is
+                no field to mark here — these are actions, not inputs — so the alert is the
+                whole of it, and it is simply next to the thing it is about. */}
+            {err && (
+              <p className="err err--inline" role="alert">
+                {err}
+              </p>
+            )}
           </div>
 
           <div className="stack">

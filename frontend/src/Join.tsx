@@ -1,6 +1,17 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { ConsoleBar } from './ui'
-import { describe, nameKey, post, setToken } from './api'
+import { ApiError, describe, nameKey, post, setToken } from './api'
+
+// Which of the two fields the player actually has to change. The server is the only thing
+// that knows, and it says so twice over: a status of 404 is the code, a refusal to accept the
+// name is the name. A network failure is neither, and gets neither marked — putting an
+// "invalid" ring on two inputs the player filled in correctly would be the form accusing them
+// for a failure of the network.
+function blame(e: unknown): 'code' | 'name' | null {
+  if (!(e instanceof ApiError)) return null
+  if (e.status === 404) return 'code'
+  if (e.message === 'name required' || e.message === 'name taken') return 'name'
+  return null
+}
 
 export default function Join({
   preset,
@@ -15,6 +26,7 @@ export default function Join({
   const [code, setCode] = useState(preset ?? '')
   const [name, setName] = useState('')
   const [err, setErr] = useState('')
+  const [bad, setBad] = useState<'code' | 'name' | null>(null)
   const [busy, setBusy] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
   const codeRef = useRef<HTMLInputElement>(null)
@@ -39,6 +51,7 @@ export default function Join({
       onJoined(c)
     } catch (err) {
       setErr(describe(err))
+      setBad(blame(err))
     } finally {
       setBusy(false)
     }
@@ -46,9 +59,8 @@ export default function Join({
 
   return (
     <div className="deck">
-      <ConsoleBar />
       <main className="screen screen--solo">
-        <h1 className="title">Jeu GenAi</h1>
+        <h1 className="title" tabIndex={-1}>Jeu GenAi</h1>
         <p className="prose prose--dim">
           Le modèle doit répondre par une chose bien précise. À toi d’écrire le prompt qui
           l’y amène. Un jury note la ressemblance sur 10, et les dix manches se jouent entre
@@ -77,7 +89,9 @@ export default function Join({
               autoCorrect="off"
               spellCheck={false}
               readOnly={preset !== undefined}
-              aria-describedby="join-help"
+              aria-required="true"
+              aria-invalid={bad === 'code' ? true : undefined}
+              aria-describedby={bad === 'code' ? 'join-err' : 'join-help'}
             />
             <p className="label" id="join-help">
               {preset ? 'Code repris de l’adresse.' : 'Quatre lettres données par l’animateur.'}
@@ -98,9 +112,29 @@ export default function Join({
               placeholder="Ana"
               autoComplete="nickname"
               autoCapitalize="words"
+              aria-required="true"
+              aria-invalid={bad === 'name' ? true : undefined}
+              aria-describedby={bad === 'name' ? 'join-err' : undefined}
             />
           </div>
-          {err && <p className="err">{err}</p>}
+          {/* The message is about one of the two fields, so it is linked to that field and
+              the field is marked, rather than sitting in the middle of the form as a paragraph
+              about nothing. `role="alert"` because it arrives without a page change and without
+              anything moving on the screen — the player has just been told no and would
+              otherwise have to go looking for why. Neither field is ever cleared: the code was
+              typed, or was read off the address bar, and the name is the player's own. */}
+          {err && (
+            <p className="err" id="join-err" role="alert">
+              {err}
+            </p>
+          )}
+          {/* The button below is dead until both fields are filled, and a disabled control
+              that does not say why is the one form element that gives a player nothing to act
+              on — it just looks broken. Stated permanently rather than shown and hidden on
+              each keystroke, so nothing on the phone reflows under the thumb mid-word. The
+              `<p className="label">` the code field already uses is this form's own idiom for
+              a line of help, and it is used rather than a new element invented. */}
+          <p className="label">Le code et le pseudo sont tous les deux nécessaires.</p>
           <button type="submit" className="btn btn--signal btn--wide" disabled={busy || !code || !name.trim()}>
             {busy ? 'Connexion…' : 'Rejoindre la partie'}
           </button>

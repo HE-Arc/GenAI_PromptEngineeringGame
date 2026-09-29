@@ -148,11 +148,78 @@
   overflow-wrap: anywhere;
 }
 /* The room code is the loudest thing on the lobby, because it is the thing a player has to
- * read out loud across a room. */
-.readout__value--code {
+ * read out loud across a room. Two classes on the element rather than one, so it cannot be
+ * knocked off by a tier rule that happens to land later in the file. */
+.readout__value.readout__value--code {
   font-size: clamp(3.25rem, 19vw, 5.5rem);
   line-height: 0.9;
   letter-spacing: 0.06em;
+}
+
+/* ---- the two steps down ---------------------------------------------------------------- */
+
+/* A phrase: still the display voice, still a voice at distance, sized so ninety-odd
+ * characters cost a third of the screen instead of all of it. */
+.readout[data-size='phrase'] .readout__value {
+  font-size: clamp(1.5rem, 6.5vw, 2rem);
+  line-height: 1.04;
+  text-wrap: balance;
+}
+
+/* A paragraph: the round's subject, set as an artifact rather than as body copy.
+ *
+ * This tier used to compute to exactly what the composer underneath it computes to — 1rem of
+ * --font-ui, the same family and the same size as `.area` and as the send button. Measured at
+ * 390x844, the single most important element on the Game screen was typographically
+ * identical to the field you type the answer into, which is a hierarchy that has told a
+ * player nothing at all.
+ *
+ * So the step is a whole tier, not a nudge. The letterform returns to the display face the
+ * rest of the panel is cut in — Big Shoulders runs about 30% narrower than Barlow at the same
+ * size, so the paragraph is six lines where it was seven despite being 25% bigger — and the
+ * measure comes down from 34rem to 26rem, so a long recipe stops running the full width of
+ * the panel. Neither the size nor the face reads on its own, which is why the panel also grows
+ * the 2px sodium rule below: those two are the part of the hierarchy that survives being
+ * compared with the composer underneath, and the rule is the part that survives being looked
+ * at. */
+.readout[data-size='text'] {
+  border-left: 2px solid var(--signal);
+}
+.readout[data-size='text'] .readout__value {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.25rem;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  max-width: 26rem;
+  text-wrap: pretty;
+}
+
+/* The one thing allowed to grow on a wide screen. Everywhere else the wide layout only
+ * rearranges; this panel is what the room is looking at, and a target letterboxed into a
+ * 1600px band is a target nobody can read from the back of the room. */
+@media (min-width: 64rem) {
+  .readout {
+    padding: 1.4rem 1.75rem 1.8rem;
+  }
+  .readout__value {
+    font-size: 4.5rem;
+  }
+  .readout__value.readout__value--code {
+    font-size: 7rem;
+  }
+  .readout[data-size='phrase'] .readout__value {
+    font-size: 3rem;
+  }
+  /* Room to grow, which is exactly what a paragraph wants and a word does not: at this width
+   * the same recipe is three comfortable lines instead of seven. The measure grows with the
+   * size but less than it does, so a 60rem line of display type is never a 90-character
+   * reading. */
+  .readout[data-size='text'] .readout__value {
+    font-size: 1.5rem;
+    line-height: 1.35;
+    max-width: 44rem;
+  }
 }
 
 /* ---- segmented track: rounds are a sequence, so a track -------------------------------- */
@@ -164,9 +231,11 @@
   gap: 3px;
   height: 7px;
 }
+/* An empty tick is still a tick: it is the slot the next round goes in, so its edge is a
+ * control surface to the eye and not a hairline. --track-edge, not --rail — see the token. */
 .track__tick {
   background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--rail);
+  box-shadow: inset 0 0 0 1px var(--track-edge);
 }
 .track__tick--done {
   background: var(--rail-lit);
@@ -280,7 +349,7 @@
 }
 .meter__seg {
   background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--rail);
+  box-shadow: inset 0 0 0 1px var(--track-edge);
 }
 /* Filled = someone else is in. Cool and desaturated, because it is not about you. */
 .meter__seg--on {
@@ -305,7 +374,7 @@
 }
 .scale__tick {
   background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--rail);
+  box-shadow: inset 0 0 0 1px var(--track-edge);
 }
 .scale__tick--on {
   background: var(--signal);
@@ -407,7 +476,7 @@
   grid-column: 2 / -1;
   height: 4px;
   background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--rail);
+  box-shadow: inset 0 0 0 1px var(--track-edge);
 }
 /* Block, explicitly: `.board__bar` is blockified by being a grid item, but this span is not
  * one, and an inline box silently drops the height and width it was given. */
@@ -419,6 +488,26 @@
 }
 .board__fill--top {
   background: var(--signal);
+}
+
+/* A pointer exists on a desktop, so a row can acknowledge it. Purely additive: the board is
+ * read-only, nothing here is a control, and no information is available on hover that is not
+ * already on screen — the row brightens and its bar steps up, nothing more. The `:hover`
+ * guard matters on a touch screen, where iOS would otherwise leave the last-tapped row stuck
+ * lit for the rest of the game. */
+@media (hover: hover) and (pointer: fine) {
+  .board__row:hover {
+    background: var(--well);
+  }
+  .board__row:hover .board__name {
+    color: var(--ink);
+  }
+  .board__row:hover .board__fill {
+    background: var(--cool-lit);
+  }
+  .board__row:hover .board__fill--top {
+    background: var(--signal-lit);
+  }
 }
 
 /* ---- the two moments that earn motion -------------------------------------------------- */

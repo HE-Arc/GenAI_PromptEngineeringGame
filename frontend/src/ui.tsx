@@ -20,23 +20,30 @@ export function StatusLamp({ link, onRetry }: { link: Link; onRetry?: () => void
   if (link === 'idle') return null
   const fault = link === 'failed'
   return (
-    // <output> carries an implicit role=status, so this is a polite live region: the lamp
-    // change is announced without interrupting whatever the player is doing.
-    <output className={`status ${LINK_CLASS[link]}`}>
-      <span className={`lamp lamp--${link}`} aria-hidden="true" />
-      {linkWord(link)}
+    // Two elements, not one. The layout box stays a plain span so `.status` keeps owning the
+    // flex, the right-hand margin and the colour, and the live region shrinks to the two
+    // things that are actually a status: the lamp and the word.
+    //
+    // The button used to live inside the <output>, which is an anti-pattern rather than a
+    // style question: a live region announces its whole subtree when it changes, so a
+    // focusable control inside it got re-announced as part of the connection message on every
+    // flap, and the announcement described something the player cannot do. As a sibling it
+    // inherits the fault colour and the rail's type through the wrapper, unchanged.
+    <span className={`status ${LINK_CLASS[link]}`}>
+      {/* <output> carries an implicit role=status, so this is a polite live region: the lamp
+          change is announced without interrupting whatever the player is doing. */}
+      <output>
+        <span className={`lamp lamp--${link}`} aria-hidden="true" /> {linkWord(link)}
+      </output>
       {/* A manual retry only where nothing is coming on its own. Offering it for a blip the
           watchdog is already fixing would train a player to tap a button that does not need
           tapping. */}
       {fault && onRetry && (
-        <>
-          {' '}
-          <button type="button" className="status__retry" onClick={onRetry}>
-            Réessayer
-          </button>
-        </>
+        <button type="button" className="status__retry" onClick={onRetry}>
+          Réessayer
+        </button>
       )}
-    </output>
+    </span>
   )
 }
 
@@ -131,6 +138,15 @@ export function Roster({ players, online, myName }: { players: Player[]; online:
   const mine = players.findIndex((p) => p.online && p.name === myName)
   return (
     <div>
+      {/* The roster moves on every arrival, every departure and every reconnect, all of it
+          pushed by SSE and none of it in response to anything the player did — so the eye has
+          nothing to catch it on and a screen reader has nothing at all. The echo says the same
+          sentence the panel says, in the panel's own terms. `polite`, because a player who is
+          mid-word does not want a reconnect to talk over them. */}
+      <p className="visually-hidden" aria-live="polite">
+        {online} {online > 1 ? 'joueurs connectés' : 'joueur connecté'} sur {players.length} dans
+        la pièce.
+      </p>
       <p className="roster">
         <span className="roster__n num">{online}</span>
         <span className="roster__unit">
@@ -189,6 +205,15 @@ export function AnswerMeter({
   if (total === 0) return null
   return (
     <div>
+      {/* The meter is the one thing on the screen that moves during a round, and it moves
+          without the player having done anything: the round closing is an event, and an event
+          that is only a set of lamps is invisible to anyone not looking at them. The caption
+          already carries the meaning in words — it is the same sentence the meter is drawn
+          from — so the echo repeats it and adds the fraction, which is the part the lamps
+          cannot state. */}
+      <p className="visually-hidden" aria-live="polite">
+        {caption}. {lit.length} sur {total}.
+      </p>
       <p className="meterrow">
         <span className="label">{caption}</span>
         <span className="meterrow__count">
@@ -200,12 +225,49 @@ export function AnswerMeter({
   )
 }
 
-// The illuminated panel. It is the loudest thing on the page, and it is used in exactly three
-// places, all of which are the same job: show the room something it must read at a glance or
-// read out loud. The target, and the code, twice.
+// Three typographic tiers for one panel, chosen by the length of the target.
+//
+// What varies is not a font size, it is the *kind* of thing being read. A four-character
+// answer is a label to be illuminated across a room; a recipe is a specification to be read
+// closely. Sizing one like the other is what breaks a panel — a paragraph set at display size
+// is not typography, it is a wall, and it pushes the composer off the phone. So the panel's
+// chassis never changes and only the letterform steps down to meet the content:
+//
+//   word    a target the room could shout across a room. Display face, full size, the panel
+//           at its thumb-high best. Unchanged from the phone-first build.
+//   phrase  a title, a riddle's first line. Still the display face, still readable at
+//           distance, one step down so a 90-character line does not eat the screen.
+//   text    several sentences, and the tier that decides whether this panel works at all.
+//           Big Shoulders is about 30% narrower than Barlow at the same size, so the
+//           paragraph can stay in the display face, be a quarter larger than the body text
+//           around it, and still take six lines where it took seven — a tier step for free
+//           rather than a cost. It also keeps the whole panel in one letterform, which is
+//           what "one instrument" means when the face itself never has to change.
+//           The trade is that it is one step quieter than a big display face and no louder
+//           than the composer, so the tier also grows a 2px sodium rule on the panel: size
+//           and family are the part of the hierarchy that survives being compared with the
+//           textarea underneath, and the rule is the part that survives being looked at.
+//           The measure is what stops the condensed face running the full width of the panel
+//           — 26rem on a phone, 44rem on a desktop, so lines stay sentences.
+//
+// The chassis — border, gradient, bevels, scanlines, glow, label — is identical in all three
+// tiers, which is what keeps this one panel and not three.
+//
+// The thresholds are where the content changes kind, not round numbers. The room code is
+// four characters, so it is always `word`.
+const TIERS = [
+  { max: 42, size: 'word' },
+  { max: 120, size: 'phrase' },
+  { max: Number.POSITIVE_INFINITY, size: 'text' },
+]
+
 export function Readout({ label, value, code }: { label: string; value: string; code?: boolean }) {
+  const size = TIERS.find((t) => value.length <= t.max)!.size
   return (
-    <div className="readout">
+    // The tier rides on the panel, not on the text, so every rule below can be written as
+    // `.readout[data-size=…] .readout__value` and win on specificity rather than on
+    // whichever order the stylesheet happens to be in.
+    <div className="readout" data-size={size}>
       <span className="readout__label">{label}</span>
       <p className={`readout__value${code ? ' readout__value--code' : ''}`}>{value}</p>
     </div>

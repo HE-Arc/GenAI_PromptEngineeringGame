@@ -67,6 +67,27 @@
   border-top: 1px solid var(--rail);
 }
 
+/* No keyboard and no pointer means no shortcut to advertise, so it is off by default and a
+ * display:none element is not a grid item — the phone's form does not grow a row for it. */
+.hint {
+  display: none;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  text-align: center;
+}
+.hint kbd {
+  padding: 0.05em 0.35em;
+  border: 1px solid var(--rail-lit);
+  border-radius: var(--radius);
+  font: inherit;
+}
+@media (min-width: 64rem) and (hover: hover) and (pointer: fine) {
+  .hint {
+    display: block;
+  }
+}
+
 .form {
   display: grid;
   gap: 1rem;
@@ -82,32 +103,127 @@
   align-content: start;
 }
 
-/* The one thing that must never scroll on the player screens: the target and the field you
- * type into, on the same screen, at the same time. A player reads the target while composing
- * the prompt, so on a phone turned sideways those two sit side by side and nothing else moves.
- * Height-driven, not width-driven: a 390x844 portrait is narrow and must stay single column,
- * and a 844x390 landscape is short and must not. */
+/* ---- the wide screen -------------------------------------------------------------------
+ * Everything above this line is the phone. Everything below is the same console with the
+ * room to breathe: the chassis stays (rails, bands, the illuminated panel, the accent rule),
+ * and only the arrangement changes. One rule, one grid, no second markup tree.
+ */
+
 .playgrid {
   display: grid;
   gap: var(--gap);
   align-items: start;
 }
-@media (min-width: 40rem) and (max-height: 34rem) {
-  .playgrid {
-    grid-template-columns: 1fr 1fr;
-    column-gap: 1.5rem;
+/* Landscape phone: target and composer side by side, because a 390px-tall screen cannot stack
+ * them and the player must still see the target while typing. Bounded above 64rem so it
+ * cannot fight the wide-screen split below, which handles a short window on its own. */
+/* Landscape phone: a 390px-tall screen cannot stack anything, so every screen splits into the
+ * task and its reference material and nothing scrolls. Bounded above 64rem so it cannot fight
+ * the wide-screen split below, which handles a short desktop window on its own.
+ *
+ * The same rule for all three screens rather than one per screen: the left column is what the
+ * player is doing, the right column is what they are checking. On the Game screen that makes
+ * the target wider (540px instead of 296) and the paragraph a few lines shorter, which is
+ * worth more than any weighting of the old two-column composer.
+ */
+@media (min-width: 40rem) and (max-width: 63.99rem) and (max-height: 34rem) {
+  .screen--split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 16rem);
+    column-gap: 1.25rem;
+    align-items: start;
   }
-  /* Three lines of prompt is enough to say something real, and it is what buys the target
-   * and the button a place on a 390px-tall screen. */
+  /* Placed, not left to auto-flow, and placed in rows as well as columns.
+   *
+   * The two columns are not interchangeable: the left one is the task and has to be the wide
+   * one. On the Game screen the first child of the grid is the round step, so auto-placement
+   * spent the wide column on it and handed the target and the composer the 16rem one — the
+   * target set into 214px and eight lines, the composer into the same 214px, and the
+   * standings pushed under the composer instead of beside it.
+   *
+   * So the round step goes in the reference column and the task keeps the whole of row one.
+   * On a 390px-tall phone that is the difference between the send button 45px below the fold
+   * and 92px below it, and a step is 37px of information a player reads once — it can afford
+   * to sit at the head of the standings, which is where a landscape phone's spare width is.
+   * Naming rows rather than letting the cursor find them is what actually buys this: with
+   * only the columns named, the task still fell to the row below the step. */
+  .screen--split > .stepwrap {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .screen--split > .playgrid {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  /* A reconnect notice is a sentence the player must read before typing, so it is the one
+   * thing that earns a full-width row of its own — and when it is there it takes row one and
+   * pushes the task down, which is the only place this block spends vertical budget it does
+   * not have. Notices are rare and transient; the other nine rounds of a game never see it. */
+  .screen--split > .notice {
+    grid-column: 1 / -1;
+  }
+  .screen--split:has(> .notice) > .playgrid,
+  .screen--split:has(> .notice) > .stepwrap {
+    grid-row: 2;
+  }
+  .screen--split > .railcol {
+    grid-column: 2;
+  }
+  .playgrid {
+    grid-template-columns: 1fr;
+  }
   .area {
     min-height: 4.5rem;
+  }
+  /* Every pixel of chrome above the target is a pixel the target does not have. The
+   * inline padding comes down with it: at var(--pad) the panel throws away 40px of a
+   * 333px column, which is a whole line of the target, and the label and the composer keep
+   * their full measure either way. */
+  .screen {
+    padding-top: 0.6rem;
+    gap: 0.7rem;
+  }
+  .readout {
+    padding: 0.6rem 0.75rem 0.75rem;
+  }
+  .readout__label {
+    margin-bottom: 0.25rem;
+  }
+  /* The target keeps its full size on its side. It used to be stepped down to 15px here,
+   * which on a 390px-tall screen made the round's subject render a pixel smaller than the
+   * textarea it is written against — the composer was shouting over the thing it is for. A
+   * landscape phone gets its room by spending less chrome (the padding and label above), not
+   * by shrinking the one element on the screen that has to be read at arm's length. */
+  .stepwrap {
+    gap: 0.3rem;
+  }
+  /* A landscape phone has to be able to *press* the join button, not scroll to it, so the two
+   * fields go side by side and the lead paragraph loses a size step. */
+  .screen--solo {
+    gap: 0.75rem;
+    padding-top: 0.5rem;
+  }
+  .screen--solo .form {
+    grid-template-columns: 1fr 1fr;
+    column-gap: 1rem;
+    row-gap: 0.75rem;
+  }
+  .screen--solo .form > .err,
+  .screen--solo .form > .btn {
+    grid-column: 1 / -1;
+  }
+  .screen--solo .prose {
+    font-size: 0.9375rem;
+  }
+  /* A denser board, because on a 390px-tall screen four rows of generous padding are the
+   * difference between the standings fitting and the page scrolling. */
+  .board__row {
+    padding: 0.3rem 0;
   }
 }
 
 @media (min-width: 56rem) {
-  /* The admin drives from a laptop across a table, so the console gets two columns while
-   * the players keep one. Deliberately not extended to the player screens: they are held in
-   * a hand, and a wide layout is not a layout they will ever see. */
+  /* Unchanged from the phone-first build: the admin drives from a laptop across a table and
+   * has had two columns since before the wide-screen work. It must not regress. */
   .split--console {
     grid-template-columns: minmax(0, 1fr) minmax(0, 19rem);
     column-gap: 2.5rem;
@@ -116,6 +232,69 @@
     max-width: 64rem;
   }
 }
+
+@media (min-width: 64rem) {
+  /* Full-bleed. On a 27" the deck is the viewport, not a strip floating in dead space, so the
+   * bands reach the edge and the rails between the columns are what carry the chassis. The
+   * content is then held to a measure and centred, so a monitor does not get a 1500px line of
+   * text. */
+  .deck {
+    max-width: none;
+    border-inline: 0;
+  }
+  .railbar,
+  .screen {
+    padding-inline: clamp(2rem, 5vw, 5rem);
+  }
+  .screen--solo {
+    /* A two-field form has no second column to earn. Centred at a reading measure. */
+    max-width: 34rem;
+    margin-inline: auto;
+    width: 100%;
+  }
+  .deck--wide {
+    max-width: none;
+  }
+}
+
+/* The one arrangement the wide screen is built around. The left column is the loop — the
+ * target, the composer, the meter, the score — and the right column is the standings. The
+ * split is not about filling the space: it is that the leaderboard is live social information
+ * and has no business below the fold, while the composer is a long vertical task that wants a
+ * column to itself. Round, notice and roster stay in the flow above or beside it, so nothing
+ * a player checks mid-sentence moves. */
+@media (min-width: 64rem) {
+  .screen--split {
+    grid-template-columns: minmax(0, 1fr) minmax(19rem, 22rem);
+    column-gap: 3rem;
+    align-items: start;
+  }
+  .screen--split > .stepwrap,
+  .screen--split > .notice {
+    grid-column: 1 / -1;
+  }
+  .railcol {
+    position: sticky;
+    top: 4.4rem;
+    display: grid;
+    gap: var(--gap);
+    align-content: start;
+    /* A real console divider. The column gap alone would read as whitespace at this width. */
+    padding-left: 2.5rem;
+    border-left: 1px solid var(--rail);
+  }
+  /* A measured composer. A 16px sans in a 1500px box is a 190-character line; this is the
+   * 80-character ceiling, and the form is what owns it so the button matches the field. */
+  .playgrid .form {
+    max-width: 46rem;
+  }
+  .area {
+    /* A phone field is 32 characters wide and a monitor's is eight words. This is the one
+     * control that genuinely wants to be larger, not just wider. */
+    min-height: 13rem;
+  }
+}
+
 
 .actions {
   display: grid;

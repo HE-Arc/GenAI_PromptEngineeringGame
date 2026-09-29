@@ -31,15 +31,26 @@ export default function Results({
   return (
     <div className="deck">
       <ConsoleBar meta={`Partie ${state.code}`} link={link} onRetry={onRetry} />
-      <main className="screen">
+      <main className="screen screen--split">
         <div>
-          <h1 className="title">Partie terminée</h1>
+          {/* `tabIndex` so the route-change effect in App.tsx can land focus here. This is
+              the last screen of a game, so it is the one place a round ending swaps the whole
+              view out from under a keyboard user; without a focusable target the swap is
+              silent, and focus is left on a control that is no longer in the document. Every
+              other screen in the console already carries this on its heading. */}
+          <h1 className="title" tabIndex={-1}>
+            Partie terminée
+          </h1>
           <p className="prose prose--dim">{winners.length ? verdict : 'Aucun joueur dans la partie.'}</p>
         </div>
 
-        <Section title="Classement final">
-          <Board players={state.players} myName={getName(state.code)} />
-        </Section>
+        {/* The winner is a sentence and the standings are the evidence, so on a wide screen
+            they sit side by side with the board given a column of its own to stretch into. */}
+        <div className="railcol">
+          <Section title="Classement final">
+            <Board players={state.players} myName={getName(state.code)} />
+          </Section>
+        </div>
 
         <div className="foot">
           <span className="foot__code">Partie {state.code}</span>
