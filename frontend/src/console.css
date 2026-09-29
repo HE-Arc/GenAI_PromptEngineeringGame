@@ -1,0 +1,456 @@
+/* The instrument panel: the pieces that are the same on every screen, so the six screens
+ * read as one device rather than six layouts that happen to share a CSS file.
+ */
+
+/* ---- top rail ---------------------------------------------------------------------- */
+
+.railbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem var(--pad);
+  border-bottom: 1px solid var(--rail);
+  background: var(--deck);
+}
+.railbar__mark {
+  font: 800 1.1rem/1 var(--font-display);
+  letter-spacing: 0.02em;
+}
+.railbar__meta {
+  font-size: 0.8125rem;
+  color: var(--ink-dim);
+}
+.railbar__meta::before {
+  content: '';
+  display: inline-block;
+  width: 1px;
+  height: 0.7em;
+  margin-right: 0.6rem;
+  vertical-align: -0.08em;
+  background: var(--rail);
+}
+
+/* A player's phone can lose the event stream mid-round and never say so otherwise. This is
+ * the one persistent indicator of whether the readout they are looking at is current. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.lamp {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--ink-dim);
+}
+/* Sodium means the stream is genuinely live. This is the one other place the accent is spent,
+ * and it is the right place: "live" is exactly what the original budget reserved it for. */
+.lamp--live {
+  background: var(--signal);
+  box-shadow: 0 0 0 2px var(--glow);
+}
+/* Reconnecting and connecting are the same calm thing at two points on the same road, and
+ * neither is a fault. Cool, never red: a phone on a lock screen is not in trouble. */
+.lamp--connecting,
+.lamp--down {
+  background: var(--cool-lit);
+}
+.lamp--failed {
+  background: var(--fault);
+}
+/* A player's presence in the named roster. Cool, because it is about other people and not
+ * about you; unlit is a lamp that is off, not a missing one. */
+.lamp--on {
+  background: var(--cool);
+}
+.lamp--off {
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--rail);
+}
+.status--fault {
+  color: var(--fault);
+}
+.status--pending {
+  color: var(--cool-lit);
+}
+/* 44px of touch target around four letters of text. The negative margin takes the space back
+ * out of the layout, so the rail does not grow a row to accommodate a thumb. */
+.status__retry {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  margin: -0.72rem 0;
+  padding: 0 0.4rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---- illuminated readout slab --------------------------------------------------------- */
+
+.readout {
+  position: relative;
+  padding: 0.9rem var(--pad) 1.1rem;
+  border: 1px solid var(--rail);
+  border-radius: var(--radius);
+  overflow: hidden;
+  /* The only gradient in the console: the panel's own light falloff, warm at the top edge
+   * and cold at the bottom, as a lit face on an unlit box actually behaves. */
+  background: var(--readout-face);
+  box-shadow: inset 0 1px 0 var(--bevel), inset 0 -1px 0 var(--edge-dark),
+    0 0 34px -14px var(--glow);
+}
+.readout > * {
+  position: relative;
+}
+/* Broadcast glass. A three-pixel scanline, not a texture image. Kept faint: it darkens every
+ * other row of the glyphs as well as the panel, and the target is the one thing on this
+ * screen that has to stay readable across a dim room. */
+.readout::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg,
+    var(--scan) 0 1px,
+    transparent 1px 3px
+  );
+}
+.readout__label {
+  display: block;
+  margin-bottom: 0.4rem;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.readout__value {
+  margin: 0;
+  color: var(--signal);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(2.25rem, 10.5vw, 3.5rem);
+  line-height: 0.94;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+/* The room code is the loudest thing on the lobby, because it is the thing a player has to
+ * read out loud across a room. */
+.readout__value--code {
+  font-size: clamp(3.25rem, 19vw, 5.5rem);
+  line-height: 0.9;
+  letter-spacing: 0.06em;
+}
+
+/* ---- segmented track: rounds are a sequence, so a track -------------------------------- */
+
+.track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 3px;
+  height: 7px;
+}
+.track__tick {
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--rail);
+}
+.track__tick--done {
+  background: var(--rail-lit);
+  box-shadow: none;
+}
+.track__tick--now {
+  background: var(--signal);
+  box-shadow: none;
+}
+
+.stepwrap {
+  display: grid;
+  gap: 0.45rem;
+}
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+.step__n {
+  color: var(--ink);
+  font: 800 1.375rem/1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+.step__of {
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+/* How many people are in the room. The first thing a player checks on arrival — am I in the
+ * right room, is everyone here — so it is a designed element and not a caption. The number is
+ * set in the display face at a size readable at arm's length, in the cool colour, because it
+ * counts other people and is not a score: it must never compete with the target or with the
+ * sodium the player is trying to win. */
+.roster {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+.roster__n {
+  color: var(--cool-lit);
+  font-size: clamp(3rem, 15vw, 4.25rem);
+  line-height: 0.85;
+}
+.roster__unit {
+  color: var(--ink-dim);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+/* The roster total, deliberately under the number and not beside it: this is the count of
+ * people the game knows about, and it must never be read as the count of people present. */
+.roster__total {
+  margin-top: 0.15rem;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.roster__meter {
+  margin-top: 0.5rem;
+}
+
+.rosterlist {
+  display: grid;
+}
+.rosterlist__row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--rail);
+  font-size: 0.9375rem;
+}
+.rosterlist__row .lamp {
+  width: 8px;
+  height: 8px;
+}
+.rosterlist__name {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.rosterlist__away {
+  margin-left: auto;
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ---- answer meter: one lamp per player ------------------------------------------------- */
+
+.meterrow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.meterrow__count {
+  margin-left: auto;
+  color: var(--ink);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.meter {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 3px;
+  height: 12px;
+}
+.meter__seg {
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--rail);
+}
+/* Filled = someone else is in. Cool and desaturated, because it is not about you. */
+.meter__seg--on {
+  background: var(--cool);
+  box-shadow: inset 0 1px 0 var(--edge-cool);
+}
+/* Your own lamp is sodium, the same colour as the target and your score: the accent means
+ * "yours" everywhere it appears, and "one of these is me" comes free. */
+.meter__seg--me {
+  background: var(--signal);
+  box-shadow: inset 0 1px 0 var(--edge-warm), 0 0 0 1px var(--glow);
+}
+
+/* ---- score scale: ten ticks, so a 4 does not read like an 8 ---------------------------- */
+
+.scale {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 3px;
+  height: 16px;
+}
+.scale__tick {
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--rail);
+}
+.scale__tick--on {
+  background: var(--signal);
+  box-shadow: inset 0 1px 0 var(--edge-warm);
+}
+
+.verdict {
+  display: grid;
+  gap: 0.7rem;
+  padding-top: var(--pad);
+  border-top: 1px solid var(--rail);
+}
+.verdict__top {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+.verdict__score {
+  color: var(--signal);
+  font-size: clamp(3.25rem, 17vw, 5.5rem);
+  line-height: 0.78;
+}
+.verdict__den {
+  padding-bottom: 0.15rem;
+  color: var(--ink-dim);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+.verdict__round {
+  margin-left: auto;
+  padding-bottom: 0.2rem;
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The model's own words, dropped into a slot. */
+.slot {
+  margin: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--rail);
+  border-radius: var(--radius);
+  background: var(--well);
+  box-shadow: inset 0 1px 0 var(--edge-sunk);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- leaderboard ---------------------------------------------------------------------- */
+
+.board {
+  display: grid;
+}
+.board__row {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr) auto;
+  column-gap: 0.55rem;
+  row-gap: 0.35rem;
+  align-items: baseline;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--rail);
+}
+.board__rank {
+  color: var(--ink-dim);
+  font: 700 0.9375rem/1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+.board__name {
+  color: var(--ink-dim);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+.board__name--me {
+  color: var(--ink);
+  font-weight: 600;
+}
+.board__tag {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--rail-lit);
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+.board__pts {
+  color: var(--ink);
+  font-size: 1.375rem;
+  line-height: 1;
+}
+/* Proportional to the leader, so a row tells you where you stand and not just in what
+ * place. A 0 never renders as nothing at all: max() keeps a visible nub. */
+.board__bar {
+  grid-column: 2 / -1;
+  height: 4px;
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--rail);
+}
+/* Block, explicitly: `.board__bar` is blockified by being a grid item, but this span is not
+ * one, and an inline box silently drops the height and width it was given. */
+.board__fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--cool);
+}
+.board__fill--top {
+  background: var(--signal);
+}
+
+/* ---- the two moments that earn motion -------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes lampOn {
+    from {
+      opacity: 0.25;
+      transform: scaleY(0.45);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes tickOn {
+    from {
+      opacity: 0.2;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  /* Filling the meter as the room answers: the wait after submitting is the one stretch of
+   * dead time in a ten-minute game, so it gets to be the first thing that moves. */
+  .meter__seg--on,
+  .meter__seg--me {
+    animation: lampOn 240ms ease-out both;
+  }
+  /* The payoff, read as a sweep rather than a jump. */
+  .scale__tick--on {
+    animation: tickOn 200ms ease-out both;
+    animation-delay: calc(var(--i, 0) * 45ms);
+  }
+}

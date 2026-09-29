@@ -1,9 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The page colour is the deck, so a phone in a dark room does not flash white between
+         the splash and the first paint. -->
+    <meta name="theme-color" content="#131a25" />
+    <!-- Two latin-subset faces, preloaded. Everything else is fetched from the same LAN. -->
+    <link rel="preload" href="/fonts/barlow-400-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/bigshoulders-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Jeu GenAi</title>
   </head>
   <body>

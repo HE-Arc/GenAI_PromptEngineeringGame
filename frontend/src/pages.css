@@ -1,23 +1,152 @@
-:root { color-scheme: dark; }
-body { margin: 0; font-family: system-ui, sans-serif; background: #0b0d12; color: #e8ecf1; }
-main, body > div { display: grid; place-items: center; min-height: 100vh; }
-.card { display: grid; gap: .75rem; width: min(34rem, 92vw); padding: 1.5rem; background: #151a23; border: 1px solid #262d3b; border-radius: 12px; }
-h1 { margin: 0; font-size: 1.5rem; }
-.muted { color: #8b95a7; }
-.err { color: #ff8080; margin: 0; }
-label { display: grid; gap: .25rem; font-size: .85rem; color: #8b95a7; }
-input, textarea, select { padding: .6rem .7rem; background: #0e1218; color: inherit; border: 1px solid #2b3446; border-radius: 8px; font: inherit; }
-textarea { min-height: 6rem; resize: vertical; }
-button { padding: .65rem 1rem; background: #3b6ef6; color: #fff; border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
-button:disabled { opacity: .5; cursor: not-allowed; }
-button.ghost { background: #262d3b; }
-.players { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
-.players li { padding: .4rem .6rem; background: #0e1218; border-radius: 6px; }
-.rows { display: grid; gap: .4rem; }
-.row { display: grid; grid-template-columns: 1fr auto; gap: .5rem; padding: .4rem .6rem; background: #0e1218; border-radius: 6px; }
-.score { font-variant-numeric: tabular-nums; font-weight: 600; }
-.cols { display: grid; gap: 1rem; grid-template-columns: 1fr; }
-@media (min-width: 48rem) { .cols { grid-template-columns: 3fr 2fr; } }
-.target { margin: 0 0 .5rem; font-size: 1.6rem; font-weight: 700; color: #ffd479; }
-.output { margin: 0; padding: .6rem; background: #0e1218; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
-h2 { margin: 0; font-size: 1rem; color: #8b95a7; }
+/* Screen layout only. Anything that is a shape with meaning — track, meter, scale, readout,
+ * board, lamp — lives in console.css; anything that is a box with a size — button, input,
+ * error — lives in index.css. Nothing in this file introduces a colour or a font.
+ */
+
+.screen {
+  display: grid;
+  gap: var(--gap);
+  align-content: start;
+  padding: 1.1rem var(--pad) 3rem;
+}
+/* A frozen snapshot beats a spinner, but only if it says it is frozen. Every figure that came
+ * from the server dims while the stream is down. The player's own draft and their own score
+ * are left at full strength on purpose: those are the two things that must stay readable, and
+ * dimming them would make the screen look broken instead of merely old. */
+.screen--stale .stepwrap,
+.screen--stale .readout,
+.screen--stale .roster,
+.screen--stale .meterrow,
+.screen--stale .meter,
+.screen--stale .board {
+  opacity: 0.6;
+}
+/* A phone held on its side puts the railbar under the notch, and a phone held upright puts
+ * the last button under the home indicator. max() keeps the normal inset everywhere else and
+ * only widens it where there is actually something to clear. */
+@supports (padding: max(0px, env(safe-area-inset-bottom))) {
+  .screen,
+  .railbar {
+    padding-left: max(var(--pad), env(safe-area-inset-left));
+    padding-right: max(var(--pad), env(safe-area-inset-right));
+  }
+  .screen {
+    padding-bottom: max(3rem, calc(env(safe-area-inset-bottom) + 1.5rem));
+  }
+  .railbar {
+    padding-top: max(0.65rem, env(safe-area-inset-top));
+  }
+}
+/* Join and the admin password screen have one job and no state to watch, so they sit in the
+ * middle of the deck rather than clinging to the top of it. No min-height of their own: the
+ * deck's 1fr row already hands them a full-height box, and adding one here would push the
+ * grid past the viewport and scroll a page that has nothing to scroll. */
+.screen--solo {
+  align-content: center;
+}
+
+.title {
+  font: 800 1.5rem/1.05 var(--font-display);
+  letter-spacing: 0.005em;
+}
+.title--sm {
+  font-size: 1.1875rem;
+}
+
+.stack {
+  display: grid;
+  gap: var(--gap);
+  align-content: start;
+}
+/* A section that starts below the fold of the current thought: a hairline above, space
+ * under. Used for the leaderboard and the score reveal. */
+.rule {
+  display: grid;
+  gap: 0.6rem;
+  padding-top: var(--pad);
+  border-top: 1px solid var(--rail);
+}
+
+.form {
+  display: grid;
+  gap: 1rem;
+}
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.split {
+  display: grid;
+  gap: var(--gap);
+  align-content: start;
+}
+
+/* The one thing that must never scroll on the player screens: the target and the field you
+ * type into, on the same screen, at the same time. A player reads the target while composing
+ * the prompt, so on a phone turned sideways those two sit side by side and nothing else moves.
+ * Height-driven, not width-driven: a 390x844 portrait is narrow and must stay single column,
+ * and a 844x390 landscape is short and must not. */
+.playgrid {
+  display: grid;
+  gap: var(--gap);
+  align-items: start;
+}
+@media (min-width: 40rem) and (max-height: 34rem) {
+  .playgrid {
+    grid-template-columns: 1fr 1fr;
+    column-gap: 1.5rem;
+  }
+  /* Three lines of prompt is enough to say something real, and it is what buys the target
+   * and the button a place on a 390px-tall screen. */
+  .area {
+    min-height: 4.5rem;
+  }
+}
+
+@media (min-width: 56rem) {
+  /* The admin drives from a laptop across a table, so the console gets two columns while
+   * the players keep one. Deliberately not extended to the player screens: they are held in
+   * a hand, and a wide layout is not a layout they will ever see. */
+  .split--console {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 19rem);
+    column-gap: 2.5rem;
+  }
+  .deck--wide {
+    max-width: 64rem;
+  }
+}
+
+.actions {
+  display: grid;
+  gap: 0.5rem;
+}
+@media (min-width: 30rem) {
+  .actions--row {
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+  }
+}
+/* A destructive action is not merely styled differently, it is put in its own compartment:
+ * a rule above it and real space below the primary. A thumb reaching for "next round" in a
+ * room where someone is shouting must not be able to land on "erase the game in progress". */
+.guard {
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--rail);
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-top: var(--pad);
+  border-top: 1px solid var(--rail);
+}
+.foot__code {
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+}
+.foot__end {
+  margin-left: auto;
+}
