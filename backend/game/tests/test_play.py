@@ -6,7 +6,7 @@ from django.test import Client, TestCase
 
 from game.llm import Verdict
 from game.models import Answer, Player, Room, Round
-from game.views import _inflight, room_state
+from game.views import _beat, _inflight, _presence, room_state
 
 
 class PlayTest(TestCase):
@@ -15,6 +15,10 @@ class PlayTest(TestCase):
         self.room = Room.objects.create(code="ABCD", status=Room.Status.WAITING)
         Round.objects.create(room=self.room, order=0, target="42")
         Round.objects.create(room=self.room, order=1, target="Nantes")
+        # The presence registry is process-local, so a rollback of the test transaction does NOT
+        # roll it back: without this, a heartbeat from an earlier test marks a same-named player
+        # online in a later one.
+        _presence.clear()
 
     def _play(self) -> None:
         self.room.status = Room.Status.PLAYING
@@ -27,6 +31,15 @@ class PlayTest(TestCase):
             content_type="application/json",
         )
         return r, json.loads(r.content).get("token")
+
+    def _online(self, *names: str) -> None:
+        """Give each named player a live heartbeat, as their own SSE stream would.
+
+        `maybe_advance` now counts online players, and a test client that never opens a stream has
+        no beats, so without this every round would be stuck with online_count 0.
+        """
+        for name in names:
+            _beat("ABCD", Player.objects.get(room=self.room, name=name).pk)
 
     def _answer(self, token: str, prompt: str) -> HttpResponse:
         return self.c.post(
@@ -80,6 +93,7 @@ class PlayTest(TestCase):
         _, ta = self._join("ana")
         _, tb = self._join("bob")
         self._play()
+        self._online("ana", "bob")
         r = self._answer(ta, "repete 42")
         self.assertEqual(json.loads(r.content), {"score": 8, "comment": "tres proche", "output": "quarante-deux"})
         self.room.refresh_from_db()
@@ -192,13 +206,16 @@ class PlayTest(TestCase):
     def test_state_shape_and_totals(self) -> None:
         _, t = self._join("ana")
         self._play()
+        self._online("ana")
         with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(10, "parfait")):
             self._answer(t, "repete 42")
         st = room_state("ABCD")
-        self.assertEqual(set(st), {"code", "status", "current", "total", "target", "players"})
+        self.assertEqual(set(st), {"code", "status", "current", "total", "target", "players", "online_count"})
         self.assertEqual((st["code"], st["current"], st["total"], st["target"]), ("ABCD", 1, 2, "Nantes"))
         p = st["players"][0]
-        self.assertEqual(set(p), {"name", "score", "answered", "prompt", "output", "comment", "round_score"})
+        self.assertEqual(
+            set(p), {"name", "score", "answered", "prompt", "output", "comment", "round_score", "online"}
+        )
         self.assertEqual(p["score"], 10)
         self.assertIsNone(p["prompt"])
         self.assertFalse(p["answered"])
@@ -218,6 +235,7 @@ class PlayTest(TestCase):
                 "output": "quarante-deux",
                 "comment": "tres proche",
                 "round_score": 8,
+                "online": False,  # no stream in this test, so no heartbeat
             },
         )
 
@@ -237,6 +255,7 @@ class PlayTest(TestCase):
         _, ta = self._join("ana")
         _, tb = self._join("bob")
         self._play()
+        self._online("ana", "bob")
         with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(3, "bof")):
             self._answer(ta, "repete 42")
         with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(9, "nickel")):
@@ -252,6 +271,7 @@ class PlayTest(TestCase):
         _, ta = self._join("zoe")
         _, tb = self._join("ana")
         self._play()
+        self._online("zoe", "ana")
         for t in (ta, tb):
             with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(5, "moyen")):
                 self._answer(t, "repete 42")
@@ -275,7 +295,9 @@ class PlayTest(TestCase):
         # endpoint's whole reason to work. Never parse this frame through strip().
         self.assertTrue(frame.endswith(b"\n\n"), frame)
         payload = json.loads(frame[len(b"data: ") : -2])
-        self.assertEqual(set(payload), {"code", "status", "current", "total", "target", "players"})
+        self.assertEqual(
+            set(payload), {"code", "status", "current", "total", "target", "players", "online_count"}
+        )
         self.assertEqual(
             payload,
             {
@@ -293,6 +315,7 @@ class PlayTest(TestCase):
                         "output": "quarante-deux",
                         "comment": "tres proche",
                         "round_score": 8,
+                        "online": False,
                     },
                     {
                         "name": "bob",
@@ -302,8 +325,10 @@ class PlayTest(TestCase):
                         "output": None,
                         "comment": None,
                         "round_score": None,
+                        "online": False,
                     },
                 ],
+                "online_count": 0,
             },
         )
         r.close()

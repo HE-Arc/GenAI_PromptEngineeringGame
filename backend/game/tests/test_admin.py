@@ -1,9 +1,11 @@
 import json
+from unittest.mock import patch
 
 from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 
-from game.models import Room, Round
+from game.llm import Verdict
+from game.models import Answer, Player, Room, Round
 
 
 @override_settings(ADMIN_PASSWORD="s3cret")
@@ -71,3 +73,107 @@ class AdminTest(TestCase):
         seen = [json.loads(self.c.post(url, content_type="application/json").content)["status"] for _ in range(10)]
         self.assertEqual(seen, ["playing"] * 9 + ["done"])
         self.assertEqual(self.c.post(url, content_type="application/json").status_code, 409)
+
+    def test_restart_requires_login(self) -> None:
+        Room.objects.create(code="WXYZ", status=Room.Status.PLAYING)
+        self.assertEqual(self.c.post("/api/admin/rooms/WXYZ/restart", content_type="application/json").status_code, 403)
+        room = Room.objects.get(code="WXYZ")
+        self.assertEqual(room.status, "playing")  # nothing was touched
+
+    def test_restart_from_playing_returns_to_lobby_and_keeps_players(self) -> None:
+        self._login()
+        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        self._join(code, "ana")
+        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        r = self.c.post(f"/api/admin/rooms/{code}/restart", content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(r.content), {"ok": True, "status": "waiting"})
+        room = Room.objects.get(code=code)
+        self.assertEqual((room.status, room.current), ("waiting", 0))
+        self.assertEqual(Round.objects.filter(room=room).count(), 0)
+        self.assertEqual([p.name for p in room.players.all()], ["ana"])
+
+    def test_restart_from_done_returns_to_lobby(self) -> None:
+        self._login()
+        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        self._join(code, "ana")
+        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        url = f"/api/admin/rooms/{code}/next"
+        for _ in range(10):
+            self.c.post(url, content_type="application/json")
+        self.assertEqual(Room.objects.get(code=code).status, "done")
+        r = self.c.post(f"/api/admin/rooms/{code}/restart", content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(r.content), {"ok": True, "status": "waiting"})
+        room = Room.objects.get(code=code)
+        self.assertEqual((room.status, room.current), ("waiting", 0))
+        self.assertEqual(Round.objects.filter(room=room).count(), 0)
+        self.assertEqual(room.players.count(), 1)
+
+    def test_restart_erases_answers_and_keeps_tokens_usable(self) -> None:
+        # The whole point of the feature: nobody rejoins. `ana`'s token from the first game is
+        # what she submits with in the second, so this fails if the players were recreated.
+        self._login()
+        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        token = self._join(code, "ana")
+        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        with patch("game.llm.answer", return_value="42"), patch(
+            "game.llm.score", return_value=Verdict(7, "pas mal")
+        ):
+            self.c.post(
+                f"/api/rooms/{code}/answer",
+                data=json.dumps({"token": token, "prompt": "repete 42"}),
+                content_type="application/json",
+            )
+        self.assertEqual(Answer.objects.count(), 1)
+
+        self.c.post(f"/api/admin/rooms/{code}/restart", content_type="application/json")
+        self.assertEqual(Answer.objects.count(), 0)  # cascade through the deleted rounds
+        self.assertEqual(Player.objects.get(room_id=code, name="ana").token, token)
+
+        # Second game, same player, same token, no rejoin.
+        self.assertEqual(
+            self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json").status_code, 200
+        )
+        with patch("game.llm.answer", return_value="42"), patch(
+            "game.llm.score", return_value=Verdict(9, "nickel")
+        ):
+            r = self.c.post(
+                f"/api/rooms/{code}/answer",
+                data=json.dumps({"token": token, "prompt": "repete 42"}),
+                content_type="application/json",
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(json.loads(r.content)["score"], 9)
+        # Score is per-round, so the previous game's 7 is not carried over.
+        self.assertEqual(Answer.objects.get().score, 9)
+        self.assertEqual(Answer.objects.count(), 1)
+
+    def test_second_restart_is_a_noop(self) -> None:
+        # Double-clicking the admin button must not lock the admin out of their own room, so
+        # this is 200 and not the 409 `admin_start` returns for its own second call.
+        self._login()
+        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        self._join(code, "ana")
+        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        url = f"/api/admin/rooms/{code}/restart"
+        self.assertEqual(json.loads(self.c.post(url, content_type="application/json").content)["status"], "waiting")
+        again = self.c.post(url, content_type="application/json")
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(json.loads(again.content), {"ok": True, "status": "waiting"})
+        self.assertEqual(Room.objects.get(code=code).players.count(), 1)
+
+    def test_restart_on_unknown_room_is_404(self) -> None:
+        self._login()
+        self.assertEqual(
+            self.c.post("/api/admin/rooms/NOPE/restart", content_type="application/json").status_code, 404
+        )
+
+    def _join(self, code: str, name: str) -> str:
+        r = self.c.post(
+            f"/api/rooms/{code}/join",
+            data=json.dumps({"name": name}),
+            content_type="application/json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        return json.loads(r.content)["token"]

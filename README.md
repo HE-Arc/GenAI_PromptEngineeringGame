@@ -21,7 +21,7 @@ cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD 
 ```
 
 - Joueur: ouvrir http://<IP-LAN>:5173 depuis le telephone -> code de partie + pseudo
-- Admin: ouvrir http://<IP-LAN>:5173/admin -> mot de passe, creer la partie, demarrer, manche suivante
+- Admin: ouvrir http://<IP-LAN>:5173/admin -> mot de passe, creer la partie, demarrer, manche suivante, relancer avec les memes joueurs
 
 Les pages sont des vrais chemins (`/`, `/room/<CODE>`, `/admin`), pas des ancres `#/`. Le
 serveur Vite repond `index.html` sur ces trois chemins, donc un rechargement fonctionne et un
@@ -50,9 +50,13 @@ session d'admin.
 ## Regles
 
 - 10 manches tirees au sort parmi `backend/game/targets.py`.
-- La manche avance des que tous les joueurs ont repondu, ou quand l admin force.
+- La manche avance des que tous les joueurs **connectes** ont repondu, ou quand l admin force.
+  Un telephone qui dort ou qui perd le wifi ne bloque donc plus la partie; la presence est portee
+  par le flux SSE lui-meme et n'est jamais stockee, donc un joueur qui revient est retrouve par son
+  token sans rien ressaisir.
 - Une seule reponse par joueur et par manche.
-- Le classement est mis a jour en direct par SSE (`/api/rooms/<code>/events`).
+- Le classement est mis a jour en direct par SSE (`/api/rooms/<code>/events?token=<token>`). Le
+  token identifie le joueur derriere le flux, il est donc requis pour etre compte comme present.
 
 ## Tests
 
