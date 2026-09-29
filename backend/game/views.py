@@ -16,6 +16,19 @@ from game.targets import ROUNDS_PER_GAME, pick
 
 _ALPHABET = string.ascii_uppercase.replace("O", "").replace("I", "")
 
+# In-flight (round, player) submits, claimed for the duration of the two billed model calls.
+# PROCESS-LOCAL, and that is sufficient for this deployment: `run.sh` starts one threaded
+# `runserver` on a LAN, so both copies of a double submit are served by this process and this
+# set. An entry lives only while a model call is in flight, so nothing leaks across a restart
+# and the process clearing it is the cleanup. Under a multi-process or multi-host deployment
+# this set sees only its own process's requests and the `IntegrityError` backstop in `answer`
+# is the thing that remains correct.
+#
+# Keyed on the row's natural key (round, player), not on `Answer(...).pk`: `pk` is None until
+# the row is saved, so an unsaved instance would collapse every claim onto one key and hand a
+# second, unrelated player a spurious "already answered".
+_inflight: set[tuple[int, int]] = set()
+
 
 def body(request: HttpRequest) -> dict:
     """The parsed JSON object, or `{}` for anything that is not one.
@@ -191,15 +204,28 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
     prompt = str(data.get("prompt", "")).strip()[:2000]
     if not prompt:
         return json_error("prompt required")
-    output = llm.answer(prompt)
-    verdict = llm.score(prompt, output, rnd.target)
-    # The existence check above cannot cover the ~5s the two billed calls take: a reload during
-    # that window lets a second request through, bill the LLM again, and lose the unique_together
-    # race. Losing it is the same 409 the player already got, not a 500.
-    try:
-        with transaction.atomic():
-            rnd.answers.create(player=player, prompt=prompt, output=output, score=verdict.score, comment=verdict.comment)
-    except IntegrityError:
+    # The duplicate check above cannot cover the ~5s the two billed calls take. Claimed here,
+    # before the calls, so a second copy arriving in that window is refused without paying for
+    # the model a second time. Released in `finally` however this block leaves.
+    claim = (rnd.pk, player.pk)
+    if claim in _inflight:
         return json_error("already answered", 409)
+    _inflight.add(claim)
+    try:
+        output = llm.answer(prompt)
+        verdict = llm.score(prompt, output, rnd.target)
+        # The durable backstop, for the case the process-local claim cannot see: another
+        # process won unique_together. `transaction.atomic()` is defensive here — with
+        # ATOMIC_REQUESTS unset, autocommit already rolls back the single failed statement, so
+        # it changes nothing today. It is what makes the `except` reachable at all under
+        # ATOMIC_REQUESTS, where an IntegrityError would otherwise poison the rest of the
+        # request. Losing the race is the same 409 the player already got, not a 500.
+        try:
+            with transaction.atomic():
+                rnd.answers.create(player=player, prompt=prompt, output=output, score=verdict.score, comment=verdict.comment)
+        except IntegrityError:
+            return json_error("already answered", 409)
+    finally:
+        _inflight.discard(claim)
     maybe_advance(room)
     return JsonResponse({"score": verdict.score, "comment": verdict.comment, "output": output})

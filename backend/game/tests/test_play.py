@@ -6,7 +6,7 @@ from django.test import Client, TestCase
 
 from game.llm import Verdict
 from game.models import Answer, Player, Room, Round
-from game.views import room_state
+from game.views import _inflight, room_state
 
 
 class PlayTest(TestCase):
@@ -131,6 +131,63 @@ class PlayTest(TestCase):
     def test_answer_refused_when_not_playing(self) -> None:
         _, t = self._join("ana")
         self.assertEqual(self._answer(t, "a").status_code, 409)
+
+    @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
+    @patch("game.llm.answer", return_value="quarante-deux")
+    def test_concurrent_resubmit_is_refused_before_the_billed_calls(self, m_answer, _m_score) -> None:
+        # The duplicate check runs before the ~5s the two model calls take, so a reload in
+        # that window used to be billed twice and lose the unique_together race. The claim
+        # makes the second copy 409 without touching the model, which is the whole point:
+        # `m_answer` being called once is the assertion that matters, not the status code,
+        # since the IntegrityError backstop returns 409 too.
+        _, t = self._join("ana")
+        self._join("bob")  # bob never answers, so round 0 stays open for the reentrant submit
+        self._play()
+        second: list[HttpResponse] = []
+        fired = False
+
+        def resubmit_while_in_flight(*_args) -> Verdict:
+            nonlocal fired
+            if not fired:
+                # Set before the nested call, not after: `second.append(self._answer(...))`
+                # evaluates the request first, so guarding on `second` recurses forever.
+                fired = True
+                second.append(self._answer(t, "meme reponse"))
+            return Verdict(8, "tres proche")
+
+        with patch("game.llm.score", side_effect=resubmit_while_in_flight):
+            first = self._answer(t, "repete 42")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second[0].status_code, 409)
+        self.assertEqual(json.loads(second[0].content), {"error": "already answered"})
+        self.assertEqual(m_answer.call_count, 1)  # the loser never reached the model
+        self.assertEqual(Answer.objects.count(), 1)
+        self.assertEqual(len(_inflight), 0)  # claim released
+
+    @patch("game.llm.answer", return_value="quarante-deux")
+    def test_duplicate_row_committed_mid_flight_returns_409(self, m_answer) -> None:
+        # The durable backstop the process-local claim cannot see: another process wins
+        # unique_together between the duplicate check and the create. Without the
+        # IntegrityError handling this is a 500, and no test elsewhere would notice.
+        _, t = self._join("ana")
+        self._join("bob")
+        self._play()
+        player = Player.objects.get(room=self.room, name="ana")
+        rnd = Round.objects.get(room=self.room, order=0)
+
+        def win_the_race(*_args) -> Verdict:
+            Answer.objects.create(player=player, round=rnd, prompt="aile", output="42", score=3, comment="bof")
+            return Verdict(8, "tres proche")
+
+        with patch("game.llm.score", side_effect=win_the_race):
+            r = self._answer(t, "repete 42")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(json.loads(r.content), {"error": "already answered"})
+        self.assertEqual(Answer.objects.count(), 1)  # the winner's row, not ours
+        self.assertEqual(Answer.objects.get().score, 3)
+        self.room.refresh_from_db()
+        self.assertEqual((self.room.current, self.room.status), (0, "playing"))  # not advanced
+        self.assertEqual(m_answer.call_count, 1)
 
     def test_state_shape_and_totals(self) -> None:
         _, t = self._join("ana")

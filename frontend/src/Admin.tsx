@@ -1,9 +1,10 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { post } from './api'
 import { useRoom } from './useRoom'
 
-// The admin's own room code. Without it a reload loses the code and the room can never be
-// advanced again, since nothing can list rooms.
+// The admin's own room code, kept so a reload does not orphan a running game. It is written
+// only once the room has answered us — see the effect below — so it is always a code that
+// exists, never a typo the admin typed.
 const roomKey = 'jeu-genai:admin-room'
 
 export default function Admin({ go }: { go: (h: string) => void }) {
@@ -13,6 +14,7 @@ export default function Admin({ go }: { go: (h: string) => void }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const { state } = useRoom(code)
+  const verified = useRef(false)
 
   async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
     setErr('')
@@ -27,9 +29,20 @@ export default function Admin({ go }: { go: (h: string) => void }) {
     }
   }
 
-  // Both paths that get a code into the screen store it, so a reload lands back on the room.
+  // A code is not persisted on entry, only once the room has answered us. `/api/admin/login`
+  // proves the password, not the room: a typo'd code 404s on the EventSource, `state` stays
+  // null, and the screen would sit on "Manche 1/10 - loading" with a working Demarrer button
+  // — and every reload of #/admin would land back on that same dead screen. A ref rather than
+  // state, so this costs one write per code instead of one per SSE frame.
+  useEffect(() => {
+    if (state && code && !verified.current) {
+      verified.current = true
+      localStorage.setItem(roomKey, code)
+    }
+  }, [state, code])
+
   function enter(c: string) {
-    localStorage.setItem(roomKey, c)
+    verified.current = false
     setCode(c)
   }
 

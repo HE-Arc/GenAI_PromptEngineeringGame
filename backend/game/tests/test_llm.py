@@ -62,9 +62,10 @@ class ScoreTest(SimpleTestCase):
         # Pins the judgement recorded in the try/except's comment: a quoted number is read,
         # not thrown away. It does NOT distinguish that guard from a bare `int(...)` — both
         # return 7 here; only the prose case ("proche") needs the except, and that is
-        # test_non_numeric_score_scores_zero. This guards the other way round: a future
-        # strict-type fix (isinstance, or dropping the `or 0`) that discards a quoted
-        # judgement would fail here.
+        # test_non_numeric_score_scores_zero. Dropping the `or 0` also changes nothing
+        # (`int(None or 0)` and `int(None) -> 0` agree), so it is not guarded here either.
+        # What this does catch is a strict-type fix — an isinstance check, or treating a
+        # quoted number as unusable — which would score a real judgement 0.
         with patch.object(llm, "OpenAI", return_value=_client('{"score": "7", "comment": "proche"}')):
             self.assertEqual(llm.score("p", "o", "t"), Verdict(7, "proche"))
 
