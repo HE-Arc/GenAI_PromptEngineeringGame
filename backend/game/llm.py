@@ -46,4 +46,6 @@ def score(prompt: str, output: str, target: str) -> Verdict:
     payload = json.dumps({"prompt": prompt, "reponse_obtenue": output, "cible": target}, ensure_ascii=False)
     raw = _chat(JUDGE_MODEL, [{"role": "system", "content": JUDGE_SYS}, {"role": "user", "content": payload}], 0.0, True)
     data = json.loads(raw)
-    return Verdict(max(0, min(10, int(data["score"]))), str(data.get("comment", "")))
+    # `dict.get`: the judge is a model and can omit or null the score, and a KeyError there
+    # turns a 0 into a 500 for the player. A missing, null or unparseable score scores 0.
+    return Verdict(max(0, min(10, int(data.get("score", 0) or 0))), str(data.get("comment", "")))

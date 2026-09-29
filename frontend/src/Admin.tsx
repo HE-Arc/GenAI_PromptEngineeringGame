@@ -1,13 +1,18 @@
 import { useState, type FormEvent } from 'react'
 import { post } from './api'
-import { useAdminRoom } from './adminRoom'
+import { useRoom } from './useRoom'
+
+// The admin's own room code. Without it a reload loses the code and the room can never be
+// advanced again, since nothing can list rooms.
+const roomKey = 'jeu-genai:admin-room'
 
 export default function Admin({ go }: { go: (h: string) => void }) {
   const [password, setPassword] = useState('')
-  const [code, setCode] = useState<string | null>(null)
+  const [code, setCode] = useState<string | null>(() => localStorage.getItem(roomKey))
+  const [existing, setExisting] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  const { state } = useAdminRoom(code)
+  const { state } = useRoom(code)
 
   async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
     setErr('')
@@ -22,6 +27,12 @@ export default function Admin({ go }: { go: (h: string) => void }) {
     }
   }
 
+  // Both paths that get a code into the screen store it, so a reload lands back on the room.
+  function enter(c: string) {
+    localStorage.setItem(roomKey, c)
+    setCode(c)
+  }
+
   if (!code)
     return (
       <form
@@ -31,7 +42,7 @@ export default function Admin({ go }: { go: (h: string) => void }) {
           void run(async () => {
             await post('/api/admin/login', { password })
             const { code: c } = await post<{ code: string }>('/api/admin/rooms')
-            setCode(c)
+            enter(c)
           })
         }}
       >
@@ -40,8 +51,31 @@ export default function Admin({ go }: { go: (h: string) => void }) {
           Mot de passe
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
         </label>
+        <p className="muted">Deja une partie en cours ?</p>
+        <label>
+          Code de la partie
+          <input
+            value={existing}
+            onChange={(e) => setExisting(e.target.value.toUpperCase())}
+            maxLength={8}
+            placeholder="ABCD"
+          />
+        </label>
         {err && <p className="err">{err}</p>}
-        <button disabled={busy || !password}>{busy ? '...' : 'Creer une partie'}</button>
+        <div className="rows">
+          <button disabled={busy || !password}>{busy ? '...' : 'Creer une partie'}</button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy || !existing}
+            onClick={() => void run(async () => {
+              await post('/api/admin/login', { password })
+              enter(existing.trim())
+            })}
+          >
+            Rejoindre la partie
+          </button>
+        </div>
       </form>
     )
 

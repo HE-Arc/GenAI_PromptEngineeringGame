@@ -3,7 +3,7 @@ import json
 from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 
-from game.models import Round
+from game.models import Room, Round
 
 
 @override_settings(ADMIN_PASSWORD="s3cret")
@@ -38,6 +38,16 @@ class AdminTest(TestCase):
         b = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)
         self.assertNotEqual(a["code"], b["code"])
         self.assertEqual(len(a["code"]), 4)
+
+    def test_start_requires_login(self) -> None:
+        # Both halves of the auth spine, in one test: `require_admin` on `admin_start` and on
+        # `admin_next`. Dropping either leaves every other test here green.
+        Room.objects.create(code="WXYZ")
+        self.assertEqual(self.c.post("/api/admin/rooms/WXYZ/start", content_type="application/json").status_code, 403)
+        self.assertEqual(Round.objects.count(), 0)
+        self.assertEqual(self.c.post("/api/admin/rooms/WXYZ/next", content_type="application/json").status_code, 403)
+        Room.objects.get(code="WXYZ").refresh_from_db()
+        self.assertEqual(Room.objects.get(code="WXYZ").status, "waiting")
 
     def test_start_creates_ten_rounds(self) -> None:
         self._login()

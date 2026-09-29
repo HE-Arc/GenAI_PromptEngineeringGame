@@ -44,6 +44,15 @@ class ScoreTest(SimpleTestCase):
             self.assertEqual(llm.score("p", "o", "t").score, 0)
 
 
+    def test_missing_or_null_score_scores_zero(self) -> None:
+        # The judge is a model: it can omit the key or send null. Both used to raise and
+        # surface as a 500 to the player, for a round that was otherwise fully played.
+        with patch.object(llm, "OpenAI", return_value=_client('{"comment": "je ne sais pas"}')):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(0, "je ne sais pas"))
+        with patch.object(llm, "OpenAI", return_value=_client('{"score": null, "comment": "peut-etre"}')):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(0, "peut-etre"))
+
+
 class AnswerTest(SimpleTestCase):
     def test_strips_whitespace(self) -> None:
         with patch.object(llm, "OpenAI", return_value=_client("  bonjour  ")):

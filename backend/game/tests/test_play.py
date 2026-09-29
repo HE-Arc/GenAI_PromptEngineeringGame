@@ -5,7 +5,7 @@ from django.http import HttpResponse
 from django.test import Client, TestCase
 
 from game.llm import Verdict
-from game.models import Player, Room, Round
+from game.models import Answer, Player, Room, Round
 from game.views import room_state
 
 
@@ -52,6 +52,16 @@ class PlayTest(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(Player.objects.filter(room=self.room, name="ana", token=token).exists())
 
+    def test_join_refused_on_malformed_body(self) -> None:
+        # Unauthenticated, so a raw json.loads would 500 with a debug traceback for any
+        # garbage POST. 400 is the answer a client can act on.
+        r = self.c.post("/api/rooms/ABCD/join", data="{not json", content_type="application/json")
+        self.assertEqual(r.status_code, 400)
+        # Parses, but is not an object: `.get` would blow up on the list.
+        r = self.c.post("/api/rooms/ABCD/join", data='"ana"', content_type="application/json")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(Player.objects.count(), 0)
+
     def test_join_refused_for_taken_name(self) -> None:
         self._join("ana")
         r, token = self._join("ana")
@@ -91,6 +101,32 @@ class PlayTest(TestCase):
     def test_answer_refused_with_bad_token(self) -> None:
         self._play()
         self.assertEqual(self._answer("nope", "a").status_code, 403)
+
+    @patch("game.llm.score", return_value=Verdict(5, "moyen"))
+    @patch("game.llm.answer", return_value="x")
+    def test_answer_refused_when_prompt_is_blank(self, m_answer, m_score) -> None:
+        # The client disables the button, but the client is not the boundary. Without this
+        # guard a blank submit costs two billed calls and a 0 in the ranking.
+        _, t = self._join("ana")
+        self._play()
+        self.assertEqual(self._answer(t, "   \n ").status_code, 400)
+        m_answer.assert_not_called()
+        m_score.assert_not_called()
+        self.assertEqual(Answer.objects.count(), 0)
+
+    def test_token_is_scoped_to_its_room(self) -> None:
+        # The lookup filters on `room` as well as `token`; dropping `room=room` lets a room-A
+        # player submit into room B under a token the other room's state never shows.
+        _, t = self._join("ana")
+        other = Room.objects.create(code="WXYZ", status=Room.Status.PLAYING)
+        Round.objects.create(room=other, order=0, target="42")
+        r = self.c.post(
+            "/api/rooms/WXYZ/answer",
+            data=json.dumps({"token": t, "prompt": "repete 42"}),
+            content_type="application/json",
+        )
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(Answer.objects.count(), 0)
 
     def test_answer_refused_when_not_playing(self) -> None:
         _, t = self._join("ana")
@@ -152,6 +188,20 @@ class PlayTest(TestCase):
         self.room.current = 0  # keep both answers in the same round for the ranking assertion
         self.room.save()
         self.assertEqual([p["name"] for p in room_state("ABCD")["players"]], ["bob", "ana"])
+
+    def test_state_breaks_a_tie_by_join_order(self) -> None:
+        # Names chosen so the two candidate tiebreaks disagree: a Python name sort puts "ana"
+        # before "zoe", join order does not. Equal scores, so the join order decides.
+        _, ta = self._join("zoe")
+        _, tb = self._join("ana")
+        self._play()
+        for t in (ta, tb):
+            with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(5, "moyen")):
+                self._answer(t, "repete 42")
+        self.room.refresh_from_db()
+        self.room.current = 0  # keep both answers in the same round for the ranking assertion
+        self.room.save()
+        self.assertEqual([p["name"] for p in room_state("ABCD")["players"]], ["zoe", "ana"])
 
     def test_events_endpoint_streams_json(self) -> None:
         self._answered_state()  # non-empty players list, so the frame's per-player keys are exercised

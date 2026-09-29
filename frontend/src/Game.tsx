@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { getName, getToken, post, type Player, type State } from './api'
 
-type Result = { score: number; comment: string; output: string }
+type Result = { score: number; comment: string; output: string; round: number }
 
 export default function Game({ state, code }: { state: State; code: string }) {
   const [prompt, setPrompt] = useState('')
@@ -9,15 +9,14 @@ export default function Game({ state, code }: { state: State; code: string }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // A note belongs to the round that earned it, and a prompt belongs to the target it was
-  // written against. Without this reset, round 3's score and comment stay on screen under
-  // the round-4 target, unlabelled, and read as though they graded the current prompt; and a
-  // half-written draft carries into a round it cannot possibly answer — submitted there, it
-  // is judged against the wrong target and that score lands in the ranking under the
-  // player's name. Same for a stale 409 left in the error slot.
+  // A prompt belongs to the target it was written against, and an error to the round that
+  // caused it, so both are cleared when the round moves on. The result is not: the push that
+  // closes the round lands after this player's own POST, so clearing it took away the last
+  // player's score, comment and output within a second of earning them. It is kept instead and
+  // labelled with the round it belongs to, which is what stops the misreading this reset
+  // was originally for — an unlabelled note under a different round's target.
   useEffect(() => {
     setPrompt('')
-    setResult(null)
     setErr('')
   }, [state.current])
 
@@ -29,7 +28,8 @@ export default function Game({ state, code }: { state: State; code: string }) {
     setErr('')
     setBusy(true)
     try {
-      setResult(await post<Result>(`/api/rooms/${code}/answer`, { token: getToken(code), prompt }))
+      const res = await post<Omit<Result, 'round'>>(`/api/rooms/${code}/answer`, { token: getToken(code), prompt })
+      setResult({ ...res, round: state.current })
       setPrompt('')
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'envoi failed')
@@ -61,7 +61,9 @@ export default function Game({ state, code }: { state: State; code: string }) {
           </form>
           {result && (
             <div className="rows">
-              <p className="score">Note : {result.score}/10</p>
+              <p className="score">
+                Note : {result.score}/10 <span className="muted">(manche {result.round + 1})</span>
+              </p>
               <p className="muted">{result.comment}</p>
               <pre className="output">{result.output}</pre>
             </div>

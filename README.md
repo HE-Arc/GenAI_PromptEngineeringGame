@@ -6,12 +6,19 @@ un prompt, le modele repond, un jury note la proximite sur 10.
 ## Lancer
 
 ```bash
-cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY et ADMIN_PASSWORD
+cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD et SECRET_KEY
 ./run.sh
 ```
 
-- Joueur: http://localhost:5173 -> code de partie + pseudo
-- Admin: http://localhost:5173/#/admin -> mot de passe, creer la partie, demarrer, manche suivante
+- Joueur: ouvrir http://<IP-LAN>:5173 depuis le telephone -> code de partie + pseudo
+- Admin: ouvrir http://<IP-LAN>:5173/#/admin -> mot de passe, creer la partie, demarrer, manche suivante
+
+`<IP-LAN>` est l'adresse IP de la machine qui lance `run.sh` sur le reseau local
+(`ipconfig getifaddr en0` sous macOS, `hostname -I` sous Linux), pas `localhost`:
+`localhost` ne marche que sur la machine qui heberge le serveur.
+
+Tout le monde sur le reseau qui possede le code de la partie peut suivre les prompts
+en direct: garde le code pour le groupe.
 
 `backend/.env` n'est lu que par `run.sh`, qui fait `set -a; . backend/.env; set +a`.
 `settings.py` lit `os.environ` directement et il n'y a pas de python-dotenv: lancer

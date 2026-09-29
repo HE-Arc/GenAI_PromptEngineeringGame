@@ -4,6 +4,7 @@ import string
 import time
 
 from django.conf import settings
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.http import Http404, HttpRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -17,7 +18,19 @@ _ALPHABET = string.ascii_uppercase.replace("O", "").replace("I", "")
 
 
 def body(request: HttpRequest) -> dict:
-    return json.loads(request.body or b"{}")
+    """The parsed JSON object, or `{}` for anything that is not one.
+
+    A malformed body is a client error, not a server one, and this runs on unauthenticated
+    endpoints: a raw `json.loads` would answer any garbage POST with a 500 and a debug
+    traceback. An empty parse then falls to each view's own validation, which returns the
+    400 the client should have got. A JSON array or bare string parses fine but has no
+    `.get`, so it is rejected here too.
+    """
+    try:
+        data = json.loads(request.body or b"{}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def json_error(msg: str, code: int = 400) -> JsonResponse:
@@ -84,25 +97,33 @@ def room_state(code: str) -> dict:
     players = []
     for p in room.players.all():
         a = by_player.get(p.id)
+        total = p.answers.aggregate(total=Sum("score"))["total"] or 0
         players.append(
-            {
-                "name": p.name,
-                "score": p.answers.aggregate(total=Sum("score"))["total"] or 0,
-                "answered": a is not None,
-                "prompt": a.prompt if a else None,
-                "output": a.output if a else None,
-                "comment": a.comment if a else None,
-                "round_score": a.score if a else None,
-            }
+            (
+                total,
+                p.created_at,
+                {
+                    "name": p.name,
+                    "score": total,
+                    "answered": a is not None,
+                    "prompt": a.prompt if a else None,
+                    "output": a.output if a else None,
+                    "comment": a.comment if a else None,
+                    "round_score": a.score if a else None,
+                },
+            )
         )
-    players.sort(key=lambda p: (-p["score"], p["name"]))
+    # Join order breaks ties: it is stable across rounds, unlike a name sort where the Python
+    # ordering puts "Zoe" before "alice". Sorting on a tuple rather than on the dict keeps
+    # `created_at`, a datetime, out of the JSON payload this snapshot is serialised into.
+    players.sort(key=lambda t: (-t[0], t[1]))
     return {
         "code": room.code,
         "status": room.status,
         "current": room.current,
         "total": room.rounds.count(),
         "target": rnd.target if rnd else None,
-        "players": players,
+        "players": [d for _score, _joined, d in players],
     }
 
 
@@ -172,6 +193,13 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
         return json_error("prompt required")
     output = llm.answer(prompt)
     verdict = llm.score(prompt, output, rnd.target)
-    rnd.answers.create(player=player, prompt=prompt, output=output, score=verdict.score, comment=verdict.comment)
+    # The existence check above cannot cover the ~5s the two billed calls take: a reload during
+    # that window lets a second request through, bill the LLM again, and lose the unique_together
+    # race. Losing it is the same 409 the player already got, not a 500.
+    try:
+        with transaction.atomic():
+            rnd.answers.create(player=player, prompt=prompt, output=output, score=verdict.score, comment=verdict.comment)
+    except IntegrityError:
+        return json_error("already answered", 409)
     maybe_advance(room)
     return JsonResponse({"score": verdict.score, "comment": verdict.comment, "output": output})
