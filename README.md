@@ -21,7 +21,16 @@ cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD 
 ```
 
 - Joueur: ouvrir http://<IP-LAN>:5173 depuis le telephone -> code de partie + pseudo
-- Admin: ouvrir http://<IP-LAN>:5173/#/admin -> mot de passe, creer la partie, demarrer, manche suivante
+- Admin: ouvrir http://<IP-LAN>:5173/admin -> mot de passe, creer la partie, demarrer, manche suivante
+
+Les pages sont des vrais chemins (`/`, `/room/<CODE>`, `/admin`), pas des ancres `#/`. Le
+serveur Vite repond `index.html` sur ces trois chemins, donc un rechargement fonctionne et un
+signet vers `/admin` reste valide. Le code de la partie est toujours genere par le serveur:
+l'admin ne le saisit nulle part, donc deux parties ne peuvent pas entrer en collision.
+
+Une partie n'est accessible que depuis le navigateur qui l'a creee (le code est conserve
+dans le `localStorage` de cet onglet). Vider les donnees du site, ou changer d'appareil,
+la perd.
 
 `<IP-LAN>` est l'adresse IP de la machine qui lance `run.sh` sur le reseau local
 (`ipconfig getifaddr en0` sous macOS, `hostname -I` sous Linux), pas `localhost`:

@@ -2,15 +2,16 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { post } from './api'
 import { useRoom } from './useRoom'
 
-// The admin's own room code, kept so a reload does not orphan a running game. It is written
-// only once the room has answered us — see the effect below — so it is always a code that
-// exists, never a typo the admin typed.
+// The admin's own room code, kept so a reload does not orphan a running game. Nothing on this
+// screen ever accepts a typed code: the server generates it, and this only ever restores the
+// generated one, so two rooms can never collide because a person typed the same code twice.
+// It is written only after the room has answered us (see the effect below), so it is always a
+// code that exists.
 const roomKey = 'jeu-genai:admin-room'
 
 export default function Admin({ go }: { go: (h: string) => void }) {
   const [password, setPassword] = useState('')
   const [code, setCode] = useState<string | null>(() => localStorage.getItem(roomKey))
-  const [existing, setExisting] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const { state } = useRoom(code)
@@ -29,11 +30,10 @@ export default function Admin({ go }: { go: (h: string) => void }) {
     }
   }
 
-  // A code is not persisted on entry, only once the room has answered us. `/api/admin/login`
-  // proves the password, not the room: a typo'd code 404s on the EventSource, `state` stays
-  // null, and the screen would sit on "Manche 1/10 - loading" with a working Demarrer button
-  // — and every reload of #/admin would land back on that same dead screen. A ref rather than
-  // state, so this costs one write per code instead of one per SSE frame.
+  // A code is persisted only once the room has answered us, never on entry: a stored code
+  // must name a room that exists. Persisting an unverified one would leave a dead screen that
+  // every reload of /admin returns to, with a Demarrer button that cannot work. A ref rather
+  // than state, so this costs one write per code instead of one per SSE frame.
   useEffect(() => {
     if (state && code && !verified.current) {
       verified.current = true
@@ -62,33 +62,13 @@ export default function Admin({ go }: { go: (h: string) => void }) {
         <h1>Admin</h1>
         <label>
           Mot de passe
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
-        </label>
-        <p className="muted">Deja une partie en cours ?</p>
-        <label>
-          Code de la partie
-          <input
-            value={existing}
-            onChange={(e) => setExisting(e.target.value.toUpperCase())}
-            maxLength={8}
-            placeholder="ABCD"
-          />
+          {/* Visible rather than masked, on purpose: the admin is reading their own password
+              back off their own screen before starting a game, and a masked field gives no way
+              to spot a typo until it is silently rejected. */}
+          <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
         </label>
         {err && <p className="err">{err}</p>}
-        <div className="rows">
-          <button disabled={busy || !password}>{busy ? '...' : 'Creer une partie'}</button>
-          <button
-            type="button"
-            className="ghost"
-            disabled={busy || !existing}
-            onClick={() => void run(async () => {
-              await post('/api/admin/login', { password })
-              enter(existing.trim())
-            })}
-          >
-            Rejoindre la partie
-          </button>
-        </div>
+        <button disabled={busy || !password}>{busy ? '...' : 'Creer une partie'}</button>
       </form>
     )
 
