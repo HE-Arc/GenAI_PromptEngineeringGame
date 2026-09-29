@@ -112,7 +112,15 @@ export default function Admin({ go }: { go: (h: string) => void }) {
             Manche suivante
           </button>
         )}
-        <button className="ghost" onClick={() => go('/')}>
+        <button
+          className="ghost"
+          onClick={() => {
+            // A new game means a new code: leaving the old one persisted would send the next
+            // reload back into the room this button just abandoned.
+            localStorage.removeItem(roomKey)
+            go('/')
+          }}
+        >
           Nouvelle partie
         </button>
       </div>

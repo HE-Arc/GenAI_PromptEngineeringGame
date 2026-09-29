@@ -52,6 +52,12 @@ class ScoreTest(SimpleTestCase):
         with patch.object(llm, "OpenAI", return_value=_client('{"score": null, "comment": "peut-etre"}')):
             self.assertEqual(llm.score("p", "o", "t"), Verdict(0, "peut-etre"))
 
+    def test_non_numeric_score_scores_zero(self) -> None:
+        # The third unusable shape, and the one a bare `int(...)` still raised on: the judge
+        # wrote prose where the number belongs. That is a 0, not a 500 for the player.
+        with patch.object(llm, "OpenAI", return_value=_client('{"score": "proche", "comment": "x"}')):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(0, "x"))
+
 
 class AnswerTest(SimpleTestCase):
     def test_strips_whitespace(self) -> None:
