@@ -3,6 +3,11 @@
 Jeu de prompt engineering: chaque manche affiche une reponse cachee, les joueurs ecrivent
 un prompt, le modele repond, un jury note la proximite sur 10.
 
+La reponse cachee est un texte long, pas un mot: une recette, une description, un recit,
+une enigme. Le bareme est une proximite, pas une egalite: sur un paragraphe, reproduire
+mot pour mot n'est ni attendu ni atteignable, donc 10 se gagne en restituant la substance,
+et la longueur d'une reponse n'est jamais penalisee en soi.
+
 ## Lancer
 
 ```bash
@@ -11,8 +16,11 @@ un prompt, le modele repond, un jury note la proximite sur 10.
 
 **Aucune cle n'est necessaire.** Sans `OPENAI_API_KEY`, le jeu tourne sur une doublure
 locale: le modele est remplace par un echo du prompt, et le jury note par chevauchement de
-mots. La partie est donc jouable de bout en bout hors ligne, et le commentaire du jury,
+mots. La partie se joue donc de bout en bout hors ligne, et le commentaire du jury,
 affiche sous la note, dit explicitement qu'il ne s'agit pas d'un vrai modele.
+Jouable, mais pas classable: le chevauchement de mots plafonne des que la cible est longue,
+donc les notes y sont basses par construction et le classement final n'y veut rien dire.
+Ce n'est pas la faute du prompt, et le commentaire du jury le dit.
 
 Pour le vrai modele, et seulement lui:
 
@@ -49,7 +57,10 @@ session d'admin.
 
 ## Regles
 
-- 10 manches tirees au sort parmi `backend/game/targets.py`.
+- 10 manches tirees au sort parmi `backend/game/targets.py`. Le tirage est fait une fois par
+  salon: tous les joueurs d'une partie affrontent exactement les memes cibles, dans le meme
+  ordre, donc le classement final mesure les joueurs et pas la chance du tirage. Seules les
+  parties entre salons differents ne sont pas comparables.
 - La manche avance des que tous les joueurs **connectes** ont repondu, ou quand l admin force.
   Un telephone qui dort ou qui perd le wifi ne bloque donc plus la partie; la presence est portee
   par le flux SSE lui-meme et n'est jamais stockee, donc un joueur qui revient est retrouve par son

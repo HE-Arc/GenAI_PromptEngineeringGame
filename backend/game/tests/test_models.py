@@ -76,6 +76,23 @@ class TargetsTest(TestCase):
         self.assertTrue(set(picked) <= set(TARGETS))
 
     def test_bank_size_is_pinned(self) -> None:
-        self.assertEqual(len(TARGETS), 24)
-        self.assertEqual(len(set(TARGETS)), 24)
+        # A floor, not an exact count: the bank grew from 24 when the targets became long-form,
+        # and what must not regress is that it is comfortably larger than a game so `pick` never
+        # runs the same targets twice in a row for a player. Pinning the exact number would make
+        # every addition a test edit for no gain; dropping below ROUNDS_PER_GAME would break it.
+        self.assertGreaterEqual(len(TARGETS), 24)
+        self.assertEqual(len(set(TARGETS)), len(TARGETS))  # no duplicates to draw
         self.assertEqual(ROUNDS_PER_GAME, 10)
+
+    def test_every_target_is_long_form_text(self) -> None:
+        # The point of the change: a target has to be a paragraph, not a noun phrase, or the
+        # judge's proximity scale has nothing to be proximal to. The threshold is well under the
+        # shortest entry in the bank, so it fails on a reintroduced two-word target.
+        self.assertTrue(all(len(t) > 200 for t in TARGETS))
+
+    def test_every_target_fits_the_target_column(self) -> None:
+        # A `max_length` raised past the content is a length nothing enforces — and `admin_start`
+        # writes rounds with `bulk_create`, which skips `full_clean()`, so nothing would reject a
+        # target that outgrew the column. Asserted against the field itself, so shortening it
+        # fails here rather than in production.
+        self.assertLessEqual(max(len(t) for t in TARGETS), Round._meta.get_field("target").max_length)

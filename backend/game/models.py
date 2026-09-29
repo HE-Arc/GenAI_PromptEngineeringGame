@@ -30,7 +30,16 @@ class Room(models.Model):
 class Round(models.Model):
     room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name="rounds")
     order = models.IntegerField()
-    target = models.CharField(max_length=200)
+    # Targets are long-form text now — a recipe, a description, a riddle — so 200 characters
+    # no longer holds one. 1000 leaves about 3x the longest entry in `targets.py` and room for
+    # the list to be edited without a second migration.
+    #
+    # WHY THIS WAS NEVER CAUGHT: `views.admin_start` writes rounds with `bulk_create`, which goes
+    # straight to INSERT and never calls `full_clean()`. Django's `max_length` is a validation
+    # rule, not a database constraint, so an over-long target used to be accepted silently — the
+    # column is `varchar` and SQLite does not enforce the length. A 300-character target would
+    # have been stored fine and nobody would have found out from this line.
+    target = models.CharField(max_length=1000)
 
     class Meta:
         unique_together = [("room", "order")]

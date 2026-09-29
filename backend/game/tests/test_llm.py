@@ -85,6 +85,108 @@ class AnswerTest(SimpleTestCase):
             self.assertEqual(llm.answer("salut"), "bonjour")
 
 
+@KEYED
+class TokenCapTest(SimpleTestCase):
+    """The two calls need different caps, and the cap is the difference between a playable
+    and a broken long-form target: 200 truncated every recipe mid-sentence, which the judge
+    then scored as an incomplete reproduction. Asserted through `llm.OpenAI` (not `_chat`) so
+    the value that actually reaches the API is what is checked.
+    """
+
+    def test_play_call_gets_the_long_cap(self) -> None:
+        client = _client("une recette")
+        with patch.object(llm, "OpenAI", return_value=client):
+            llm.answer("repete la recette en entier")
+        self.assertEqual(client.chat.completions.create.call_args.kwargs["max_tokens"], llm.PLAY_MAX_TOKENS)
+        self.assertGreater(llm.PLAY_MAX_TOKENS, 400)  # a full paragraph of French, not a sentence
+
+    def test_judge_call_keeps_the_small_cap(self) -> None:
+        # The judge returns one integer and one sentence. Raising its cap buys nothing and a
+        # low cap is a cheap guard against a judge that decides to explain itself at length.
+        client = _client('{"score": 7, "comment": "proche"}')
+        with patch.object(llm, "OpenAI", return_value=client):
+            llm.score("p", "o", "t")
+        self.assertEqual(client.chat.completions.create.call_args.kwargs["max_tokens"], llm.JUDGE_MAX_TOKENS)
+
+    def test_the_two_caps_are_deliberately_different(self) -> None:
+        # Pins the reason the cap is a parameter and not a constant: unifying them back to a
+        # single value is the bug this whole change exists to fix, and it would be invisible
+        # to the two tests above, which each pass with any shared number.
+        self.assertNotEqual(llm.PLAY_MAX_TOKENS, llm.JUDGE_MAX_TOKENS)
+        self.assertLess(llm.JUDGE_MAX_TOKENS, llm.PLAY_MAX_TOKENS)
+
+
+@KEYED
+class JudgeRubricTest(SimpleTestCase):
+    """The rubric is prose to a model, so these pin the parts that are rules, not tone."""
+
+    def test_length_is_not_itself_penalised(self) -> None:
+        # The old rubric said "Penalise les reponses longues ou bavardes". Against a long-form
+        # target that punished exactly what the game now asks for, and made the round
+        # unwinnable for a player who wrote the recipe out in full.
+        self.assertNotIn("Penalise", llm.JUDGE_SYS)
+        self.assertIn("La longueur n'est jamais un defaut", llm.JUDGE_SYS)
+
+    def test_rubric_still_uses_the_zero_to_ten_scale(self) -> None:
+        # The frontend renders 0-10. A new range or a new JSON field would be unknown to it.
+        self.assertIn("de 0 a 10", llm.JUDGE_SYS)
+        self.assertEqual(list(Verdict._fields), ["score", "comment"])
+        self.assertIn('{"score": entier, "comment": texte court', llm.JUDGE_SYS)
+
+    def test_top_of_the_scale_is_not_reachable_by_copying(self) -> None:
+        # With a paragraph target, verbatim reproduction is near-impossible, so a "10 = mot pour
+        # mot" rule would put every real player at 9 at best. The rubric now says an equivalent
+        # text caps at 8, and that copying is neither expected nor attainable.
+        self.assertIn("equivalent a la cible plafonne a 8", llm.JUDGE_SYS)
+        self.assertIn("ni attendue ni atteignable", llm.JUDGE_SYS)
+
+    def test_hitting_the_substance_has_a_floor(self) -> None:
+        # The other end of the scale: a player who got the recipe right must not be buried in the
+        # 2s just because they paraphrased instead of quoting.
+        self.assertIn("ne descend jamais sous 6", llm.JUDGE_SYS)
+
+
+LONG_TARGET = (
+    "La recette du gateau au yaourt du mardi soir : prechauffe le four a 180 degres, beurre un "
+    "moule a gateau, puis melange 3 pots de yaourt avec 4 wanannes, ajoute 150 g de farine, deux "
+    "oeufs battus et une pincee de sel. Verse la pate sans te depesoter."
+)
+
+
+@UNKEYED
+class StubLongTargetTest(SimpleTestCase):
+    """The stub must stay a valid 0-10 verdict when the target is a paragraph.
+
+    It stays a word-overlap stub on purpose — a local fallback that guesses at meaning is worse
+    than one that admits it does not judge — so the ceiling drops as the target gets longer.
+    These pin the two things that must survive that: the verdict is well formed, and the player
+    is told the number is the method's, not their prompt's.
+    """
+
+    def test_verdict_is_in_range_for_a_long_target(self) -> None:
+        # A prompt that echoes the whole target: 10, the only way to reach the ceiling.
+        v = llm.score("p", LONG_TARGET, LONG_TARGET)
+        self.assertIsInstance(v.score, int)
+        self.assertTrue(0 <= v.score <= 10)
+        self.assertEqual(v.score, 10)
+
+    def test_a_partial_echo_of_a_long_target_scores_low_but_legal(self) -> None:
+        # The documented consequence of the method, stated rather than fixed: the denominator
+        # grows with the target and the prompt does not, so realistic play lands in single
+        # digits. If this ever reads 0 the overlap is broken, not the target too long.
+        v = llm.score("p", "fais un gateau au yaourt", LONG_TARGET)
+        self.assertIsInstance(v.score, int)
+        self.assertTrue(0 <= v.score <= 10)
+        self.assertLess(v.score, 10)
+
+    def test_comment_tells_the_player_the_low_number_is_the_method(self) -> None:
+        # The honesty surface, for the case the stub now actually hits. A player reading 2/10
+        # under "chevauchement de mots" alone would conclude their prompt was bad.
+        comment = llm.score("p", "fais un gateau", LONG_TARGET).comment
+        self.assertIn("pas de cle API", comment)
+        self.assertIn("c'est la methode, pas ton prompt", comment)
+
+
 @UNKEYED
 class StubTest(SimpleTestCase):
     """No key means no model. The game must still be playable, and must say so."""

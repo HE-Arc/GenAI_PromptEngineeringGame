@@ -6,6 +6,7 @@ from django.test import Client, TestCase, override_settings
 
 from game.llm import Verdict
 from game.models import Answer, Player, Room, Round
+from game.views import room_state
 
 
 @override_settings(ADMIN_PASSWORD="s3cret")
@@ -58,6 +59,29 @@ class AdminTest(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(json.loads(r.content)["total"], 10)
         self.assertEqual(Round.objects.filter(room__code=code).count(), 10)
+
+    def test_long_target_survives_start_and_appears_whole_in_room_state(self) -> None:
+        # The round trip, end to end: `admin_start` picks the target, writes it, and `room_state`
+        # hands the current one to every phone. A long target has to come out of all three
+        # unchanged, because `room_state`'s "target" is what the player is playing against.
+        #
+        # This was never caught by a test because it was never caught at all: `admin_start`
+        # writes with `bulk_create`, which skips `full_clean()`, and `max_length` is a
+        # validation rule rather than a database constraint. An over-long target used to be
+        # stored silently. So the assertion here is on the exact string, not on the length
+        # being "reasonable" — a truncation is what this is guarding.
+        self._login()
+        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        long_target = "la recette " + "et encore un detail " * 40 + "de fin"
+        # Patched where it is USED, not where it is defined: `views` does
+        # `from game.targets import pick`, so the name in this module's namespace is the one
+        # `admin_start` calls. Patching `game.targets.pick` would leave the real bank in play
+        # and this test would silently assert against whichever target got drawn first.
+        with patch("game.views.pick", return_value=[long_target] * 10):
+            r = self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Round.objects.get(room__code=code, order=0).target, long_target)
+        self.assertEqual(room_state(code)["target"], long_target)
 
     def test_start_is_idempotent_refuses_second_call(self) -> None:
         self._login()
