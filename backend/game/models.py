@@ -137,11 +137,24 @@ class QuizQuestion(models.Model):
     # modules imported by the same `views.py` cannot be told apart at a glance — this is a row
     # in the table, that is a value in a file.
 
-    # `order` is this room's identity for a question and it is unique, because the quiz endpoint
-    # addresses a question by it: two rows sharing an order would make "which question is this"
-    # ambiguous, and the ambiguity would surface as a player being told their 3rd answer was
-    # right when the question they saw was the 4th.
-    order = models.IntegerField(unique=True)
+    # THE BANK BELONGS TO A ROOM. It did not used to: `order` was globally UNIQUE and there was
+    # no room FK, which meant only ONE bank of eight could exist per database and a second
+    # `admin_create_room` had to reuse it — two rooms in one install faced the same eight
+    # questions in the same order, which is the opposite of what `quiz.pick()`'s docstring
+    # promises. It also made the bank unrefreshable: `admin_create_room` materialised it once
+    # behind `if not QuizQuestion.objects.exists()` and never again, so an admin who edited
+    # `quiz.py` — the file the spec promises is editable without touching any code — saw no
+    # change at all, not even after a restart. Owning the bank per room fixes both at once:
+    # a new room draws a new order, and `admin_create_room` can materialise it fresh every time.
+    room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name="questions")
+
+    # `order` is this ROOM's identity for a question, and it is unique within the room, because
+    # the quiz endpoint addresses a question by `(room, order)`: two rows of one room sharing an
+    # order would make "which question is this" ambiguous, and the ambiguity would surface as a
+    # player being told their 3rd answer was right when the question they saw was the 4th. The
+    # same order in two DIFFERENT rooms is meaningless rather than fatal — that is exactly the
+    # variety `pick()` draws.
+    order = models.IntegerField()
     prompt = models.TextField()
     # A JSONField, not a delimited text column: the four choices are read back whole, never
     # matched against, and no query ever asks "which questions have this choice". Storing them
@@ -154,6 +167,9 @@ class QuizQuestion(models.Model):
     # version of the question the player was shown, and it travels in the response that reveals
     # the answer.
     explanation = models.TextField()
+
+    class Meta:
+        unique_together = [("room", "order")]
 
 
 class QuizAttempt(models.Model):

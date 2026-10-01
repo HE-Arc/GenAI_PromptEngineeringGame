@@ -1,6 +1,7 @@
 import json
 import random
 import time
+from contextlib import contextmanager
 from unittest import mock
 
 from django.test import Client, SimpleTestCase, TestCase, override_settings
@@ -140,6 +141,46 @@ class QuizPlayTests(TestCase):
             {"token": player.token, "question": question, "choice": choice},
         )
 
+    def _bank(self, room: Room) -> list[QuizQuestion]:
+        """This room's eight, in `order`.
+
+        Every read of the bank in this file goes through here. A bare `QuizQuestion.objects.get
+        (order=i)` used to name the same row in every room — one bank, shared — and it silently
+        stopped meaning "the question this player was shown" the moment a second room existed,
+        which is the bug this file now pins shut.
+        """
+        return list(room.questions.order_by("order"))
+
+    @contextmanager
+    def _seeded(self, seed: int = 0):
+        """Seed the stdlib RNG for the block, then put it back.
+
+        `quiz.pick` draws from the global `random`, and `admin_create_room` calls it once per
+        room, so ONE seed here makes a run of room creations a reproducible sequence of draws —
+        which is what lets a test assert two rooms got *different* orders without being a
+        1-in-40320 flake that passes by luck. Re-seeding before EACH room would pin them
+        IDENTICAL, which is the bug; seeding once before the run is the fix. State is restored so
+        a test does not decide the draw some later test gets.
+        """
+        state = random.getstate()
+        try:
+            random.seed(seed)
+            yield
+        finally:
+            random.setstate(state)
+
+    def _two_rooms(self) -> tuple[Room, Player, Room, Player]:
+        """Two rooms, each with a player and its didacticiel open, drawn from one seeded run.
+
+        One seed for the pair, so the two banks are two draws of the same distribution rather
+        than one shuffled room and one untouched — that is what isolates "each room draws" from
+        "the draw differs".
+        """
+        with self._seeded():
+            first, first_players = self._joined()
+            second, second_players = self._joined()
+        return first, first_players[0], second, second_players[0]
+
     def _answer_all(self, room: Room, player: Player, up_to: int = QUIZ_LENGTH) -> None:
         for i in range(up_to):
             self.assertEqual(self._answer(room, player, i, 0).status_code, 200)
@@ -149,7 +190,7 @@ class QuizPlayTests(TestCase):
         in the snapshot is this test's doing and not a coincidence of which index the bank put its
         keys on."""
         for i in range(start, up_to):
-            key = QuizQuestion.objects.get(order=i).correct
+            key = self._bank(room)[i].correct
             self.assertEqual(self._answer(room, player, i, (key + 1) % 4).status_code, 200)
 
     def _age_out(self, player: Player) -> None:
@@ -174,8 +215,8 @@ class QuizPlayTests(TestCase):
         # against the bank as it happens to be shuffled would pin nothing — any order would pass.
         rotated = tuple(QUESTIONS[3:]) + tuple(QUESTIONS[:3])
         with mock.patch("game.views.pick_questions", return_value=rotated):
-            self._create()
-        stored = list(QuizQuestion.objects.order_by("order"))
+            room = self._create()
+        stored = self._bank(room)
         self.assertEqual([q.order for q in stored], list(range(QUIZ_LENGTH)))
         self.assertEqual([q.prompt for q in stored], [q.prompt for q in rotated])
         # Every field is copied, not just the prompt: `correct` is the key and `explanation` is
@@ -185,24 +226,83 @@ class QuizPlayTests(TestCase):
                 (row.choices, row.correct, row.explanation),
                 (list(src.choices), src.correct, src.explanation),
             )
+        # And the rows belong to THIS room: the bank is materialised per room, so nothing is
+        # shared between two of them and nothing is left over from a previous one.
+        self.assertEqual({q.room_id for q in stored}, {room.code})
 
-    def test_a_second_room_reuses_the_materialised_bank(self):
-        # `QuizQuestion.order` is UNIQUE with no room FK, so only one bank of eight can exist at a
-        # time. Written down as a test because it is a real consequence and the opposite of what
-        # the per-room wording elsewhere suggests: two rooms in one install face the same order.
-        first = self._create()
-        second = self._create()
+    def test_a_second_room_gets_its_own_bank_in_its_own_order(self):
+        # THE OPPOSITE of what this used to assert. `QuizQuestion.order` was globally UNIQUE with
+        # no room FK, so only one bank of eight could exist per database and the second room was
+        # handed the first room's — the exact opposite of what `pick()`'s docstring promises
+        # ("the order ONE ROOM asks its questions in"), and it made `pick()` dead code after the
+        # first room ever created.
+        first, _, second, _ = self._two_rooms()
         self.assertNotEqual(first.code, second.code)
-        self.assertEqual(QuizQuestion.objects.count(), QUIZ_LENGTH)
+        first_order = [q.prompt for q in self._bank(first)]
+        second_order = [q.prompt for q in self._bank(second)]
+        self.assertEqual(len(first_order), QUIZ_LENGTH)
+        self.assertEqual(len(second_order), QUIZ_LENGTH)
+        # The same eight questions, both times: the bank is one quiz long, so...
+        self.assertEqual(set(first_order), {q.prompt for q in QUESTIONS})
+        self.assertEqual(set(second_order), {q.prompt for q in QUESTIONS})
+        # ...asked in DIFFERENT orders, which is the entire variety `pick()` offers.
+        self.assertNotEqual(first_order, second_order)
+
+    def test_each_room_reads_back_only_its_own_questions(self):
+        # The per-room scoping of `_quiz_get`, end to end. With a global read the second room's
+        # endpoint would answer with whichever eight the database returned first — this room's
+        # player graded against questions they were never shown.
+        first, _, second, _ = self._two_rooms()
+        for room in (first, second):
+            payload = self.c.get(f"/api/rooms/{room.code}/quiz").json()
+            self.assertEqual(
+                [q["prompt"] for q in payload["questions"]],
+                [q.prompt for q in self._bank(room)],
+            )
+        self.assertNotEqual(
+            [q.prompt for q in self._bank(first)],
+            [q.prompt for q in self._bank(second)],
+        )
+
+    def test_a_room_only_answers_against_its_own_bank(self):
+        # The POST half of the same scoping: `(room, order)` is the address, and a global read
+        # would grade this player against another room's row — wrong key, wrong explanation, wrong
+        # `QuizAttempt`. Order 0 exists in BOTH rooms, which is exactly the case a global
+        # `filter(order=...)` gets wrong.
+        first, first_player, second, second_player = self._two_rooms()
+        here, there = self._bank(first)[0], self._bank(second)[0]
+        self.assertEqual(here.order, there.order)
+        self.assertNotEqual(here.pk, there.pk)
+        # Answering THIS room's order 0 with THIS room's key reveals THIS room's explanation, and
+        # the attempt names THIS room's row. Under a global read the endpoint would have found
+        # whichever room's order-0 row came first — the wrong key, the wrong explanation, and an
+        # attempt against a question that was never on the player's screen.
+        r = self._answer(first, first_player, 0, here.correct)
+        self.assertEqual(r.json()["correct"], True)
+        self.assertEqual(r.json()["explanation"], here.explanation)
+        self.assertEqual(QuizAttempt.objects.get().question_id, here.pk)
+        # The other room's bank is untouched: same order, still unanswered, and its own key is what
+        # it will be graded against.
+        self.assertEqual(QuizAttempt.objects.filter(player=second_player).count(), 0)
+        other = self._answer(second, second_player, 0, there.correct)
+        self.assertEqual(other.json()["explanation"], there.explanation)
+        self.assertEqual(QuizAttempt.objects.filter(player=second_player).get().question_id, there.pk)
 
     def test_the_bank_survives_a_restart(self):
         # The bank is not the game's: a relaunch re-asks the same eight in the same order rather
-        # than re-rolling the questions under the players who have already answered them.
+        # than re-rolling the questions under the players who have already answered them. Now
+        # that the bank hangs off the room, this is a cascade boundary being respected —
+        # `admin_restart` deletes rounds, never the room, so the room's questions stay.
         room, players = self._joined()
         self._online(room, players[0])
         self._answer_all(room, players[0])
+        before = [q.prompt for q in self._bank(room)]
         self.assertEqual(self._post(f"/api/admin/rooms/{room.code}/restart").status_code, 200)
-        self.assertEqual(QuizQuestion.objects.count(), QUIZ_LENGTH)
+        self.assertEqual(room.questions.count(), QUIZ_LENGTH)
+        # The same questions in the SAME order, so an attempt already made still means something.
+        self.assertEqual([q.prompt for q in self._bank(room)], before)
+        # The attempts are gone, and the questions they pointed at are not.
+        self.assertEqual(QuizAttempt.objects.count(), 0)
 
     # --- reading the questions ---------------------------------------------------------------
 
@@ -241,20 +341,47 @@ class QuizPlayTests(TestCase):
     def test_answering_reveals_the_answer_the_explanation_and_the_score(self):
         room, players = self._joined()
         player = players[0]
-        key = QuizQuestion.objects.get(order=0)
+        key = self._bank(room)[0]
         right = self._answer(room, player, 0, key.correct)
         self.assertEqual(right.status_code, 200)
         self.assertEqual(
-            set(right.json()), {"correct", "explanation", "score"}
+            set(right.json()), {"correct", "correct_index", "explanation", "score"}
         )
         self.assertEqual(right.json()["correct"], True)
         self.assertEqual(right.json()["explanation"], key.explanation)
         self.assertEqual(right.json()["score"], 1)
 
+    def test_correct_index_is_the_key_on_a_right_answer_and_on_a_wrong_one(self):
+        # `correct` (did I get it right) and `correct_index` (which one was right) answer different
+        # questions, and the screen needs both. The index cannot come from the client, which never
+        # holds the bank key — so it has to be in the response.
+        room, players = self._joined()
+        player = players[0]
+        key = self._bank(room)[0]
+
+        # On a RIGHT answer the two fields coincide, so this alone cannot tell the key's position
+        # from the player's own choice echoed back...
+        right = self._answer(room, player, 0, key.correct)
+        self.assertEqual(right.json()["correct"], True)
+        self.assertEqual(right.json()["correct_index"], key.correct)
+
+        # ...which is exactly why the WRONG answer is the one that matters: it is the only case
+        # where `correct` is False and `correct_index` is not the choice that was sent. Here
+        # `correct_index` is still the key of the question that was ANSWERED (order 1, not
+        # order 0), and the choice the player picked is not it.
+        second = self._bank(room)[1]
+        wrong_choice = (second.correct + 1) % 4
+        wrong = self._answer(room, player, 1, wrong_choice)
+        self.assertEqual(wrong.json()["correct"], False)
+        self.assertEqual(wrong.json()["correct_index"], second.correct)
+        self.assertNotEqual(wrong_choice, wrong.json()["correct_index"])
+        # The wrong answer scored nothing and the right one still stands.
+        self.assertEqual(wrong.json()["score"], 1)
+
     def test_a_wrong_answer_is_wrong_and_scores_nothing(self):
         room, players = self._joined()
         player = players[0]
-        key = QuizQuestion.objects.get(order=0)
+        key = self._bank(room)[0]
         wrong = (key.correct + 1) % 4
         r = self._answer(room, player, 0, wrong)
         self.assertEqual((r.json()["correct"], r.json()["score"]), (False, 0))
@@ -263,16 +390,17 @@ class QuizPlayTests(TestCase):
         self.assertEqual(QuizAttempt.objects.get().choice, wrong)
 
     def test_the_score_counts_right_answers_only(self):
-        # Three answers, one right. The bank is shuffled per room, so every index here is read off
-        # the row rather than assumed: a test that hard-coded "question 2's key is 0" would pass or
-        # fail on the shuffle.
+        # Three answers, one right. The bank is drawn per room, so every index here is read off the row
+        # rather than assumed: a test that hard-coded "question 2's key is 0" would pass or fail on
+        # the draw.
         room, players = self._joined()
         player = players[0]
-        right = self._answer(room, player, 0, QuizQuestion.objects.get(order=0).correct)
-        wrong = self._answer(room, player, 1, (QuizQuestion.objects.get(order=1).correct + 1) % 4)
+        bank = self._bank(room)
+        right = self._answer(room, player, 0, bank[0].correct)
+        wrong = self._answer(room, player, 1, (bank[1].correct + 1) % 4)
         self.assertEqual((right.json()["score"], wrong.json()["score"]), (1, 1))
         self.assertEqual(player.quiz_score(), 1)
-        self._answer(room, player, 2, (QuizQuestion.objects.get(order=2).correct + 1) % 4)
+        self._answer(room, player, 2, (bank[2].correct + 1) % 4)
         self.assertEqual(player.quiz_score(), 1)
 
     def test_a_question_can_only_be_answered_once(self):
@@ -294,7 +422,7 @@ class QuizPlayTests(TestCase):
         # a 500, so it needs a test of its own: nothing else here can reach it.
         room, players = self._joined()
         player = players[0]
-        key = QuizQuestion.objects.get(order=0)
+        key = self._bank(room)[0]
         winner = QuizAttempt.objects.create(player=player, question=key, choice=1, correct=False)
 
         class _BeforeTheRace:
@@ -413,9 +541,24 @@ class QuizPlayTests(TestCase):
         player = self._join(room, "ana")
         self._start(room)
         self._online(room, player)
-        QuizQuestion.objects.all().delete()
+        room.questions.all().delete()
         maybe_advance(room)
         self._assert_phase(room, Room.Phase.QUIZ)
+
+    def test_another_rooms_questions_do_not_hold_this_gate_shut(self):
+        # The per-room scoping of the gate's own count, from the other side of the fix. Under a
+        # global `QuizQuestion.objects.count()` a second room's eight questions would raise this
+        # room's total to sixteen, and no player could ever reach it — the gate would be shut
+        # forever on a room whose eight questions they had all answered. `total` is this room's
+        # eight, which is the number the players can actually reach.
+        room, players = self._joined()
+        player = players[0]
+        self._online(room, player)
+        self._create()  # a second room, with its own eight
+        # The headline is this room's eight even though the database now holds sixteen.
+        self.assertEqual(room_state(room.code)["quiz"], {"total": QUIZ_LENGTH, "done": 0, "score": 0})
+        self._answer_all(room, player)
+        self._assert_phase(room, Room.Phase.PLAYING)
 
     def test_the_quiz_score_does_not_reach_the_final_ranking(self):
         # A gate you must pass must not also be points you can farm: eight out of eight is
@@ -423,8 +566,9 @@ class QuizPlayTests(TestCase):
         room, players = self._joined()
         player = players[0]
         self._online(room, player)
+        bank = self._bank(room)
         for order in range(QUIZ_LENGTH):
-            self._answer(room, player, order, QuizQuestion.objects.get(order=order).correct)
+            self._answer(room, player, order, bank[order].correct)
         self.assertEqual(player.quiz_score(), QUIZ_LENGTH)
         self._assert_phase(room, Room.Phase.PLAYING)
         self.assertEqual(room_state(room.code)["players"][0]["score"], 0)
@@ -458,7 +602,7 @@ class QuizPlayTests(TestCase):
         self._online(room, ana, bob)
         self._answer_up_to_wrong(room, ana, QUIZ_LENGTH - 1)
         self._answer_up_to_wrong(room, bob, QUIZ_LENGTH, start=1)
-        self._assert_ok(self._answer(room, bob, 0, QuizQuestion.objects.get(order=0).correct))
+        self._assert_ok(self._answer(room, bob, 0, self._bank(room)[0].correct))
         self.assertEqual(room_state(room.code)["quiz"], {"total": QUIZ_LENGTH, "done": 1, "score": 1})
         self._age_out(bob)
         self.assertEqual(

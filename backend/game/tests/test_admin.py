@@ -334,7 +334,15 @@ class AdminTest(TestCase):
         authors = list(room.players.all())
         rater = Player.objects.create(room=room, name="zoe")
         question = QuizQuestion.objects.create(
-            order=0, prompt="q", choices=["a", "b", "c", "d"], correct=0, explanation="parce que"
+            # `room=` because the bank belongs to the room: `QuizQuestion.room` is NOT NULL, and a
+            # question that belonged to no room is the row this migration deletes rather than
+            # invents a home for.
+            room=room,
+            order=0,
+            prompt="q",
+            choices=["a", "b", "c", "d"],
+            correct=0,
+            explanation="parce que",
         )
         QuizAttempt.objects.create(player=authors[0], question=question, choice=0, correct=True)
         Rating.objects.create(answer=authors[0].answers.first(), rater=rater, score=7)

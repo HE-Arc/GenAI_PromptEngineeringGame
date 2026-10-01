@@ -20,12 +20,15 @@ def _quiz_fixture() -> tuple[Room, Player, list[QuizQuestion]]:
     """A room, a player and the materialised bank.
 
     The whole bank, not one row: `admin_create_room` materialises all of `quiz.QUESTIONS`, and
-    a fixture with a single question would let a bug that only handles question 0 pass.
+    a fixture with a single question would let a bug that only handles question 0 pass. The rows
+    carry the room, because the bank belongs to the room — that is what `admin_create_room`
+    writes and what every read of it scopes to.
     """
     room = Room.objects.create(code="ABCD")
     player = Player.objects.create(room=room, name="ana")
     questions = [
         QuizQuestion.objects.create(
+            room=room,
             order=i,
             prompt=q.prompt,
             choices=list(q.choices),
@@ -172,18 +175,46 @@ class QuizAttemptTests(TestCase):
         _, player, _ = _quiz_fixture()
         self.assertEqual(player.quiz_score(), 0)
 
-    def test_question_order_is_unique(self) -> None:
-        # `order` is the room-wide identity of a question, and the quiz endpoint addresses
-        # questions by it. Two rows sharing one would make "which question is this" ambiguous.
-        _, _, questions = _quiz_fixture()
+    def test_question_order_is_unique_within_a_room(self) -> None:
+        # `(room, order)` is the quiz endpoint's address for a question, and the endpoint
+        # resolves it inside one room. Two rows of one room sharing an order make "which question
+        # is this" ambiguous, so the database refuses it.
+        room, _, questions = _quiz_fixture()
         with self.assertRaises(IntegrityError):
             QuizQuestion.objects.create(
+                room=room,
                 order=questions[0].order,
                 prompt="p",
                 choices=["a", "b", "c", "d"],
                 correct=0,
                 explanation="e",
             )
+
+    def test_the_same_order_in_two_rooms_is_fine(self) -> None:
+        # The flip of the one above, and the whole reason `order` lost its global unique: two
+        # rooms facing the same order is the ordinary case, not a collision. A global unique here
+        # is what made the second room in an install impossible to give its own bank.
+        first, _, first_questions = _quiz_fixture()
+        second = Room.objects.create(code="WXYZ")
+        QuizQuestion.objects.create(
+            room=second,
+            order=first_questions[0].order,
+            prompt="p",
+            choices=["a", "b", "c", "d"],
+            correct=0,
+            explanation="e",
+        )
+        self.assertEqual(first.questions.count(), len(first_questions))
+        self.assertEqual(second.questions.count(), 1)
+
+    def test_a_rooms_questions_cascade_with_it(self) -> None:
+        # The bank belongs to the room, so deleting the room takes the eight with it. Nothing else
+        # references them: a restart deletes rounds, never the room, which is how the bank survives
+        # one.
+        room, _, questions = _quiz_fixture()
+        self.assertEqual(room.questions.count(), len(questions))
+        room.delete()
+        self.assertEqual(QuizQuestion.objects.count(), 0)
 
 
 class RatingTests(TestCase):

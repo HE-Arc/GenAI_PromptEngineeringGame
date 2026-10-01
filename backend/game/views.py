@@ -140,40 +140,49 @@ def admin_create_room(request: HttpRequest) -> JsonResponse:
     # player in the room which screen they are supposed to be on. Absent from the body means the
     # model defaults, which is the safe direction — a gate on and names hidden.
     data = body(request)
-    # The didacticiel is MATERIALISED here, once, and read back by `order` from then on. Handing
-    # each player their own eight would make the gate untestable: a player who saw question 3
-    # first has no answer key to compare with anyone else's, and "3 sur 8" would be a sum over
-    # eight different quizzes.
+    # The didacticiel is MATERIALISED here, once PER ROOM, and read back by `(room, order)` from
+    # then on. Handing each player their own eight would make the gate untestable: a player who
+    # saw question 3 first has no answer key to compare with anyone else's, and "3 sur 8" would
+    # be a sum over eight different quizzes.
     #
-    # Drawn ONCE PER DATABASE rather than once per room, and that is forced by the schema rather
-    # than chosen: `QuizQuestion.order` is UNIQUE and carries no room FK, so only one bank of
-    # eight can exist at a time and a second `admin_create_room` has to reuse it. The honest
-    # consequence, written down because it is the opposite of what `pick_questions`' docstring
-    # implies: two rooms in one install face the eight questions in the SAME order. Per-room
-    # order needs a per-room key on `QuizQuestion`, i.e. a migration this task does not own. The
-    # bank also outlives `admin_restart`, which is the behaviour `test_restart_erases_quiz_
-    # attempts_and_ratings` already pins.
-    if not QuizQuestion.objects.exists():
-        # `bulk_create` goes straight to INSERT and skips `full_clean()`, exactly like
-        # `admin_start`'s rounds: nothing here is validated by Django, only by the database.
-        # Safe for the same reason theirs is — `order` comes from `enumerate()`, cannot collide,
-        # and the bank is one quiz long.
-        QuizQuestion.objects.bulk_create(
-            [
-                QuizQuestion(
-                    order=i,
-                    prompt=q.prompt,
-                    choices=list(q.choices),
-                    correct=q.correct,
-                    explanation=q.explanation,
-                )
-                for i, q in enumerate(pick_questions())
-            ]
-        )
-    Room.objects.create(
+    # ONCE PER ROOM, not once per database: `QuizQuestion` hangs off `Room` and `order` is unique
+    # within a room, so this runs for EVERY room and two rooms draw their own order — which is
+    # what `pick_questions`' docstring promises and what a class of thirty in one install needs.
+    # The bank belongs to the room, which also makes it refreshable: this endpoint runs again for
+    # the next room and draws again from `quiz.py`, so an admin who edited the file sees the
+    # change on the next room they create. It did not used to, because the bank was materialised
+    # once behind `if not QuizQuestion.objects.exists()` and never refreshed — an edit to
+    # `quiz.py` was invisible until the database was wiped.
+    #
+    # A restart does NOT come through here: it keeps the room, so it keeps this room's bank, and
+    # the players who already answered are re-asked the same eight in the same order rather than
+    # handed a new set. `admin_restart` deliberately does not touch `room.questions`.
+    #
+    # The Room row is created FIRST, because the bank needs its `room_id`.
+    room = Room.objects.create(
         code=code,
         tutorial=bool(data.get("tutorial", True)),
         anonymous=bool(data.get("anonymous", True)),
+    )
+    # `bulk_create` goes straight to INSERT and skips `full_clean()`, exactly like
+    # `admin_start`'s rounds: nothing here is validated by Django, only by the database. Safe for
+    # the same reason theirs is — `order` comes from `enumerate()`, cannot collide inside one
+    # room, and the bank is one quiz long.
+    # `room=room` on every row rather than relying on the related manager to fill it in:
+    # `bulk_create` writes the columns it is given, and a row with a null `room_id` is exactly
+    # what the NOT NULL constraint is there to refuse.
+    QuizQuestion.objects.bulk_create(
+        [
+            QuizQuestion(
+                room=room,
+                order=i,
+                prompt=q.prompt,
+                choices=list(q.choices),
+                correct=q.correct,
+                explanation=q.explanation,
+            )
+            for i, q in enumerate(pick_questions())
+        ]
     )
     return JsonResponse({"code": code})
 
@@ -247,6 +256,13 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
     hang off `Player` and `QuizQuestion`, both of which survive this reset, so leaving them
     behind would tell a returning player they had already answered a question in a game that no
     longer exists.
+
+    The room's BANK survives too, and that is now a cascade boundary rather than an accident:
+    `QuizQuestion` hangs off `Room`, so a deleted room takes its eight questions with it — which
+    is right, they were only ever that room's — but a restart deletes rounds, never the room, so
+    the questions stay. The players who already answered them are re-asked the same eight in the
+    same order on the relaunch, instead of being handed a freshly drawn set they cannot compare
+    with the attempt they already made.
     """
     if (err := require_admin(request)):
         return err
@@ -274,8 +290,12 @@ def _quiz_state(room: Room, online: set[int]) -> dict:
     "c'est parti" on a room that has not moved. A player whose phone dropped is not counted, for
     the reason every other advance in this file counts presence: the row is there forever and the
     person may never come back.
+
+    Every read here is scoped to `room.questions`, not to `QuizQuestion.objects`: the bank is the
+    room's, so a global count is this room's eight PLUS every other room's eight, and the total
+    would be a number no player could ever reach.
     """
-    total = QuizQuestion.objects.count()  # the bank is per database, so this is the room's bank
+    total = room.questions.count()
     players = list(room.players.filter(pk__in=online))
     if not total:
         # An empty bank must not read as "everybody is done": `count() == 0` is true of every
@@ -349,10 +369,11 @@ def _maybe_open_playing(room: Room, online: set[int]) -> None:
     `len(online)`, so a presence entry left behind by a player deleted mid-quiz cannot make the
     comparison unreachable and pin the room on the gate forever.
 
-    The question count is read from the bank rather than from `quiz.QUIZ_LENGTH`, so a bank the
-    admin has grown past eight is not gated on a hardcoded eight.
+    The question count is read from this room's bank rather than from `quiz.QUIZ_LENGTH`, so a
+    bank the admin has grown past eight is not gated on a hardcoded eight — and it is read off
+    `room.questions`, so a second room's eight questions cannot hold this room's gate shut.
     """
-    total = QuizQuestion.objects.count()
+    total = room.questions.count()
     if not total:
         return  # nothing was materialised, so there is no gate to pass
     players = list(room.players.filter(pk__in=online))
@@ -514,13 +535,17 @@ def _quiz_get(request: HttpRequest, code: str) -> JsonResponse:
     their four choices, which is what is on the screen anyway, so reading it leaks nothing the
     player could not read by looking. What it never returns is what a later phase cannot: the
     answer, and the reason. That stays in the POST, which is a write.
+
+    Scoped to this room's bank: `order` is only meaningful inside a room, so returning every
+    room's rows would hand this player questions numbered 0..7 that are not the ones `_quiz_post`
+    will grade them against.
     """
-    get_object_or_404(Room, code=code)
+    room = get_object_or_404(Room, code=code)
     return JsonResponse(
         {
             "questions": [
                 {"order": q.order, "prompt": q.prompt, "choices": q.choices}
-                for q in QuizQuestion.objects.order_by("order")
+                for q in room.questions.order_by("order")
             ]
         }
     )
@@ -529,14 +554,15 @@ def _quiz_get(request: HttpRequest, code: str) -> JsonResponse:
 def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
     """Answer one question, and reveal it.
 
-    The response is `{"correct", "explanation", "score"}` and the whole point of it is the
-    revelation: the explanation travels in the SAME response that tells the player whether they
-    were right, which is why `QuizQuestion.explanation` is stored rather than read from `quiz.py`
+    The response is `{"correct", "correct_index", "explanation", "score"}` and the whole point of it
+    is the revelation: the explanation travels in the SAME response that tells the player whether
+    they were right, which is why `QuizQuestion.explanation` is stored rather than read from `quiz.py`
     at answer time — it belongs to the exact row the player was shown, so an edited bank cannot
     retroactively change the reason a past game gave.
 
     The client names a question by its `order` and a choice by its index, and sends nothing else
-    that is checked: the player is the token, the question is the row, the key is the row's.
+    that is checked: the player is the token, the question is this room's row with that order, the
+    key is the row's.
     """
     room = get_object_or_404(Room, code=code)
     if room.phase != Room.Phase.QUIZ:
@@ -553,7 +579,11 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
     # and then miss every row. Same guard as the 1-10 rating scale.
     if not isinstance(order, int) or isinstance(order, bool):
         return json_error("question index required", 400)
-    question = QuizQuestion.objects.filter(order=order).first()
+    # `(room, order)` and not `order` alone: `order` is unique WITHIN a room, so an unscoped
+    # lookup would grade this player against whichever room's row happened to come first — an
+    # order that exists in this room and not in that one, a question they were never shown, and a
+    # score for it.
+    question = room.questions.filter(order=order).first()
     if question is None:
         return json_error("no such question", 400)
     choice = data.get("choice")
@@ -571,4 +601,14 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
     except IntegrityError:
         return json_error("already answered", 409)
     maybe_advance(room)
-    return JsonResponse({"correct": correct, "explanation": question.explanation, "score": player.quiz_score()})
+    return JsonResponse(
+        {
+            "correct": correct,
+            # The screen marks the right choice after the reveal, and the client never holds the
+            # key, so the index has to travel with the answer. Without it the reveal can only say
+            # "wrong" and cannot point at the good one, which is the half of the QCM that teaches.
+            "correct_index": question.correct,
+            "explanation": question.explanation,
+            "score": player.quiz_score(),
+        }
+    )
