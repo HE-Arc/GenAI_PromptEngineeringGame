@@ -3,6 +3,8 @@ import Join from './Join'
 import Lobby from './Lobby'
 import Admin from './Admin'
 import Game from './Game'
+import Quiz from './Quiz'
+import Rating from './Rating'
 import Results from './Results'
 import { ConsoleBar } from './ui'
 import { getToken } from './api'
@@ -103,6 +105,12 @@ export default function App() {
   // the routing can never disagree about which screen is on. The URL is not enough: a round
   // ending moves Game -> Results without the address changing at all, which is the largest
   // swap in the game and the one where a player most needs to be told.
+  //
+  // `quiz` and `rating` are screens of their own and `summary` is not: the synthesis of a round
+  // that has just been scored stays on the play screen with the composer, because the player is
+  // still in the middle of writing ten prompts and the round they are about to be handed is the
+  // next thing they need. A separate tab would put the standings and the work in two places and
+  // make the second look like a summary of the game rather than of the last round.
   const view =
     screen === 'admin'
       ? 'admin'
@@ -114,11 +122,15 @@ export default function App() {
             ? 'fault'
             : !state
               ? 'connecting'
-              : state.status === 'waiting'
+              : state.phase === 'waiting'
                 ? 'lobby'
-                : state.status === 'done'
+                : state.phase === 'done'
                   ? 'results'
-                  : 'game'
+                  : state.phase === 'quiz'
+                    ? 'quiz'
+                    : state.phase === 'rating'
+                      ? 'rating'
+                      : 'game'
 
   // The screen changed and nothing else about the page did, so a keyboard or screen-reader
   // user was given a different screen with no signal whatsoever: the same URL bar, the same
@@ -171,8 +183,14 @@ export default function App() {
   if (!token) return <><SkipLink /><Gate code={code!} onJoined={(c) => go(`/room/${c}`)} /></>
   if (link === 'failed') return <><SkipLink /><Fault code={code!} onRetry={retry} onLeave={() => go('/')} /></>
   if (!state) return <><SkipLink /><Connecting code={code!} link={link} /></>
-  if (state.status === 'waiting') return <><SkipLink /><Lobby state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
-  if (state.status === 'done') return <><SkipLink /><Results state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
+  if (state.phase === 'waiting') return <><SkipLink /><Lobby state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
+  if (state.phase === 'done') return <><SkipLink /><Results state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
+  // Both of these are gated screens the phase switch opens and closes. The eight questions and
+  // the nine prompts are short, deliberate and single-purpose: a composer half-written on the
+  // play screen has to be somewhere to go while the didacticiel runs, and unmounting this
+  // screen is where its local question index and the note in flight go.
+  if (state.phase === 'quiz') return <><SkipLink /><Quiz state={state} code={code!} link={link} onRetry={retry} /></>
+  if (state.phase === 'rating') return <><SkipLink /><Rating state={state} code={code!} link={link} onRetry={retry} /></>
   return <><SkipLink /><Game state={state} code={code!} link={link} onRetry={retry} /></>
 }
 

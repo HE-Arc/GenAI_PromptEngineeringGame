@@ -1,6 +1,22 @@
-import { Board, ConsoleBar, Section } from './ui'
-import { getName, type State } from './api'
+import { Board, ConsoleBar, Section, type BoardColumn } from './ui'
+import { getName, type Player, type State } from './api'
 import type { Link } from './useRoom'
+
+/* The final standings. Four columns — player, proximity, quality, total — because the game now
+ * scores two things and a single total cannot say which of them a player was good at. */
+
+// The two dimension totals are not in the contract: `Player` carries the final score and the
+// current round's, and nothing else, while the final board is specified as four columns. They
+// are read out of the payload anyway and printed as "—" when absent, rather than the board
+// being quietly drawn with two columns. A zero would be a score nobody earned; a blank cell in a
+// column of numbers reads as a missing value and invites the inference the columns exist to
+// stop. The day the server adds them this file changes not at all.
+type Measured = Player & { proximity?: number | null; quality?: number | null }
+
+const COLUMNS: BoardColumn[] = [
+  { label: 'Proximité', value: (p) => (p as Measured).proximity ?? null },
+  { label: 'Qualité', value: (p) => (p as Measured).quality ?? null },
+]
 
 export default function Results({
   state,
@@ -17,16 +33,22 @@ export default function Results({
   // A tie is a tie: the server's sort picks a display order (join order among equals), which
   // is not a reason to hand one of the tied players a trophy the other did not lose.
   const winners = first === undefined ? [] : state.players.filter((p) => p.score === first.score)
-  const points = first === undefined ? 0 : first.score
+  // `score` is null outside a resolved round, and the last screen of a game can therefore find a
+  // player with no total at all — a player who never reached a scored round. It is read as zero
+  // and the winner's sentence says nothing about points when there is nothing to count, rather
+  // than announcing "l'emporte avec null".
+  const points = first?.score ?? 0
 
   // The winner is a sentence, not a slab. The illuminated panel is spent on the target and
   // the room code, and it is worth more for that: a player who has just seen it ten times
   // stops seeing it. Here the board itself carries the result, with the leading row in
   // sodium, so nothing extra has to be invented to announce it.
   const verdict =
-    winners.length === 1
-      ? `${winners[0].name} l’emporte avec ${points} ${points > 1 ? 'points' : 'point'}.`
-      : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${points} ${points > 1 ? 'points' : 'point'}.`
+    points === 0
+      ? 'Aucun tour n’a été noté dans cette partie.'
+      : winners.length === 1
+        ? `${winners[0].name} l’emporte avec ${points} ${points > 1 ? 'points' : 'point'}.`
+        : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${points} ${points > 1 ? 'points' : 'point'}.`
 
   return (
     <div className="deck">
@@ -49,7 +71,7 @@ export default function Results({
             they sit side by side with the board given a column of its own to stretch into. */}
         <div className="railcol">
           <Section title="Classement final">
-            <Board players={state.players} myName={getName(state.code)} />
+            <Board players={state.players} myName={getName(state.code)} columns={COLUMNS} />
           </Section>
         </div>
 

@@ -83,6 +83,10 @@ export default function Game({
 
   const myName = getName(code)
   const me: Player | undefined = state.players.find((p) => p.name === myName)
+  // The round is written, revealed and rated: the player is reading numbers, not composing.
+  // Derived from the phase rather than from `answered`, because "this player already sent" is
+  // true at the end of every round and says nothing about whether the round is still open.
+  const scored = state.phase === 'summary'
   // This player's own send, OR the stream. The stream alone is the event that put the score
   // below the fold: the button label is the only feedback still inside the viewport after a
   // submit, and it sat unchanged for the length of a model call, waiting on an SSE frame that
@@ -181,9 +185,12 @@ export default function Game({
         {/* The only heading on this screen, and the target a route change moves focus to. The
             round track above says the same thing visibly, so this one says what the *screen*
             is rather than which round it is on — otherwise a player arriving mid-game would
-            hear the number twice and nothing about what they are meant to do. */}
+            hear the number twice and nothing about what they are meant to do. It also follows
+            the phase, because on a summary screen there is nothing to answer: announcing
+            "Répondre à la manche 3" above a board of scores and no field would tell a
+            screen-reader user to go and do something this screen is not for. */}
         <h1 className="visually-hidden" tabIndex={-1}>
-          Répondre à la manche {state.current + 1}
+          {scored ? `Résumé de la manche ${state.current + 1}` : `Répondre à la manche ${state.current + 1}`}
         </h1>
 
         {notice && <p className="notice">{notice}</p>}
@@ -217,71 +224,154 @@ export default function Game({
           </div>
         )}
 
+        {/* The synthesis of the round that has just been scored, above the target rather than
+            on a screen of its own. It stays here because the player is still in the middle of
+            writing ten prompts: what came of the last one is the reading they do while the next
+            one waits, not a different activity that deserves its own tab.
+            Every figure is drawn, including the two the bound is made of. The critic's score and
+            the peers' average are the only reason the retained quality is the number it is, and
+            a round synthesis that printed the verdict without its inputs would be asking a class
+            to accept an arithmetic result they cannot check. */}
+        {scored && state.summary && (
+          <section className="tally">
+            <h2 className="label">Les notes de la manche {state.summary.round + 1}</h2>
+            {state.summary.rows.map((row) => (
+              <div className="tally__row" key={row.author}>
+                <div className="tally__head">
+                  <span className={row.author === myName ? 'board__name board__name--me' : 'board__name'}>
+                    {row.author}
+                    {row.author === myName && <span className="board__tag">toi</span>}
+                  </span>
+                  <span className="tally__round num">
+                    {row.round_score}
+                    <span className="tally__roundden">/ 10</span>
+                  </span>
+                </div>
+                <pre className="slot tally__prompt">{row.prompt}</pre>
+                <div className="tally__figs">
+                  <span className="tally__fig">
+                    <b className="num">{row.proximity}</b>
+                    <span>proximité</span>
+                  </span>
+                  <span className="tally__fig">
+                    <b className="num">{row.quality}</b>
+                    <span>qualité retenue</span>
+                  </span>
+                  <span className="tally__fig">
+                    <b className="num">{row.quality_llm}</b>
+                    <span>note du modèle</span>
+                  </span>
+                  <span className="tally__fig">
+                    <b className="num">{row.quality_peers}</b>
+                    <span>moyenne des pairs</span>
+                  </span>
+                </div>
+                {/* Behind a disclosure rather than below the fold. Nine of these and the wall of
+                    preformatted output is unreadable, and what a class discusses out loud is the
+                    prompt; the answer is what the prompt got, so it stays one tap away instead of
+                    pushing every other row off a phone screen. */}
+                <details className="tally__more">
+                  <summary className="tally__morebtn">Voir la réponse du modèle</summary>
+                  <pre className="slot">{row.output}</pre>
+                </details>
+              </div>
+            ))}
+            <p className="prose prose--sm prose--cool">
+              La qualité retenue est la moyenne des pairs, tenue à 3 points de la note du modèle.
+              Le modèle arbitre, les pairs corrigent.
+            </p>
+          </section>
+        )}
+
         {/* The target and the field it is written against, kept as one block: on a phone
             turned sideways they sit side by side, on a phone held upright they are the first
             two things on the screen, and on a desktop they head the column. A player is
-            always composing against the words they can actually see. */}
+            always composing against the words they can actually see.
+
+            The summary phase is the one place there is a target and no field. The round is
+            closed — it has been written, revealed and rated — so a live composer under it
+            could only ever fail, and for a player who has already sent it reads as a second
+            prompt of the round they are still credited for. What the player does during a
+            summary is read the numbers and argue about them, so that is what the space says. */}
         <div className="playgrid">
           {/* The one illuminated panel. The label says what the words below are for, which
               is the piece the old "Reponse a atteindre" never did: this is not a response to
               match, it is the answer you have to make the model produce. */}
-          <Readout label="Le modèle doit répondre" value={state.target ?? '—'} />
+          <Readout
+            label={
+              scored
+                ? `La cible de la manche ${state.current + 1}`
+                : 'Le modèle doit répondre'
+            }
+            value={state.target ?? '—'}
+          />
 
-          {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
-              reaching for the mouse is a textarea half-used. Cmd/Ctrl+Enter submits; a bare
-              Enter does not, because a prompt is instruction text and often wants line
-              breaks. The chord is also the guard the shortcut needs: it cannot be hit by
-              accident while a thumb or a hand is mid-word, which a bare-Enter submit could. */}
-          <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
-            <div className="field">
-              <label className="label" htmlFor="prompt">
-                Ton prompt
-              </label>
-              <textarea
-                id="prompt"
-                ref={areaRef}
-                className="area"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Décris la scène, le ton, la longueur…"
-                maxLength={2000}
-                // The prompt is a piece of instruction, not prose. Autocorrect and the
-                // spellchecker are both actively hostile to it: they "fix" the deliberate
-                // misspellings and the invented vocabulary that make a model produce
-                // something specific, and they do it while the player is mid-word.
-                autoCapitalize="sentences"
-                autoCorrect="off"
-                spellCheck={false}
-                disabled={alreadyDone}
-                // The message is a sentence about this field, so the field points at it. The
-                // prompt is never cleared on a failure — it is the work, and a rejected
-                // submission that ate it would be the real defect.
-                aria-invalid={err ? true : undefined}
-                aria-describedby={err ? 'prompt-err' : undefined}
-              />
-            </div>
-            {err && (
-              <p className="err err--inline" id="prompt-err" role="alert">
-                {err}
-              </p>
-            )}
-            <button
-              type="submit"
-              className="btn btn--signal btn--wide"
-              disabled={busy || alreadyDone || stale || !prompt.trim()}
-            >
-              {alreadyDone
-                ? 'Réponse envoyée'
-                : busy
-                  ? 'Le modèle réfléchit…'
-                  : stale
-                    ? 'En attente de la reconnexion…'
-                    : 'Envoyer au modèle'}
-            </button>
-            <p className="hint">
-              <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
+          {!scored && (
+            <>
+              {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
+                  reaching for the mouse is a textarea half-used. Cmd/Ctrl+Enter submits; a bare
+                  Enter does not, because a prompt is instruction text and often wants line
+                  breaks. The chord is also the guard the shortcut needs: it cannot be hit by
+                  accident while a thumb or a hand is mid-word, which a bare-Enter submit could. */}
+              <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
+                <div className="field">
+                  <label className="label" htmlFor="prompt">
+                    Ton prompt
+                  </label>
+                  <textarea
+                    id="prompt"
+                    ref={areaRef}
+                    className="area"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="Décris la scène, le ton, la longueur…"
+                    maxLength={2000}
+                    // The prompt is a piece of instruction, not prose. Autocorrect and the
+                    // spellchecker are both actively hostile to it: they "fix" the deliberate
+                    // misspellings and the invented vocabulary that make a model produce
+                    // something specific, and they do it while the player is mid-word.
+                    autoCapitalize="sentences"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    disabled={alreadyDone}
+                    // The message is a sentence about this field, so the field points at it. The
+                    // prompt is never cleared on a failure — it is the work, and a rejected
+                    // submission that ate it would be the real defect.
+                    aria-invalid={err ? true : undefined}
+                    aria-describedby={err ? 'prompt-err' : undefined}
+                  />
+                </div>
+                {err && (
+                  <p className="err err--inline" id="prompt-err" role="alert">
+                    {err}
+                  </p>
+                )}
+                <button
+                  type="submit"
+                  className="btn btn--signal btn--wide"
+                  disabled={busy || alreadyDone || stale || !prompt.trim()}
+                >
+                  {alreadyDone
+                    ? 'Réponse envoyée'
+                    : busy
+                      ? 'Le modèle réfléchit…'
+                      : stale
+                        ? 'En attente de la reconnexion…'
+                        : 'Envoyer au modèle'}
+                </button>
+                <p className="hint">
+                  <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
+                </p>
+              </form>
+            </>
+          )}
+
+          {scored && (
+            <p className="prose prose--dim">
+              La manche {state.current + 1} est commentée. L’animateur ouvre la suivante quand
+              la classe a fini.
             </p>
-          </form>
+          )}
         </div>
 
         {/* The wait after submitting used to be nothing at all: a disabled button and a dead
@@ -304,9 +394,16 @@ export default function Game({
         )}
 
         <div className="railcol">
-          <Section title="Classement">
-            <Board players={state.players} myName={myName} />
-          </Section>
+          {/* Rule one, as a render decision rather than as a rule: during the rating phase the
+              standings are not drawn. The server blanks every score then, so there is nothing to
+              draw — but "nothing to draw" is exactly how a bug looks on a screen, so the absence
+              has to be deliberate here rather than left to fall out of a null, and this is the
+              only place in the console that decides not to render a board it could render. */}
+          {state.phase !== 'rating' && (
+            <Section title="Classement">
+              <Board players={state.players} myName={myName} />
+            </Section>
+          )}
         </div>
       </main>
     </div>

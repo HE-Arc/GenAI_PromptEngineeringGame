@@ -428,10 +428,301 @@
   overflow-wrap: anywhere;
 }
 
+/* ---- the didacticiel: the answer's why, and the eight-question ranking ------------------ */
+
+/* Why this answer is the right one. It is the reason the phase exists — a QCM without an
+ * explanation teaches position rather than method — so it gets a panel of its own rather than a
+ * line of dim text under the choices, and it takes focus when it appears because it is the thing
+ * the player has just earned.
+ *
+ * The sodium rule is the panel's only signal of novelty: nothing about it says "new", it says
+ * "this is the answer's own material", which is the same thing the console uses sodium for
+ * everywhere else. */
+.explain {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.9rem var(--pad);
+  border-left: 2px solid var(--signal);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--well);
+}
+.explain:focus-visible {
+  outline-offset: 0;
+}
+.explain .prose {
+  font-size: 1.0625rem;
+  line-height: 1.45;
+}
+
+.qboard {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: var(--pad);
+  border-top: 1px solid var(--rail);
+}
+.qboard__mine {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+/* Sodium, and large, because this number is the screen's verdict and it is the only score in
+ * the console that will never appear in the final ranking. */
+.qboard__score {
+  color: var(--signal);
+  font-size: clamp(3rem, 16vw, 5rem);
+  line-height: 0.8;
+}
+.qboard__den {
+  color: var(--ink-dim);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+/* The didacticiel's own board, not `.board`. The class list in that component is the game's
+ * ranking, down to the bar drawn against the leader, and reusing it here would draw the same
+ * object in a second place with a second meaning: this list is a score that is deliberately kept
+ * out of the ranking, and saying so next to it is half of what makes it readable. */
+.qboard__list {
+  display: grid;
+}
+.qboard__row {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr) auto auto;
+  gap: 0.55rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--rail);
+}
+.qboard__pts {
+  color: var(--ink);
+  font-size: 1.375rem;
+  line-height: 1;
+}
+/* The denominator is a separate span rather than a suffix on the value so the two can be set at
+ * different sizes and so a screen reader reads "7", "sur 8" rather than "7 sur 8" as one number
+ * it will then have to parse. */
+.qboard__of {
+  color: var(--ink-dim);
+  font-size: 0.875rem;
+}
+
+/* ---- the round synthesis: the numbers behind a score ----------------------------------- */
+
+.tally {
+  display: grid;
+  gap: 0.6rem;
+  padding-top: var(--pad);
+  border-top: 1px solid var(--rail);
+}
+.tally__row {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--rail);
+}
+.tally__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+.tally__round {
+  margin-left: auto;
+  color: var(--signal);
+  font-size: 1.75rem;
+  line-height: 1;
+}
+.tally__roundden {
+  margin-left: 0.25rem;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.tally__prompt {
+  font-size: 0.9375rem;
+}
+/* Four figures in a row, wrapping to two on the narrowest phone. Every one of them is printed
+ * even though two of them are the inputs to the third: the retained quality is an arithmetic
+ * result, and a class that cannot check the arithmetic cannot argue with the number it is being
+ * asked to write ten of. */
+.tally__figs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+@media (min-width: 30rem) {
+  .tally__figs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.tally__fig {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid var(--rail);
+  border-radius: var(--radius);
+  background: var(--well);
+}
+.tally__fig b {
+  color: var(--ink);
+  font-size: 1.375rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.tally__fig span {
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+/* The model's answer to one prompt, behind a disclosure rather than below the fold. Nine of
+ * these on one screen is a wall of preformatted text, and what a class reads out loud is the
+ * prompt; the summary marker keeps the 48px target the rest of the console's controls hold. */
+.tally__more {
+  display: grid;
+}
+.tally__morebtn {
+  display: flex;
+  align-items: center;
+  min-height: 3rem;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+@media (hover: hover) and (pointer: fine) {
+  .tally__morebtn:hover {
+    color: var(--ink);
+  }
+}
+.tally__more .slot {
+  margin-bottom: 0.5rem;
+}
+
+/* ---- cross-rating: a target, a prompt, and one number ----------------------------------- */
+
+/* The target, above the prompt, in the body face and not in the illuminated panel. The panel is
+ * spent on the target in every other phase, and it cannot be spent here: on this screen the thing
+ * being looked at is the prompt, and a target set at display size above it would be the loudest
+ * thing on the screen while being the one of the two that is only reference. This is the only
+ * place in the console where a target is not the illuminated panel, and it is the reason the
+ * panel has an eye to follow rather than a rule to obey. */
+.ratehead {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.7rem var(--pad);
+  border-left: 2px solid var(--cool);
+  background: var(--well);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.ratehead__target {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.rateline {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.rateline__who {
+  margin-left: 0;
+}
+/* What this row is, in words, next to whose prompt it is. In the anonymous mode the label is a
+ * pseudonym that says nothing about the player, which is the point: the row reads the same in
+ * both modes and a player who knew the game was anonymous can tell that nothing extra has been
+ * revealed by the shape of the header. */
+.rateline__what {
+  margin-left: auto;
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* The prompt being judged, and the only thing on this screen set as an artifact. The display
+ * face is a quarter larger than the body text around it, which is what separates "the thing you
+ * are here to read" from "the sentence explaining what to do with it" without a box around
+ * either. */
+.prompt {
+  margin: 0;
+  padding: 1rem var(--pad);
+  border: 1px solid var(--rail);
+  border-left: 2px solid var(--signal);
+  border-radius: var(--radius);
+  background: var(--well);
+  box-shadow: inset 0 1px 0 var(--edge-sunk);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.25rem;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+/* "This one is yours", after the server said so. Cool rather than the fault red: a rule of the
+ * game is not a malfunction, and the fault colour on this screen would be spent on something
+ * nobody did wrong. The panel replaces the scale rather than sitting beside it — a scale the
+ * player may not use is a control that looks live. */
+.ownprompt {
+  margin: 0;
+  padding: 0.7rem var(--pad);
+  border-left: 2px solid var(--cool);
+  background: var(--well);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--cool-lit);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+.raterow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+/* The chosen note, big, at the end of the row: the player has just picked a number and this is
+ * the one place on the screen where the number is the answer to a question they are being asked.
+ * Decorative — the ten buttons below it each carry their own digit in the accessibility tree. */
+.raterow__value {
+  margin-left: auto;
+  color: var(--signal);
+  font-size: 1.75rem;
+  line-height: 1;
+}
+.rateends {
+  display: flex;
+  justify-content: space-between;
+}
+.rateends .label {
+  text-transform: lowercase;
+}
+
 /* ---- leaderboard ---------------------------------------------------------------------- */
 
 .board {
   display: grid;
+}
+/* The measured board. The template is set inline by the component — it is the only place that
+   knows how many columns there are — and both the header and the rows take it from here with
+   `inherit`, so a heading cannot drift out of alignment with the numbers it names. */
+.board--cols .board__head,
+.board--cols .board__row {
+  grid-template-columns: inherit;
+}
+.board__head {
+  display: grid;
+  column-gap: 0.55rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--rail);
+  color: var(--ink-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* Everything but the name is a number, and numbers are read right-aligned. */
+.board__head > span:not(.board__headname) {
+  text-align: right;
 }
 .board__row {
   display: grid;
@@ -441,6 +732,14 @@
   align-items: baseline;
   padding: 0.5rem 0;
   border-top: 1px solid var(--rail);
+}
+/* One step down from `.board__pts`, because the total is the one figure in the row the board is
+   about: a column of numbers all at the same weight is a column with no answer in it. */
+.board__cell {
+  color: var(--ink-dim);
+  font: 700 1.0625rem/1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 .board__rank {
   color: var(--ink-dim);

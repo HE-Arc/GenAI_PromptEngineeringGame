@@ -137,6 +137,33 @@
   gap: 0.35rem;
 }
 
+/* The four answers, stacked: one thumb, one column, 48px each. Side by side above 40rem, where
+ * there is width to spend and the pair of columns reads as a list of options rather than as four
+ * separate things to scroll to. */
+.choices {
+  display: grid;
+  gap: 0.5rem;
+}
+@media (min-width: 40rem) {
+  .choices {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* The ten notes, five by two on a phone and one row of ten above 40rem. The row count is the
+ * point rather than an accident of the grid: a scale of ten in two rows of five puts both ends
+ * of the scale in the same column, so "1 and 10" and "4 and 7" are horizontal reads instead of
+ * vertical ones, and the eye comparing two candidates compares them on the same row. */
+.rates {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+@media (min-width: 40rem) {
+  .rates {
+    grid-template-columns: repeat(10, minmax(0, 1fr));
+  }
+}
+
 .split {
   display: grid;
   gap: var(--gap);
@@ -197,13 +224,36 @@
   /* A reconnect notice is a sentence the player must read before typing, so it is the one
    * thing that earns a full-width row of its own — and when it is there it takes row one and
    * pushes the task down, which is the only place this block spends vertical budget it does
-   * not have. Notices are rare and transient; the other nine rounds of a game never see it. */
-  .screen--split > .notice {
+   * not have. Notices are rare and transient; the other nine rounds of a game never see it.
+   * The round synthesis is in the same position for the same reason: it is read before
+   * composing the next prompt, not instead of it, so it takes a full-width row of its own
+   * above the task rather than a column beside it. */
+  .screen--split > .notice,
+  .screen--split > .tally {
     grid-column: 1 / -1;
   }
-  .screen--split:has(> .notice) > .playgrid,
-  .screen--split:has(> .notice) > .stepwrap {
+  .screen--split:has(> .notice, > .tally) > .playgrid,
+  .screen--split:has(> .notice, > .tally) > .stepwrap {
     grid-row: 2;
+  }
+  /* The synthesis goes ABOVE the task, so unlike the notice it is pinned to row one and the
+   * task is what moves down. A landscape phone during the summary shows all of it — the tally,
+   * the target and the composer — and it can only do that by spending rows rather than columns;
+   * the notice is left above it when both happen at once, which is the one frame of the game
+   * where a dropped stream meets a round that has just been scored. */
+  .screen--split > .tally {
+    grid-row: 1;
+  }
+  .screen--split:has(> .tally) > .playgrid,
+  .screen--split:has(> .tally) > .stepwrap {
+    grid-row: 2;
+  }
+  .screen--split:has(> .tally):has(> .notice) > .tally {
+    grid-row: 2;
+  }
+  .screen--split:has(> .tally):has(> .notice) > .playgrid,
+  .screen--split:has(> .tally):has(> .notice) > .stepwrap {
+    grid-row: 3;
   }
   .screen--split > .railcol {
     grid-column: 2;
@@ -292,6 +342,15 @@
     margin-inline: auto;
     width: 100%;
   }
+  /* The didacticiel and the cross-rating screens are one column of prose and controls and have
+   * no second column to earn either — a rating screen on a 27" is a wall of 1500px with a prompt
+   * in it. Wider than the solo form, because these carry a question or a prompt that is meant to
+   * be read closely, and 34rem would put a 200-character prompt on six lines to no purpose. */
+  .screen--narrow {
+    max-width: 46rem;
+    margin-inline: auto;
+    width: 100%;
+  }
   .deck--wide {
     max-width: none;
   }
@@ -310,7 +369,8 @@
     align-items: start;
   }
   .screen--split > .stepwrap,
-  .screen--split > .notice {
+  .screen--split > .notice,
+  .screen--split > .tally {
     grid-column: 1 / -1;
   }
   .railcol {

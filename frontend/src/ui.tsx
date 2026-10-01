@@ -274,16 +274,22 @@ export function Readout({ label, value, code }: { label: string; value: string; 
   )
 }
 
-export function ScoreScale({ score }: { score: number }) {
-  const lit = Math.max(0, Math.min(10, Math.round(score)))
+// A range, because the console draws two of these. The score scale is 0-10 and has been since
+// the Game screen; the cross-rating scale is 1-10, and a ten-tick bar that started one notch in
+// would say "you have scored nothing" before a single note had been given. Defaults keep every
+// existing call site on the 0-10 reading without touching it, which is the whole argument for
+// extending this component instead of writing a second scale beside it: one instrument, two
+// calibrations, and the two cannot drift apart visually because there is only one set of rules.
+export function ScoreScale({ score, min = 0, max = 10 }: { score: number; min?: number; max?: number }) {
+  const lit = Math.max(min, Math.min(max, Math.round(score)))
   // Hidden for the same reason as the meter: the score is written out in full beside it, and
   // this exists to show how big that number is, which is a thing words cannot do.
   return (
     <div className="scale" aria-hidden="true">
-      {Array.from({ length: 10 }, (_, i) => (
+      {Array.from({ length: max - min }, (_, i) => (
         <span
           key={i}
-          className={`scale__tick${i < lit ? ' scale__tick--on' : ''}`}
+          className={`scale__tick${min + i < lit ? ' scale__tick--on' : ''}`}
           style={{ '--i': i } as CSSProperties}
         />
       ))}
@@ -291,13 +297,61 @@ export function ScoreScale({ score }: { score: number }) {
   )
 }
 
+// The measured columns the final standings are specified as — proximity and quality alongside
+// the total — carried as functions of the player rather than as a fixed list, so a caller that
+// has one number does not have to invent the other, and a caller with neither keeps the two
+// column board every other screen in the console already draws.
+export type BoardColumn = { label: string; value: (p: Player) => number | null }
+
+// A null score is not a zero and it must never render as a blank. The server blanks every score
+// during the rating phase on purpose, and a cell that draws nothing in a column of numbers reads
+// as a missing value, which is the inference the phase exists to prevent — so the cell says "—".
+function Dash({ value }: { value: number | null }) {
+  return <span className="board__pts num">{value ?? '—'}</span>
+}
+
 // Rank alone tells you nothing when you are fifth of seven. The bar is drawn against the
 // leader, so the row answers "how far off the top am I" and the leading row is the only one
 // at full sodium.
-export function Board({ players, myName }: { players: Player[]; myName: string }) {
-  const top = Math.max(...players.map((p) => p.score), 0)
+//
+// The bar goes away when there are measured columns, and that is not a loss of information: it
+// was a single comparison against the leader drawn as a length, and three columns of digits are
+// that same comparison stated exactly, for each dimension separately. One bar across a row of
+// three numbers would only ever be about the total, and would invite reading it as if it were
+// about all three.
+export function Board({
+  players,
+  myName,
+  columns = [],
+}: {
+  players: Player[]
+  myName: string
+  columns?: BoardColumn[]
+}) {
+  const top = Math.max(...players.map((p) => p.score ?? 0), 0)
   return (
-    <div className="board">
+    <div
+      className={`board${columns.length ? ' board--cols' : ''}`}
+      style={
+        columns.length
+          ? { gridTemplateColumns: `1.4rem minmax(0, 1fr) repeat(${columns.length + 1}, auto)` }
+          : undefined
+      }
+    >
+      {/* A header row, and only when there is more than one number to name. With a single
+          column there is nothing to disambiguate: the only number in a row has been the total
+          since the Game screen, and a heading over it would say nothing a reader did not
+          already know. */}
+      {columns.length > 0 && (
+        <div className="board__head">
+          <span />
+          <span className="board__headname">Joueur</span>
+          {columns.map((c) => (
+            <span key={c.label}>{c.label}</span>
+          ))}
+          <span>Total</span>
+        </div>
+      )}
       {players.map((p, i) => (
         <div className="board__row" key={p.name}>
           <span className="board__rank">{i + 1}</span>
@@ -305,13 +359,20 @@ export function Board({ players, myName }: { players: Player[]; myName: string }
             {p.name}
             {p.name === myName && <span className="board__tag">toi</span>}
           </span>
-          <span className="board__pts num">{p.score}</span>
-          <span className="board__bar" aria-hidden="true">
-            <span
-              className={`board__fill${i === 0 ? ' board__fill--top' : ''}`}
-              style={{ width: `${top > 0 ? (p.score / top) * 100 : 100}%` }}
-            />
-          </span>
+          {columns.map((c) => (
+            <span className="board__cell" key={c.label}>
+              {c.value(p) ?? '—'}
+            </span>
+          ))}
+          <Dash value={p.score} />
+          {!columns.length && (
+            <span className="board__bar" aria-hidden="true">
+              <span
+                className={`board__fill${i === 0 ? ' board__fill--top' : ''}`}
+                style={{ width: `${top > 0 ? ((p.score ?? 0) / top) * 100 : 100}%` }}
+              />
+            </span>
+          )}
         </div>
       ))}
     </div>
@@ -323,33 +384,42 @@ export function Board({ players, myName }: { players: Player[]; myName: string }
 // on "erase the game in progress". Quiet until it is armed, then the fault colour and a label
 // that says what pressing it will do — two taps, because none of these can be taken back.
 //
+// The armed state is either one confirm or a set of choices, never both, and the type says so: a
+// component that took both would let a call site pass a confirm that nothing can ever reach, and
+// a destructive control whose fallback is unreachable is a control nobody can audit. A restart is
+// the case that needs the choice — "with the didacticiel" or "without" — and it gets one arming
+// and a second tap rather than two armed buttons a thumb picks between in a noisy room.
+//
 // All the state stays with the caller, which is the only thing that knows what "armed" means
 // here: an arming is only valid for the exact room state it was armed against.
-export function DangerButton({
-  label,
-  armedLabel,
-  confirming,
-  disabled,
-  onArm,
-  onConfirm,
-}: {
+type DangerProps = {
   label: string
   armedLabel: string
   confirming: boolean
   disabled?: boolean
   onArm: () => void
-  onConfirm: () => void
-}) {
+} & (
+  | { choices: ReactNode; onConfirm?: never }
+  | { choices?: never; onConfirm: () => void }
+)
+
+export function DangerButton(props: DangerProps) {
+  const { label, armedLabel, confirming, disabled, onArm } = props
+  const confirm = props.onConfirm
   return (
     <div className="guard">
-      <button
-        type="button"
-        className={`btn btn--wide${confirming ? ' btn--danger' : ' btn--ghost'}`}
-        disabled={disabled}
-        onClick={() => (confirming ? onConfirm() : onArm())}
-      >
-        {confirming ? armedLabel : label}
-      </button>
+      {confirming && props.choices ? (
+        props.choices
+      ) : (
+        <button
+          type="button"
+          className={`btn btn--wide${confirming ? ' btn--danger' : ' btn--ghost'}`}
+          disabled={disabled}
+          onClick={() => (confirming && confirm ? confirm() : onArm())}
+        >
+          {confirming ? armedLabel : label}
+        </button>
+      )}
     </div>
   )
 }

@@ -463,7 +463,7 @@ figure {
   padding: 0.15rem 0 0.15rem 0.6rem;
 }
 
-/* Keyboard focus is the only way some players will ever move around this console, and on
+/* A keyboard focus is the only way some players will ever move around this console, and on
  * a phone held in one hand it is the difference between a screen and a maze. */
 :focus-visible {
   outline: 2px solid var(--signal);
@@ -473,6 +473,166 @@ figure {
 .area:focus-visible {
   border-color: var(--signal);
   outline-offset: 1px;
+}
+
+/* The four answers of the didacticiel. A button like any other — same 48px floor, same rail
+ * border — because they are pressed with the same thumb as everything else, and a QCM option
+ * that is easier to miss than the send button is a QCM option some players will skip. */
+.choice {
+  justify-content: flex-start;
+  text-align: left;
+  gap: 0.75rem;
+}
+/* The letter, in the display face at display weight, so the four rows have a spine the eye can
+ * run down before it reads a word of them. `aria-hidden` because the answer's own text is what
+ * a screen reader should say, and "A" on its own is noise. */
+.choice__k {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 1px solid var(--track-edge);
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font: 800 1rem/1.5 var(--font-display);
+  text-align: center;
+}
+.choice__t {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+/* Right and wrong are sodium and the fault red — a pair that already exists in this palette,
+ * and no third hue was added for a green "correct". The reason is in the palette's own terms:
+ * --fault exists precisely because an error painted in the same sodium as a score of 7/10 would
+ * tell a red-green colourblind player the opposite of the truth, so green here would hand back
+ * the ambiguity the token was introduced to remove. Sodium means "live and lit" everywhere else
+ * in this console and the correct answer is the lit one; --fault keeps meaning "not right", and
+ * the word beside the answer says which is which for anyone who cannot see either.
+ *
+ * A rule and not a fill: the choice is still a row of text to read, and four rows that turn
+ * into four colour blocks would be four paragraphs to read again.
+ *
+ * Every rule repeats `:disabled`, and not for tidiness. A answered choice is a disabled button,
+ * and `.btn:disabled` wins on specificity — so without this the reveal would happen and the two
+ * signals that say right and wrong would be the two things the disabled state took away. The
+ * answer to that is not `!important` and not a state the component has to model; it is a rule
+ * written at the weight it has to beat. */
+.btn.choice--right,
+.btn.choice--right:disabled {
+  border-color: var(--signal);
+  background: var(--panel);
+  box-shadow: inset 3px 0 0 var(--signal);
+  color: var(--ink);
+}
+.btn.choice--right .choice__k,
+.btn.choice--right:disabled .choice__k {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+.btn.choice--miss,
+.btn.choice--miss:disabled {
+  border-color: var(--fault);
+  background: var(--panel);
+  box-shadow: inset 3px 0 0 var(--fault);
+  color: var(--ink);
+}
+.btn.choice--miss .choice__k,
+.btn.choice--miss:disabled .choice__k {
+  border-color: var(--fault);
+  color: var(--fault);
+}
+/* The chosen-and-right row is already the right one; the inset says so and the tag says who
+ * picked it. */
+.btn.choice--yours:disabled {
+  box-shadow: inset 3px 0 0 var(--signal), inset 0 0 0 1px var(--glow);
+}
+.choice__tag {
+  flex: none;
+  align-self: center;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.choice--right .choice__tag,
+.btn.choice--right:disabled .choice__tag {
+  color: var(--signal);
+}
+.btn.choice--miss .choice__tag,
+.btn.choice--miss:disabled .choice__tag {
+  color: var(--fault);
+}
+
+/* The two flags a room is created with. Native checkboxes with the accent rather than buttons
+ * drawn to look like checkboxes: the whole cost of that choice is that the box cannot be styled
+ * to match the panel, and what it buys is a real control with real keyboard, real focus and a
+ * real checked state, which three divs would each have to re-implement.
+ *
+ * `accent-color` rather than a hand-painted box is the whole implementation, and it is the
+ * point: the console's sodium says "this one is on" and it says it here too, with no new token
+ * and no new meaning. */
+.checks {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: var(--pad);
+  border-top: 1px solid var(--rail);
+}
+.check {
+  /* 48px, the floor every other control in the console holds: this label is the whole target,
+   * and a checkbox in the corner of a line of text is not a target a thumb can be aimed at on
+   * a phone. */
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--track-edge);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 120ms linear;
+}
+@media (hover: hover) and (pointer: fine) {
+  .check:hover {
+    border-color: var(--ink-dim);
+  }
+}
+.check__box {
+  flex: none;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin: 0;
+  accent-color: var(--signal);
+  cursor: pointer;
+}
+.check__text {
+  display: grid;
+  gap: 0.15rem;
+  font: 600 1rem/1.3 var(--font-ui);
+}
+/* The consequence, under the flag. A label alone ("anonyme pendant la notation") does not tell
+ * an admin what they are choosing between, and this decision is made once, at creation, for
+ * everyone in the room. */
+.check__hint {
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+/* The ten notes of the cross-rating grid. Five by two on the phone, ten by one above 40rem.
+ * A `.btn` in every respect — the 48px floor is what makes it usable standing up — with the
+ * number set in the display face so the grid reads as a scale at arm's length rather than as a
+ * numeric keypad. The selected state borrows `.btn--signal`, so "chosen" is the console's own
+ * sodium and cannot mean anything else. */
+.rate {
+  padding: 0 0.2rem;
+  font: 800 1.375rem/1 var(--font-display);
+  font-variant-numeric: tabular-nums;
 }
 
 /* The skip link, and the reason it is not built out of `.visually-hidden`. That class is a
