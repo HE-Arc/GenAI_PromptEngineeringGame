@@ -115,6 +115,24 @@ def require_admin(request: HttpRequest) -> JsonResponse | None:
     return None if request.session.get("admin") else json_error("admin only", 403)
 
 
+def _player_for_token(room: Room, data: dict) -> tuple[Player | None, JsonResponse | None]:
+    """The player `data`'s token names IN THIS ROOM, or `(None, refusal)` when it names nobody.
+
+    A token is a credential only within the room it was minted in, so the lookup is scoped on the
+    room as well as the token: one from another room must not answer, rate or score in this one.
+    Every endpoint that acts for a player asks the question the same way, and the answer is the
+    same refusal each time, so it is settled here once rather than in each of them.
+
+    The refusal is RETURNED, not raised, because every caller needs the player on the way through:
+    returning it keeps each call site a lookup and a two-line guard, where raising would wrap the
+    whole rest of the view in a `try` to catch something it did not throw.
+    """
+    try:
+        return Player.objects.get(room=room, token=data.get("token", "")), None
+    except Player.DoesNotExist:
+        return None, json_error("bad token", 403)
+
+
 def _new_code() -> str:
     for _ in range(50):
         code = "".join(secrets.choice(_ALPHABET) for _ in range(4))
@@ -879,10 +897,9 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
     if room.phase != Room.Phase.PLAYING:
         return json_error("not playing", 409)
     data = body(request)
-    try:
-        player = Player.objects.get(room=room, token=data.get("token", ""))
-    except Player.DoesNotExist:
-        return json_error("bad token", 403)
+    player, refusal = _player_for_token(room, data)
+    if refusal is not None:
+        return refusal
     rnd = room.rounds.filter(order=room.current).first()
     if rnd is None:
         return json_error("no round", 409)
@@ -973,12 +990,11 @@ def rate(request: HttpRequest, code: str) -> JsonResponse:
     if room.phase != Room.Phase.RATING:
         return json_error("not rating", 409)
     data = body(request)
-    try:
-        # Scoped to the room as well as the token, like `answer`: a token from another room must
-        # not vote in this one.
-        player = Player.objects.get(room=room, token=data.get("token", ""))
-    except Player.DoesNotExist:
-        return json_error("bad token", 403)
+    # Scoped to the room as well as the token, like `answer`: a token from another room must
+    # not vote in this one.
+    player, refusal = _player_for_token(room, data)
+    if refusal is not None:
+        return refusal
     rnd = room.current_round()
     answers = list(rnd.answers.order_by("id")) if rnd is not None else []
     # Nothing behind the cursor — no round at all, or a round nobody answered — is the same answer:
@@ -1108,12 +1124,11 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
     if room.phase != Room.Phase.QUIZ:
         return json_error("quiz not open", 409)
     data = body(request)
-    try:
-        # Scoped to the room as well as the token, like `answer`: a token from another room must
-        # not score a question in this one.
-        player = Player.objects.get(room=room, token=data.get("token", ""))
-    except Player.DoesNotExist:
-        return json_error("bad token", 403)
+    # Scoped to the room as well as the token, like `answer`: a token from another room must
+    # not score a question in this one.
+    player, refusal = _player_for_token(room, data)
+    if refusal is not None:
+        return refusal
     order = data.get("question")
     # `isinstance(True, int)` is True, so a JSON `true` is an int that would pass the type check
     # and then miss every row. Same guard as the 1-10 rating scale.

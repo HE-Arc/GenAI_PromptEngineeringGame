@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
+from game import prompts
 from game.quiz import QUIZ_SECONDS
 
 
@@ -317,8 +318,14 @@ class Rating(models.Model):
         constraints = [
             # 1-10 is the scale the whole rating phase is drawn against: the visual scale, the
             # visual summary and the ±3 band around the critic all assume it. A score outside it
-            # is not a display problem, it is a wrong ranking produced silently.
-            models.CheckConstraint(condition=models.Q(score__gte=1, score__lte=10), name="rating_score_1_10"),
+            # is not a display problem, it is a wrong ranking produced silently. The bounds are
+            # `prompts.SCALE_MIN`/`SCALE_MAX` and not these literals: the view's own check, the
+            # visual scale and this constraint have to agree, and a second copy of the numbers is
+            # a second place for them to disagree quietly.
+            models.CheckConstraint(
+                condition=models.Q(score__gte=prompts.SCALE_MIN, score__lte=prompts.SCALE_MAX),
+                name="rating_score_1_10",
+            ),
         ]
 
     def save(self, *args, **kwargs) -> None:
