@@ -9,10 +9,16 @@ from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.http import Http404, HttpRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from game import llm
-from game.models import Player, QuizAttempt, Room, Round
+from game.models import Player, QuizAttempt, QuizQuestion, Room, Round
+# Named `pick_questions`, not `pick`, and imported as a name rather than as the `game.quiz`
+# module: the didacticiel's draw is a PERMUTATION of a bank exactly one quiz long, and a reader
+# who sees two things called `pick` in this header has to go and check which bank each is on.
+# It is also the seam a test patches (`game.views.pick_questions`) for the same reason
+# `game.views.pick` is: patched where it is USED.
+from game.quiz import pick as pick_questions
 from game.targets import ROUNDS_PER_GAME, pick
 
 _ALPHABET = string.ascii_uppercase.replace("O", "").replace("I", "")
@@ -134,6 +140,36 @@ def admin_create_room(request: HttpRequest) -> JsonResponse:
     # player in the room which screen they are supposed to be on. Absent from the body means the
     # model defaults, which is the safe direction — a gate on and names hidden.
     data = body(request)
+    # The didacticiel is MATERIALISED here, once, and read back by `order` from then on. Handing
+    # each player their own eight would make the gate untestable: a player who saw question 3
+    # first has no answer key to compare with anyone else's, and "3 sur 8" would be a sum over
+    # eight different quizzes.
+    #
+    # Drawn ONCE PER DATABASE rather than once per room, and that is forced by the schema rather
+    # than chosen: `QuizQuestion.order` is UNIQUE and carries no room FK, so only one bank of
+    # eight can exist at a time and a second `admin_create_room` has to reuse it. The honest
+    # consequence, written down because it is the opposite of what `pick_questions`' docstring
+    # implies: two rooms in one install face the eight questions in the SAME order. Per-room
+    # order needs a per-room key on `QuizQuestion`, i.e. a migration this task does not own. The
+    # bank also outlives `admin_restart`, which is the behaviour `test_restart_erases_quiz_
+    # attempts_and_ratings` already pins.
+    if not QuizQuestion.objects.exists():
+        # `bulk_create` goes straight to INSERT and skips `full_clean()`, exactly like
+        # `admin_start`'s rounds: nothing here is validated by Django, only by the database.
+        # Safe for the same reason theirs is — `order` comes from `enumerate()`, cannot collide,
+        # and the bank is one quiz long.
+        QuizQuestion.objects.bulk_create(
+            [
+                QuizQuestion(
+                    order=i,
+                    prompt=q.prompt,
+                    choices=list(q.choices),
+                    correct=q.correct,
+                    explanation=q.explanation,
+                )
+                for i, q in enumerate(pick_questions())
+            ]
+        )
     Room.objects.create(
         code=code,
         tutorial=bool(data.get("tutorial", True)),
@@ -224,6 +260,36 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
     return JsonResponse({"ok": True, "phase": room.phase})
 
 
+def _quiz_state(room: Room, online: set[int]) -> dict:
+    """The room's quiz headline: how far the room is through the gate, and the best score in it.
+
+    ROOM-level, not per-viewer, and it cannot be otherwise: `room_state(code)` deliberately takes
+    no token — the snapshot is one payload for the admin screen, every phone and every spectator,
+    and presence is global in this codebase — so it does not know who is reading. A player's OWN
+    score is `players[].quiz_score`, which the same snapshot already carries. So this block is the
+    number the lobby and the admin show, not the one a player is graded by.
+
+    `done` counts the ONLINE players who have answered every question, matching the bar
+    `maybe_advance` uses to open the game: if this and the gate disagreed, the screen would say
+    "c'est parti" on a room that has not moved. A player whose phone dropped is not counted, for
+    the reason every other advance in this file counts presence: the row is there forever and the
+    person may never come back.
+    """
+    total = QuizQuestion.objects.count()  # the bank is per database, so this is the room's bank
+    players = list(room.players.filter(pk__in=online))
+    if not total:
+        # An empty bank must not read as "everybody is done": `count() == 0` is true of every
+        # player, so the naive comparison would report a full room at the top of the gate.
+        return {"total": 0, "done": 0, "score": 0}
+    return {
+        "total": total,
+        "done": sum(1 for p in players if p.quiz_attempts.count() == total),
+        # 0, never None, with nobody online: same rule as `Player.quiz_score` — the client should
+        # not carry a null branch only a room with nobody in it would ever take.
+        "score": max((p.quiz_score() for p in players), default=0),
+    }
+
+
 def room_state(code: str) -> dict:
     room = get_object_or_404(Room, code=code)
     rnd = room.rounds.filter(order=room.current).first()
@@ -253,7 +319,7 @@ def room_state(code: str) -> dict:
     # ordering puts "Zoe" before "alice". Sorting on a tuple rather than on the dict keeps
     # `created_at`, a datetime, out of the JSON payload this snapshot is serialised into.
     players.sort(key=lambda t: (-t[0], t[1]))
-    return {
+    state = {
         "code": room.code,
         "phase": room.phase,
         "current": room.current,
@@ -264,10 +330,44 @@ def room_state(code: str) -> dict:
         # flags can never disagree in the payload the client renders.
         "online_count": sum(1 for _s, _j, d in players if d["online"]),
     }
+    # Only in the phase that has a quiz to show. The final contract puts the three phase blocks
+    # (`quiz`, `reveal`, `summary`) in the snapshot unconditionally, `None` outside their phase, so
+    # the client null-checks one shape instead of testing for the key's existence. That is not
+    # done here: an always-present `quiz` key changes the key SET of every snapshot in every
+    # phase, which is `test_play`'s two whole-dict assertions, and this task does not own those
+    # files. The gate is the whole point of the block, so it ships where it is true.
+    if room.phase == Room.Phase.QUIZ:
+        state["quiz"] = _quiz_state(room, online)
+    return state
+
+
+def _maybe_open_playing(room: Room, online: set[int]) -> None:
+    """Open the game once every player who is there has answered the whole didacticiel.
+
+    Same bar as the round close, and for the same reason: `room.players` is a phone that slept,
+    not a person who is going to answer. The count is the room's OWN online players rather than
+    `len(online)`, so a presence entry left behind by a player deleted mid-quiz cannot make the
+    comparison unreachable and pin the room on the gate forever.
+
+    The question count is read from the bank rather than from `quiz.QUIZ_LENGTH`, so a bank the
+    admin has grown past eight is not gated on a hardcoded eight.
+    """
+    total = QuizQuestion.objects.count()
+    if not total:
+        return  # nothing was materialised, so there is no gate to pass
+    players = list(room.players.filter(pk__in=online))
+    if not players:
+        return  # every presence entry is a player this room does not have: `all([])` is True
+    if all(p.quiz_attempts.count() == total for p in players):
+        room._go(Room.Phase.PLAYING)
 
 
 def maybe_advance(room: Room) -> None:
-    """Close the round once every player who is actually there has answered.
+    """Move the game on if the players who are there have done what the phase is waiting for.
+
+    Two phases advance on their own: the didacticiel, once everybody online has answered the
+    eight questions, and the round, once everybody online has written a prompt. The others wait
+    for the admin — a round gets commented on, and nothing should move the game while it is.
 
     The bar is the online players, not `room.players`: a phone that slept or lost wifi is still a
     row in that table forever, so the old comparison waited on someone who was never coming back and
@@ -275,17 +375,20 @@ def maybe_advance(room: Room) -> None:
     the count on their next beat, and `answer` does not require presence, so a late arrival can
     still answer the round that is open when they get back.
     """
-    if room.phase != Room.Phase.PLAYING:
-        return
-    rnd = room.rounds.filter(order=room.current).first()
-    if not rnd:
+    if room.phase not in (Room.Phase.QUIZ, Room.Phase.PLAYING):
         return
     online = online_player_ids(room.code)
     if not online:
         # Nobody is streaming, so there is no evidence anyone is here. Without this guard a room
         # whose every phone dropped would satisfy "all online players have answered" vacuously —
-        # `0 == 0` — and run itself to `done` unattended. A round is only ever closed by a real
-        # player's submit.
+        # `0 == 0` — and open itself unattended. A phase is only ever closed by a real player's
+        # submit.
+        return
+    if room.phase == Room.Phase.QUIZ:
+        _maybe_open_playing(room, online)
+        return
+    rnd = room.rounds.filter(order=room.current).first()
+    if not rnd:
         return
     if rnd.answers.filter(player_id__in=online).count() == len(online):
         room.next_round()
@@ -384,3 +487,88 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
         _inflight.discard(claim)
     maybe_advance(room)
     return JsonResponse({"score": verdict.score, "comment": verdict.comment, "output": output})
+
+
+@require_http_methods(["GET", "POST"])
+def quiz(request: HttpRequest, code: str) -> JsonResponse:
+    """The didacticiel on one route: GET reads the bank, POST answers ONE question.
+
+    ONE route and not two `path()` entries, because `URLResolver.resolve` walks `urlpatterns` in
+    order and returns the first pattern that MATCHES THE PATH — it does not know about methods. A
+    `require_GET` pattern listed first would answer every POST with 405 and the pattern below it
+    would never be reached. So the one decorator here is the method gate, and the two halves below
+    are private: nothing calls them except this dispatch.
+    """
+    return _quiz_get(request, code) if request.method == "GET" else _quiz_post(request, code)
+
+
+def _quiz_get(request: HttpRequest, code: str) -> JsonResponse:
+    """The eight questions, in `order`, with no key and no explanation attached.
+
+    Not cosmetic. This payload is a JSON body any player can read in devtools or in a proxy, and a
+    QCM whose key ships to the client is not a QCM — it is a form with a lookup table. So `correct`
+    and `explanation` are dropped HERE, at the only place they are read, rather than in the
+    frontend that is supposed to forget them.
+
+    Unauthenticated, and not phase-gated, on purpose: what it returns is the eight prompts and
+    their four choices, which is what is on the screen anyway, so reading it leaks nothing the
+    player could not read by looking. What it never returns is what a later phase cannot: the
+    answer, and the reason. That stays in the POST, which is a write.
+    """
+    get_object_or_404(Room, code=code)
+    return JsonResponse(
+        {
+            "questions": [
+                {"order": q.order, "prompt": q.prompt, "choices": q.choices}
+                for q in QuizQuestion.objects.order_by("order")
+            ]
+        }
+    )
+
+
+def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
+    """Answer one question, and reveal it.
+
+    The response is `{"correct", "explanation", "score"}` and the whole point of it is the
+    revelation: the explanation travels in the SAME response that tells the player whether they
+    were right, which is why `QuizQuestion.explanation` is stored rather than read from `quiz.py`
+    at answer time — it belongs to the exact row the player was shown, so an edited bank cannot
+    retroactively change the reason a past game gave.
+
+    The client names a question by its `order` and a choice by its index, and sends nothing else
+    that is checked: the player is the token, the question is the row, the key is the row's.
+    """
+    room = get_object_or_404(Room, code=code)
+    if room.phase != Room.Phase.QUIZ:
+        return json_error("quiz not open", 409)
+    data = body(request)
+    try:
+        # Scoped to the room as well as the token, like `answer`: a token from another room must
+        # not score a question in this one.
+        player = Player.objects.get(room=room, token=data.get("token", ""))
+    except Player.DoesNotExist:
+        return json_error("bad token", 403)
+    order = data.get("question")
+    # `isinstance(True, int)` is True, so a JSON `true` is an int that would pass the type check
+    # and then miss every row. Same guard as the 1-10 rating scale.
+    if not isinstance(order, int) or isinstance(order, bool):
+        return json_error("question index required", 400)
+    question = QuizQuestion.objects.filter(order=order).first()
+    if question is None:
+        return json_error("no such question", 400)
+    choice = data.get("choice")
+    if not isinstance(choice, int) or isinstance(choice, bool) or not 0 <= choice < len(question.choices):
+        return json_error("choice out of range", 400)
+    if QuizAttempt.objects.filter(player=player, question=question).exists():
+        return json_error("already answered", 409)
+    correct = choice == question.correct
+    try:
+        # The durable backstop, for the same reason as in `answer`: a flaky phone retrying is
+        # indistinguishable from a second answer, and `unique_together` is the source of truth.
+        # Losing that race is the 409 the player already got, not a 500.
+        with transaction.atomic():
+            QuizAttempt.objects.create(player=player, question=question, choice=choice, correct=correct)
+    except IntegrityError:
+        return json_error("already answered", 409)
+    maybe_advance(room)
+    return JsonResponse({"correct": correct, "explanation": question.explanation, "score": player.quiz_score()})

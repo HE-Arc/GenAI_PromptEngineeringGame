@@ -11,4 +11,7 @@ urlpatterns = [
     path("api/rooms/<str:code>/join", views.join),
     path("api/rooms/<str:code>/events", views.events),
     path("api/rooms/<str:code>/answer", views.answer),
+    # GET reads the bank, POST answers one question: two methods on ONE pattern, because the
+    # resolver returns the first pattern that matches the path and never looks at the method.
+    path("api/rooms/<str:code>/quiz", views.quiz),
 ]
