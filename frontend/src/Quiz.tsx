@@ -1,17 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import { ConsoleBar, Readout, RoundTrack, Section } from './ui'
-import { describe, getName, getToken, post, type State } from './api'
+import {
+  describe,
+  getName,
+  getToken,
+  post,
+  type Question,
+  type QuizAnswered,
+  type QuizBank,
+  type State,
+} from './api'
 import type { Link } from './useRoom'
 
 /* The didacticiel: one question on screen at a time, the answer revealed the moment it is
  * given, and the eight-question ranking at the end. */
 
-// The bank is not in the snapshot and not in api.ts: it is fetched once from the endpoint,
-// which is right — eight questions and their order are drawn per room, and the snapshot is
-// rebuilt every 500ms. `correct` never arrives with a question, so nothing here can spoil the
-// next one: the answer comes back from the POST that answers it, which is the only copy of it
-// the client ever holds.
-type Question = { prompt: string; choices: string[] }
+// The bank is fetched once from its own endpoint, which is right — eight questions and their
+// order are drawn per room, and the snapshot is rebuilt every 500ms. `correct` never arrives
+// with a question, so nothing here can spoil the next one: the answer comes back from the POST
+// that answers it, which is the only copy of it the client ever holds. The shapes live in
+// `api.ts` beside the rest of the wire contract, not here.
 
 // The letters are on the buttons and not in the text: a class of ten reading the same four
 // rows of prose aloud should not also have to hear "A point virgule", and the letter is the one
@@ -35,7 +43,9 @@ export default function Quiz({
   // the player has read the explanation for the one in front of them.
   const [at, setAt] = useState(0)
   const [picked, setPicked] = useState<number | null>(null)
-  const [why, setWhy] = useState<{ correct: number; explanation: string } | null>(null)
+  // `correct_index`, not `correct`: the reveal has to point at the good choice, and the two
+  // only differ on a wrong answer — which is exactly when the screen most needs to be right.
+  const [why, setWhy] = useState<QuizAnswered | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   // The running tally, from this screen's own POSTs. The snapshot carries it too, but the
@@ -59,7 +69,7 @@ export default function Quiz({
           { headers: { Accept: 'application/json' } },
         )
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = (await res.json()) as { questions: Question[] }
+        const data = (await res.json()) as QuizBank
         if (!gone) setQuestions(data.questions)
       } catch (e) {
         if (!gone) setErr(e instanceof Error ? e.message : 'quiz indisponible')
@@ -91,7 +101,7 @@ export default function Quiz({
     setBusy(true)
     setErr('')
     try {
-      const res = await post<{ correct: number; explanation: string; score: number }>(
+      const res = await post<QuizAnswered>(
         `/api/rooms/${code}/quiz`,
         { token: getToken(code), question: at, choice },
       )
@@ -140,7 +150,7 @@ export default function Quiz({
             than to the room, so it is the part worth a voice. */}
         <p className="visually-hidden" aria-live="polite">
           {why
-            ? why.correct === picked
+            ? why.correct_index === picked
               ? 'Bonne réponse.'
               : 'Réponse incorrecte.'
             : question
@@ -174,7 +184,7 @@ export default function Quiz({
                 where their thumb is, and the verdict lands on it rather than replacing it. */}
             <div className="choices">
               {question.choices.map((text, i) => {
-                const right = why !== null && i === why.correct
+                const right = why !== null && i === why.correct_index
                 const yours = why !== null && i === picked
                 const missed = yours && !right
                 return (

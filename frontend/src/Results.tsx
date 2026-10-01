@@ -1,21 +1,19 @@
 import { Board, ConsoleBar, Section, type BoardColumn } from './ui'
-import { getName, type Player, type State } from './api'
+import { getName, type State } from './api'
 import type { Link } from './useRoom'
 
 /* The final standings. Four columns — player, proximity, quality, total — because the game now
- * scores two things and a single total cannot say which of them a player was good at. */
-
-// The two dimension totals are not in the contract: `Player` carries the final score and the
-// current round's, and nothing else, while the final board is specified as four columns. They
-// are read out of the payload anyway and printed as "—" when absent, rather than the board
-// being quietly drawn with two columns. A zero would be a score nobody earned; a blank cell in a
-// column of numbers reads as a missing value and invites the inference the columns exist to
-// stop. The day the server adds them this file changes not at all.
-type Measured = Player & { proximity?: number | null; quality?: number | null }
+ * scores two things and a single total cannot say which of them a player was good at.
+ *
+ * The two dimension columns print "—" until the server sends `proximity_total` and
+ * `quality_total`, which it now does. A zero would be a score nobody earned; a blank cell in a
+ * column of numbers reads as a missing value and invites the inference the columns exist to
+ * stop, so "absent" and "nobody scored" must not look the same.
+ */
 
 const COLUMNS: BoardColumn[] = [
-  { label: 'Proximité', value: (p) => (p as Measured).proximity ?? null },
-  { label: 'Qualité', value: (p) => (p as Measured).quality ?? null },
+  { label: 'Proximité', value: (p) => p.proximity_total ?? null },
+  { label: 'Qualité', value: (p) => p.quality_total ?? null },
 ]
 
 export default function Results({

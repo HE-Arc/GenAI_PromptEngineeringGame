@@ -39,6 +39,46 @@ export interface SummaryRow {
   round_score: number
 }
 
+// One question of the didacticiel, as the GET endpoint returns it: no `correct`, no
+// `explanation`. Those two travel in the POST response that reveals the answer, so a player
+// with devtools open cannot read the key off the bank.
+export interface Question {
+  order: number
+  prompt: string
+  choices: string[]
+}
+
+export interface QuizBank {
+  questions: Question[]
+}
+
+// The reveal, in the response that answers it.
+//
+// `correct_index` is what the screen cannot work without, and it is why this is a separate
+// field from `correct`. `correct` alone only says whether the player's own choice was right,
+// and the client is never sent the key — that is the whole point of the QCM — so without the
+// index the reveal could not mark which of the four was right, which is the part of a Kahoot
+// that teaches. A client that compared `correct` against a choice index would silently never
+// highlight anything.
+//
+// `explanation` belongs to the exact row the player was shown, which is why the server stores
+// it rather than reading it from the bank at answer time — an edited bank cannot
+// retroactively rewrite the reason a past game gave.
+export interface QuizAnswered {
+  correct: boolean
+  correct_index: number
+  explanation: string
+  score: number
+}
+
+// A submitted rating. Deliberately empty beyond `ok`: the rating screen's progress comes from
+// the `reveal` block in the SSE snapshot, so the POST confirms the write and the next frame
+// carries the state. Sending the progress here too would give the client two truths to keep in
+// step, and the snapshot is the one everybody already trusts.
+export interface Rated {
+  ok: true
+}
+
 export type Player = {
   name: string
   // Both are null during the rating phase when the game is anonymous. The server blanks them
@@ -56,6 +96,15 @@ export type Player = {
   // field rather than folded into `score`.
   quiz_score: number | null
   quiz_done: boolean
+  // The two dimensions behind `score`, summed over the rounds that have been settled. Null
+  // before the player's first settled round, or during the rating phase alongside `score`.
+  //
+  // They are in the payload for a teaching reason, not a decorative one: "proximité 42,
+  // qualité 58, total 50" tells a player their prompts WORK and are badly BUILT, which is the
+  // whole lesson. Collapse it to one number and that distinction disappears behind a score out
+  // of 100 that reads like a grade.
+  proximity_total: number | null
+  quality_total: number | null
   // No `prompt`, `output` or `comment`: the server stops sending them during the rating phase,
   // and keeping them in the type would tell whoever writes the next screen that they are
   // always there.
@@ -122,6 +171,7 @@ const REASONS: Record<string, string> = {
   'name taken': 'Ce pseudo est déjà pris. Choisis-en un autre.',
   'game already started': "La partie a déjà commencé. L’animateur doit en créer une nouvelle.",
   'already answered': 'Tu as déjà répondu pour cette manche.',
+  'already rated': 'Tu as déjà noté ce prompt. Le suivant arrive.',
   'not playing': "La partie n’est pas encore démarrée.",
   'quiz not open': 'Le didacticiel est fermé. L’animateur fait avancer la partie.',
   'not rating': 'La notation est fermée. L’animateur fait avancer la partie.',
