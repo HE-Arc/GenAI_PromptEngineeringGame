@@ -174,7 +174,8 @@ export default function Game({
   return (
     <div className="deck">
       <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
-      <main className={`screen screen--split${stale ? ' screen--stale' : ''}`}>
+      {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
+      <main className={`screen screen--split${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
         <Step current={state.current} total={state.total} />
 
         {/* The only heading on this screen, and the target a route change moves focus to. The

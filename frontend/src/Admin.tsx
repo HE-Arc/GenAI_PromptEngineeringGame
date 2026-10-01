@@ -67,7 +67,9 @@ export default function Admin() {
     return (
       <div className="deck">
         <ConsoleBar />
-        <main className="screen screen--solo">
+        {/* The skip link's target — see the note on `SkipLink` in App.tsx. Each of this
+            component's three branches is a whole screen of its own and renders alone. */}
+        <main className="screen screen--solo" id="main" tabIndex={-1}>
           <h1 className="title" tabIndex={-1}>Console d’animation</h1>
           <p className="prose prose--dim">
             Une partie se crée ici. Le code sera affiché à l’écran pour que tu le donnes au
@@ -182,7 +184,7 @@ export default function Admin() {
     return (
       <div className="deck">
         <ConsoleBar meta="Console" link={link} onRetry={retry} />
-        <main className="screen screen--solo">
+        <main className="screen screen--solo" id="main" tabIndex={-1}>
           <h1 className="title" tabIndex={-1}>Cette partie n’existe plus</h1>
           <p className="prose prose--dim">
             Le code <strong>{code}</strong> ne mène plus à aucune partie. La machine qui
@@ -213,7 +215,7 @@ export default function Admin() {
   return (
     <div className="deck deck--wide">
       <ConsoleBar meta="Console" link={link} onRetry={retry} />
-      <main className="screen">
+      <main className="screen" id="main" tabIndex={-1}>
         <div className="split split--console">
           <div className="stack">
             <Readout label="Code de la partie" value={code} code />

@@ -86,7 +86,8 @@ export default function Lobby({
   return (
     <div className="deck">
       <ConsoleBar link={link} onRetry={onRetry} />
-      <main className="screen screen--split">
+      {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
+      <main className="screen screen--split" id="main" tabIndex={-1}>
         {/* This screen had no heading at all, which left a route change with nothing to focus
             and nothing to name the screen by. Hidden rather than drawn: the code panel is the
             first thing on the screen and an <h1> above it would only say the same thing

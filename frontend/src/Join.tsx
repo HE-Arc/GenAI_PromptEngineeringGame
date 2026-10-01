@@ -59,7 +59,8 @@ export default function Join({
 
   return (
     <div className="deck">
-      <main className="screen screen--solo">
+      {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
+      <main className="screen screen--solo" id="main" tabIndex={-1}>
         <h1 className="title" tabIndex={-1}>Jeu GenAi</h1>
         <p className="prose prose--dim">
           Le modèle doit répondre par une chose bien précise. À toi d’écrire le prompt qui

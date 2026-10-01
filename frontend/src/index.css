@@ -100,15 +100,28 @@
    * value the player typed, and it still has to be legible to find the field at all.
    *
    * The separation that matters is against --ink, not against --ink-dim: the placeholder and
-   * the typed value are the only two things ever on screen in the same box. 4.8:1 against
-   * --well and 4.7:1 against --deck clears AA for the 16px this renders at, and it still
-   * sits three and a half times darker than a real value does.
+   * the typed value are the only two things ever on screen in the same box. 2.81:1 against
+   * --ink, and 5.13:1 / 4.98:1 / 4.51:1 against the three surfaces a text ink can land on
+   * (--well, --deck, --panel), which is AA for the 16px this renders at everywhere and not
+   * just where it is used today. A real value is --ink at 14.41:1 on --well, so the typed
+   * value still carries 2.8x the contrast the placeholder does: the ordering survives the
+   * move, which is the only thing the ordering had to survive.
    *
    * It used to be #5a6a7d, at 3.25:1 on --well. A decorative use does not need this token —
    * the rules and lamp rings that could have used it keep --rail, and the borders that
    * carry meaning use --track-edge below — so it carries text only and can be held to the
-   * text threshold outright. */
-  --ink-faint: #748699;
+   * text threshold outright.
+   *
+   * It was then #748699, which cleared --well (4.807) and --deck (4.669) and missed --panel at
+   * 4.230. That surface had no consumer, which is exactly why it is worth fixing rather than
+   * documenting: the next person to put a field on --panel inherits a fail nobody would
+   * notice until it shipped. Moving it down rather than qualifying it costs 4% of its
+   * separation from --ink (2.998 to 2.811) and nothing anywhere else — every surface it lands
+   * on gains, --well and --deck included — and it moves it toward --ink-dim (1.132 to 1.061),
+   * which is the one relationship the value above explicitly does not depend on. The hue is
+   * held: it is #748699's own channels scaled by 1.034, so it is the same colour, not a
+   * second one. */
+  --ink-faint: #788b9e;
 
   /* Sodium. The one live/hot colour: the target, the primary action, a score, and you.
    * It is the tally lamp on a mixing desk, and the colour of a filament under load. */
@@ -409,6 +422,21 @@ figure {
   resize: none;
 }
 
+/* An error box is not decorative, so its border is a meaningful boundary and owes the 3:1 of
+ * WCAG 1.4.11 — measured, and it clears it with room to spare, which is why the border is
+ * still --fault and was never darkened or thickened to get there.
+ *
+ * The wash is the number that matters, because it is the surface the border is drawn against:
+ * rgba(229, 97, 74, 0.09) over --deck composites to #262028, and --fault on that is 4.638:1.
+ * On the --deck itself, which is what `.err--inline` has behind it, it is 5.108:1. The text is
+ * --fault at the same 4.638:1 on the wash, so the sentence inside the box clears AA at 14px as
+ * well as the edge around it clearing 1.4.11.
+ *
+ * That the border clears 1.4.11 comfortably is also the answer to "an error that shouts is
+ * its own usability problem": it does not have to shout. The restraint costs nothing here,
+ * because --fault is already a 78%-luminance red against a 1.6%-luminance deck — the ratio is
+ * carried by the hue being light, not by the fill being saturated, so nothing had to be
+ * pushed. */
 .err {
   display: grid;
   gap: 0.35rem;
@@ -422,6 +450,11 @@ figure {
   font-size: 0.875rem;
   line-height: 1.4;
 }
+/* The same fault colour with the fill and the outline taken away: where the alert belongs is
+ * under the control that caused it rather than in a box of its own, and the box is what made
+ * it read as a separate object. A 2px left rule is the whole of the signal now, and it is the
+ * same 5.108:1 against --deck that the outline above has — thinner, but it is the only
+ * boundary this variant has, so it is the one that has to carry the contrast alone. */
 .err--inline {
   border: 0;
   border-left: 2px solid var(--fault);

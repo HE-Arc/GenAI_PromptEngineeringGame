@@ -31,7 +31,8 @@ export default function Results({
   return (
     <div className="deck">
       <ConsoleBar meta={`Partie ${state.code}`} link={link} onRetry={onRetry} />
-      <main className="screen screen--split">
+      {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
+      <main className="screen screen--split" id="main" tabIndex={-1}>
         <div>
           {/* `tabIndex` so the route-change effect in App.tsx can land focus here. This is
               the last screen of a game, so it is the one place a round ending swaps the whole

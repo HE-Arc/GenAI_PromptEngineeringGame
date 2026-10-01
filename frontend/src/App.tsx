@@ -34,12 +34,13 @@ function Gate({ code, onJoined }: { code: string; onJoined: (code: string) => vo
 // alongside — and it is rendered as the first sibling in each branch below, so it is the
 // first tab stop on every screen, which is the entire reason a skip link exists.
 //
-// The target is resolved at activation rather than left to the `#main` fragment, and the id
-// is stamped then, because the id cannot be authored: five of the six screens render their
-// own `<main>` in a file this change cannot reach. A fragment-only link would be a dead link
-// on exactly the screens it exists for. `main` is also not focusable without a tabindex, for
-// the same reason — see the note in the report; this is the one place the console mutates
-// markup at runtime, and it is a consequence of the write scope rather than a preference.
+// The target is resolved at activation rather than left to the `#main` fragment, and that is
+// all the handler has to do: every `<main>` in the console authors `id="main"` and
+// `tabIndex={-1}` in its own markup, so the element is already in the document and already
+// focusable by the time anyone can activate this. The id and the tabindex used to be stamped
+// on at click time, which meant the console mutated its own markup on the one interaction that
+// is supposed to be a pure accessibility affordance — and left the link's target unresolvable
+// to anything else that looked for it, including the DOM before the first click.
 function SkipLink() {
   return (
     <a
@@ -47,12 +48,7 @@ function SkipLink() {
       href="#main"
       onClick={(e) => {
         e.preventDefault()
-        const main = document.querySelector<HTMLElement>('main')
-        if (!main) return
-        main.id = 'main'
-        main.tabIndex = -1
-        main.focus()
-        main.scrollIntoView()
+        document.querySelector<HTMLElement>('main')?.focus()
       }}
     >
       Aller au contenu
@@ -70,7 +66,10 @@ function Fault({ code, onRetry, onLeave }: { code: string; onRetry: () => void; 
   return (
     <div className="deck">
       <ConsoleBar meta={`Partie ${code}`} />
-      <main className="screen screen--solo">
+      {/* The skip link's target, authored rather than stamped: `id` so the link resolves and
+          `tabIndex` so `<main>` can hold focus at all — a focusable-by-default element is not
+          a focusable one. The id is unique because there is one `<main>` per screen. */}
+      <main className="screen screen--solo" id="main" tabIndex={-1}>
         <h1 className="title" tabIndex={-1}>La partie ne répond pas</h1>
         <p className="prose prose--dim">
           Rien n’est revenu de la partie <strong>{code}</strong>. Si la machine qui l’héberge
@@ -100,6 +99,27 @@ export default function App() {
   const token = code ? getToken(code) : null
   const { state, link, retry } = useRoom(code, token)
 
+  // The screen, resolved the same way the returns below resolve it, so the focus effect and
+  // the routing can never disagree about which screen is on. The URL is not enough: a round
+  // ending moves Game -> Results without the address changing at all, which is the largest
+  // swap in the game and the one where a player most needs to be told.
+  const view =
+    screen === 'admin'
+      ? 'admin'
+      : !code
+        ? 'join'
+        : !token
+          ? 'gate'
+          : link === 'failed'
+            ? 'fault'
+            : !state
+              ? 'connecting'
+              : state.status === 'waiting'
+                ? 'lobby'
+                : state.status === 'done'
+                  ? 'results'
+                  : 'game'
+
   // The screen changed and nothing else about the page did, so a keyboard or screen-reader
   // user was given a different screen with no signal whatsoever: the same URL bar, the same
   // chrome, and focus sitting wherever the last control left it — quite possibly on a button
@@ -107,34 +127,25 @@ export default function App() {
   // smallest thing that says "you are here now", and it also puts the top of the new screen
   // in view, which a page swapped in under a scrolled position otherwise would not.
   //
-  // Not on the first pass. The admin console deliberately puts the cursor in the password on
-  // mount, and taking it back for a heading would undo the one thing that screen exists to
-  // do; the first render is a page load, which the browser has already announced.
-  //
-  // The heading is found rather than threaded down as a ref: it lives in five components,
-  // two of which are rendered by other components in turn, and a ref per screen would be five
+  // The heading is found rather than threaded down as a ref: it lives in five components, two
+  // of which are rendered by other components in turn, and a ref per screen would be five
   // props and five effects to say one thing. One query on one screen change is not the place
   // to be precious about it.
   //
-  // The dependency is the *screen*, not the route, and the two are not the same thing. A
-  // round ending moves Game -> Results with the URL unchanged, which is the largest swap in
-  // the game and the one where a player most needs to be told; keyed on the route alone it
-  // was the one transition where this effect never ran, and a keyboard user was left focused
-  // on a send button that was no longer in the document. `status` is null until the first
-  // frame lands, so this also picks up Connecting -> Lobby — the same kind of change by the
-  // same test, and the first frame is not a "first pass" in the sense guarded above, which is
-  // about the very first render only.
-  const first = useRef(true)
-  const key = code ? `${screen}/${code}` : screen
+  // Two transitions are deliberately not announced. The first resolution of a screen is a
+  // page load, which the browser has already announced, and the admin console puts the
+  // cursor in the password on mount and would not give it back. "Connecting" is the wait
+  // *into* a screen rather than a screen, so arriving in a room does not drag focus onto a
+  // heading that was hidden a moment ago — which also keeps the skip link the first thing a
+  // Tab reaches, instead of the second.
+  const seen = useRef<string | null>(null)
   useEffect(() => {
-    if (first.current) {
-      first.current = false
-      return
-    }
+    const from = seen.current
+    seen.current = view
+    if (from === null || from === view || from === 'connecting' || view === 'connecting') return
     const h = document.querySelector<HTMLElement>('.screen h1')
-    if (!h) return
-    h.focus()
-  }, [key, state?.status])
+    if (h) h.focus()
+  }, [view])
 
   useEffect(() => {
     const on = () => setRoute(route())
@@ -173,7 +184,7 @@ function Connecting({ code, link }: { code: string; link: Link }) {
   return (
     <div className="deck">
       <ConsoleBar meta={`Partie ${code}`} link={link} />
-      <main className="screen screen--solo">
+      <main className="screen screen--solo" id="main" tabIndex={-1}>
         <p className="prose prose--dim">Lecture du tableau…</p>
       </main>
     </div>
