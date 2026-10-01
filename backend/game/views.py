@@ -226,15 +226,28 @@ def settle_round(room: Room) -> None:
     to settle: they keep the rounds they played and nothing else. A player who wrote one and
     drew no ratings at all (a one-player room, or everyone else was asleep) gets `quality_peers`
     left NULL rather than a mean of nothing — which is why the division is behind `if scores`.
+
+    TWO ROUNDINGS, AND THEY ARE THE SAME ONE. `quality_peers` and the `quality` it feeds both go
+    through `prompts.half_up`, because the summary prints them side by side and `Game.tsx` tells
+    the class to check that arithmetic: a peer mean of exactly 6.5 used to settle to 6 here while
+    `prompts.quality` — reading the same rows — returned 7, so the screen said « moyenne des pairs
+    6 » beside « qualité retenue 7 » under a formula printed beneath both. One rule, one
+    function, no way for the two columns to disagree.
     """
     rnd = room.current_round()
     if rnd is None:
         return
     for a in rnd.answers.order_by("id"):
         scores = list(a.ratings.values_list("score", flat=True))
-        a.quality_peers = round(sum(scores) / len(scores)) if scores else None
+        a.quality_peers = prompts.half_up(sum(scores) / len(scores)) if scores else None
         a.quality = prompts.quality(a.quality_llm, scores)
-        a.round_score = (a.score + a.quality) // 2
+        # THE SPEC'S MEAN, EXACTLY: §7 says `note_tour = (proximité + qualité) / 2`, and the `/`
+        # is a real division, not an integer one. The `// 2` that used to stand here was the
+        # implementation quietly deciding a mean of two out-of-ten integers is a whole number, and
+        # it charged every game for it: ten rounds of proximity 7 and quality 6 settled to 60 on a
+        # scale the final screen still calls « sur 100 », where the spec's own arithmetic gives 65.
+        # The column is a FloatField for this one line.
+        a.round_score = (a.score + a.quality) / 2
         a.save(update_fields=["quality_peers", "quality", "round_score"])
 
 
@@ -297,10 +310,36 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
     snapshot to every phone. One transaction means the poller only ever reads the before-state
     or the after-state.
 
-    `tutorial` and `anonymous` deliberately survive, and so do the players and their tokens: they
-    describe the game the admin is about to relaunch, not the one that just ended. A checkbox that
-    silently unticks itself on restart is a flag nobody can trust, and a lobby everybody has to
-    rejoin is the thing this endpoint exists to avoid.
+    `tutorial` is read here and only here, which is what §8 asks for: « L'admin peut relancer une
+    partie avec les mêmes joueurs, avec ou sans didacticiel ». The two relaunch buttons post
+    `{"tutorial": true|false}`, and this view used to never call `body(request)` at all — so the
+    flag was dropped on the floor and "without the didacticiel" launched a room that started in
+    the quiz, exactly like "with it". The difference is the whole point of the second button, and a
+    teacher who clicks it gets a class stuck on a QCM they have already sat.
+
+    THE FLAG IS HONOURED WHEN IT IS THERE AND KEPT WHEN IT IS NOT, which is why this is an
+    `isinstance` test and not `data.get("tutorial", True)`: an absent key is not a request to turn
+    the gate off, it is a client that never had the button (a curl, an older build, the second tap
+    of a double click), and defaulting it would silently reset the room's setting to the one nobody
+    chose. Because a restart of an already-empty room is a no-op, that second tap cannot do any
+    harm either way.
+
+    A real `bool` or nothing: `isinstance(True, int)` is True, so a JSON `1` or a string would
+    pass a truthiness test and a `bool()` of `"false"` is True, which is a flag inverted by a
+    client's own typo. Same guard as `rate`'s score and `_quiz_post`'s question index. Anything
+    else leaves the room as it was.
+
+    `anonymous` is NOT settable here, and that asymmetry is deliberate: §1 fixes the didacticiel
+    « pour toute la partie » and the Règles transverses fix anonymity « par partie », and a
+    relaunch is a NEW game — which is exactly why §8 lets the admin re-ask the gate and not the
+    mask. The admin screen offers one of the two on a relaunch, and a second per-game flag the
+    endpoint would quietly accept is a flag with no UI behind it: a way to change a game's rules
+    with a hand-written POST and nothing to tell the class it happened. So `anonymous` survives
+    every restart, whatever the body says.
+
+    The players and their tokens survive too: they are the thing this endpoint exists to spare
+    the class. A lobby everybody has to rejoin is not a relaunch, and a token that changed would
+    log twenty phones out of a game they were about to start again.
 
     The quiz attempts are deleted explicitly, and this is not redundant with the cascade: they
     hang off `Player` and `QuizQuestion`, both of which survive this reset, so leaving them
@@ -317,12 +356,18 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
     if (err := require_admin(request)):
         return err
     room = get_object_or_404(Room, code=code)
+    tutorial = body(request).get("tutorial")
     with transaction.atomic():
         room.rounds.all().delete()  # answers cascade via the round FK, ratings via Answer
         QuizAttempt.objects.filter(player__room=room).delete()
+        # In the same block as the deletes it describes: a poller that caught the room between the
+        # wipe and this write would see a room whose ten targets are gone and whose gate is still
+        # the old one, and `start` reads that flag to decide between the quiz and the writing.
+        if isinstance(tutorial, bool):
+            room.tutorial = tutorial
         room.current = 0
         room.phase = Room.Phase.WAITING
-        room.save(update_fields=["current", "phase"])
+        room.save(update_fields=["current", "phase", "tutorial"])
     return JsonResponse({"ok": True, "phase": room.phase})
 
 
@@ -423,9 +468,15 @@ def _summary_state(room: Room, rnd) -> dict:
     of the quality bound, so a player can see their prompt was CLOSE but badly BUILT, which is the
     lesson the two dimensions exist to teach.
 
-    It carries whatever is stored rather than a default: `settle_round` always writes all three
-    numbers together, so a null in here means the round was never settled at all — which the
-    admin's next button fixes, and which a silent 0 would have hidden as a real score.
+    It carries whatever is stored rather than a default: `settle_round` always writes the three
+    settlement numbers together, so a null in here means the round was never settled at all —
+    which the admin's next button fixes, and which a silent 0 would have hidden as a real score.
+
+    `quality_comment` is the critic's own reason for `quality_llm`, and it is the only honest way
+    to label that number: offline the critic is a keyword-marker heuristic in `llm._stub_grade`,
+    so « note du modèle » is a claim about a model nobody called. `api.ts` types the field
+    `string` and the summary screen shows it, and the `frozen SummaryRow` note that used to sit
+    in `answer` is the story of why the frozen type was wrong.
     """
     return {
         "round": rnd.order,
@@ -436,6 +487,7 @@ def _summary_state(room: Room, rnd) -> dict:
                 "output": a.output,
                 "proximity": a.score,
                 "quality_llm": a.quality_llm,
+                "quality_comment": a.quality_comment,
                 "quality_peers": a.quality_peers,
                 "quality": a.quality,
                 "round_score": a.round_score,
@@ -481,7 +533,7 @@ def room_state(code: str) -> dict:
         # THE RANKING TOTAL. Three cases, and getting this wrong deletes the game.
         #
         # `Answer.score` is the judge's proximity on the output alone. `Answer.round_score` is
-        # `(proximity + quality) // 2`, written once `settle_round` closes the round's rating.
+        # `(proximity + quality) / 2`, written once `settle_round` closes the round's rating.
         # The spec says the final ranking "additionne les dix tours" where a tour is the second
         # one — so summing `score` alone, which is what this used to do, drops the quality
         # dimension entirely and lets a player whose prompts are badly built but whose output
@@ -520,8 +572,18 @@ def room_state(code: str) -> dict:
                     # their prompts WORK and are badly BUILT, which is the entire lesson. Collapse
                     # the two into one number out of a hundred and that distinction disappears
                     # behind something that reads like a grade.
-                    "proximity_total": settled["proximity"],
-                    "quality_total": settled["quality"],
+                    #
+                    # AND THEY ARE MASKED WITH THE OTHER TWO, which is the whole point of the
+                    # phase. They were emitted unconditionally, and that defeats the feature from
+                    # underneath: a player reads their own round score, adds the two halves they
+                    # can already see, and subtracts to get the other three rows' totals off the
+                    # board — the exact cross-reference §4 closes by hiding the ranking, and the
+                    # spec is explicit that what must go is the SCORES (« Ce sont les scores qui
+                    # font la fuite »), not the names. `api.ts` has always typed these two
+                    # `number | null` "during the rating"; the contract was right and the server
+                    # is what drifted when the columns were added.
+                    "proximity_total": None if hiding else settled["proximity"],
+                    "quality_total": None if hiding else settled["quality"],
                     # An int, never None: the client formats "3 sur 8" and should not carry a
                     # null branch that only a player who never answered would ever take.
                     "quiz_score": p.quiz_score(),
@@ -770,13 +832,18 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
         # on the phase where every phone is waiting for a snapshot that will not come. Same total
         # spend, a fraction of the latency, and settlement stays arithmetic: free and instant.
         #
-        # The critic's COMMENT IS DISCARDED, and that is a decision rather than an oversight. The
-        # frozen `SummaryRow` has no room for it, and a finished UI is already coded against that
-        # type: adding a field now would change a contract the frontend reads. The summary tells
-        # the story with the four numbers it already carries — the critic's score, the peers'
-        # mean, the bounded quality and the round's note — which is what a player can act on. The
-        # comment was the only piece of prose about method that is not on screen, and the didacticiel
-        # is where method is taught.
+        # The critic's COMMENT IS STORED, on `Answer.quality_comment`, and reaches the player
+        # through the summary row. It used to be discarded here, on the reasoning that the frozen
+        # `SummaryRow` had no room for it and the summary's four numbers told the story anyway.
+        # Both halves of that were wrong, and the audit that found the bug is the evidence: with no
+        # API key `llm.grade_prompt` is `_stub_grade`, a count of keyword markers, and the plan's
+        # four numbers then put a heuristic on screen under the label « note du modèle » with
+        # nothing anywhere saying no model was called. The spec asks for the opposite — « le modèle
+        # devient un écho, le jury devient un chevauchement de mots, et l'écran le dit
+        # explicitement » — and this string is the only thing on that screen that can say it. It is
+        # the same sentence the judge already returns as `verdict.comment` and `answer` hands
+        # straight back, so the reason a prompt is bad and the reason its quality is low are both
+        # now stored rather than one of them.
         #
         # The target travels with the prompt so the critic knows what the prompt is FOR, and the
         # rubric is what forbids it from comparing anything: it never sees the answer it produced,
@@ -797,6 +864,7 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
                     score=verdict.score,
                     comment=verdict.comment,
                     quality_llm=critique.score,
+                    quality_comment=critique.comment,
                 )
         except IntegrityError:
             return json_error("already answered", 409)
@@ -890,21 +958,35 @@ def _quiz_get(request: HttpRequest, code: str) -> JsonResponse:
     frontend that is supposed to forget them.
 
     Unauthenticated, and not phase-gated, on purpose: what it returns is the eight prompts and
-    their four choices, which is what is on the screen anyway, so reading it leaks nothing the
-    player could not read by looking. What it never returns is what a later phase cannot: the
+    their choices, which is what is on the screen anyway, so reading it leaks nothing the player
+    could not read by looking. What it never returns is what a later phase cannot: the
     answer, and the reason. That stays in the POST, which is a write.
 
-    Scoped to this room's bank: `order` is only meaningful inside a room, so returning every
-    room's rows would hand this player questions numbered 0..7 that are not the ones `_quiz_post`
-    will grade them against.
+    ONE THING IS NOW DERIVED FROM `?token=`, and it is `answered` — how many of this room's
+    questions THIS player has already answered. The client sends its own token, the same spelling
+    `events` uses, and needs the number to resume the didacticiel where it left off: a reloaded
+    screen otherwise starts again at question 0, and the POST there answers 409 `already answered`
+    for a question this player genuinely did answer, so the resume is not a missing feature but a
+    dead end. It is a COUNT OF THE CALLER'S OWN ROWS, so reading a token here discloses nothing to
+    anyone else: the same token from another room, or a token nobody has, simply resolves to no
+    player and the count is 0 — the pre-token behaviour, never a 403. Refusing the request
+    instead would break a screen that is already entitled to the eight questions.
+
+    `question__room=room` on the count is belt and braces rather than a fix for a live bug — a
+    `Player` belongs to exactly one room, so its attempts are already this room's — but it makes
+    "answered is greater than the bank" unrepresentable rather than merely improbable, which is
+    what lets the client clamp without having to defend itself against a number from the server.
     """
     room = get_object_or_404(Room, code=code)
+    player = room.players.filter(token=request.GET.get("token", "")).first()
+    answered = player.quiz_attempts.filter(question__room=room).count() if player else 0
     return JsonResponse(
         {
             "questions": [
                 {"order": q.order, "prompt": q.prompt, "choices": q.choices}
                 for q in room.questions.order_by("order")
-            ]
+            ],
+            "answered": answered,
         }
     )
 

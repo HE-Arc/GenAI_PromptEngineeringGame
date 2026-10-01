@@ -140,17 +140,30 @@ class Answer(models.Model):
     # is playing is a score nobody can trust, and a peer note that landed late would rewrite the
     # nine rounds before it.
     #
-    # All four are NULL until the round is settled, and that is what makes an in-progress round
-    # invisible to the ranking: `Sum` skips NULL, so a player with one settled round and one open
-    # reads the settled total rather than a zero for the round being played.
+    # All four of the settlement columns are NULL until the round is settled, and that is what
+    # makes an in-progress round invisible to the ranking: `Sum` skips NULL, so a player with one
+    # settled round and one open reads the settled total rather than a zero for the round being
+    # played.
     #
-    # `quality_llm` is the ONE exception to "written at settlement", and it has to be: it is
-    # `llm.grade_prompt` on the prompt alone, and the critic runs at ANSWER time rather than at
-    # settlement time. `settle_round` is called by the last player's rating tap, and making N
-    # billed calls from there is one HTTP request blocking for the better part of a minute, on
-    # the one phase nobody is watching a list for. Every player pays for their own call in
-    # parallel instead.
+    # `quality_llm` and `quality_comment` are the exceptions to "written at settlement", and they
+    # have to be: they are `llm.grade_prompt` on the prompt alone, and the critic runs at ANSWER
+    # time rather than at settlement time. `settle_round` is called by the last player's rating
+    # tap, and making N billed calls from there is one HTTP request blocking for the better part
+    # of a minute, on the one phase nobody is watching a list for. Every player pays for their own
+    # call in parallel instead.
     quality_llm = models.IntegerField(null=True, blank=True)  # the critic, on the prompt alone
+    # THE CRITIC'S REASON, in the same shape as `comment` above: stored with the score it justifies,
+    # because the score alone cannot say whether a model produced it.
+    #
+    # It was written and thrown away, on the reasoning that the summary's four numbers told the
+    # story. They do not: with no API key the critic is `_stub_grade`, a count of keyword markers,
+    # and its score arrives on the summary labelled « note du modèle » with nothing on screen to
+    # contradict that. The spec's hors-ligne rule asks for the opposite — « le modèle devient un
+    # écho, le jury devient un chevauchement de mots, et l'écran le dit explicitement » — and this
+    # is the string the screen reads to say it. `blank=True` and no `null=True`: a critic that
+    # answered with a bare score has still said something, and llm.grade_prompt falls back to its
+    # honesty string rather than to `""`, so an empty comment means a row nobody wrote it on.
+    quality_comment = models.TextField(blank=True)
     # The peers' raw mean, BEFORE the band. Kept next to the bounded number so the summary can
     # show the bound at work rather than an unexplained verdict, and kept raw because a stored
     # 7 that used to be a 10 is the whole pedagogy of the feature.
@@ -158,9 +171,15 @@ class Answer(models.Model):
     # `prompts.quality(quality_llm, peers)`: the peers' mean held inside ±QUALITY_BAND of the
     # critic. What the ranking actually uses.
     quality = models.IntegerField(null=True, blank=True)
-    # `(score + quality) // 2` — the round's note out of ten, floor because the scale and the
-    # payload are integers and a float in here would be a float in the JSON on every tick.
-    round_score = models.IntegerField(null=True, blank=True)
+    # `(score + quality) / 2` — §7 of the spec, EXACTLY: "la note d'un tour est la moyenne des
+    # deux dimensions". A float, not an integer, because a mean of two integers that do not
+    # divide evenly has to BE one: floor-dividing it was the implementation's own idea, and it
+    # cost every game up to half a point per round off a scale the final screen still calls
+    # "sur 100" — ten rounds of proximity 7 and quality 6 settled to 60 where the spec's
+    # arithmetic gives 65. The two halves are still integers, so only this column is a float, and
+    # the payload carries `6.5` where a player has to be able to read the division they were
+    # taught.
+    round_score = models.FloatField(null=True, blank=True)
 
     class Meta:
         unique_together = [("round", "player")]

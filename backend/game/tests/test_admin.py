@@ -318,12 +318,78 @@ class AdminTest(TestCase):
     def test_restart_keeps_the_tutorial_and_anonymity_flags(self) -> None:
         # A checkbox that silently unticks itself on restart is a flag nobody can trust: the
         # second game would open its gate and name its authors without anybody deciding to.
+        # WHICH is what a body without the key means: not "off", but "nobody said". The tests
+        # below cover the half that changes it.
         room = self._in_phase(Room.Phase.SUMMARY, tutorial=False, anonymous=False)
         self._post(f"/api/admin/rooms/{room.code}/restart")
         room.refresh_from_db()
         self.assertEqual(room.phase, Room.Phase.WAITING)
         self.assertFalse(room.tutorial)
         self.assertFalse(room.anonymous)
+
+    def test_restart_without_the_didacticiel_turns_the_gate_off(self) -> None:
+        # §8: « L'admin peut relancer une partie avec les mêmes joueurs, avec ou sans
+        # didacticiel. » The admin screen posts `{"tutorial": false}` to this exact URL, and the
+        # view used to never read the body at all — so the two buttons were one button, and a
+        # teacher who chose "sans didacticiel" got a class sitting a QCM they had already sat.
+        room = self._in_phase(Room.Phase.SUMMARY, tutorial=True)
+        r = self._post(f"/api/admin/rooms/{room.code}/restart", {"tutorial": False})
+        self.assertEqual(r.status_code, 200)
+        room.refresh_from_db()
+        self.assertFalse(room.tutorial)
+        # And it is not just a row that changed: `admin_start` reads this flag to choose between
+        # the quiz and the writing, so the relaunch lands in the drafting round directly. Without
+        # it the room would go `waiting -> quiz` and the class would have to answer eight
+        # questions to reach the round they asked for.
+        self._post(f"/api/admin/rooms/{room.code}/start")
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+
+    def test_restart_with_the_didacticiel_turns_the_gate_back_on(self) -> None:
+        # The other half, and the reason this is a flag and not a one-way latch: a room created
+        # without the didacticiel can be relaunched with it, which is the same §8 sentence read
+        # from the other button.
+        room = self._in_phase(Room.Phase.SUMMARY, tutorial=False)
+        self._post(f"/api/admin/rooms/{room.code}/restart", {"tutorial": True})
+        room.refresh_from_db()
+        self.assertTrue(room.tutorial)
+        self._post(f"/api/admin/rooms/{room.code}/start")
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.QUIZ)
+
+    def test_restart_keeps_the_gate_when_the_body_says_nothing_about_it(self) -> None:
+        # BOTH current values, so neither the default nor the polarity of the flag can hide here.
+        # A client that posts nothing — the double-click guard, a curl, a build without the
+        # buttons — must get today's behaviour rather than a silent reset of a setting nobody
+        # chose: `tutorial=False` in the body would turn a gate on for a room that never had one.
+        for flag in (True, False):
+            with self.subTest(tutorial=flag):
+                room = self._in_phase(Room.Phase.SUMMARY, tutorial=flag, code=f"KEP{int(flag)}")
+                self._post(f"/api/admin/rooms/{room.code}/restart")
+                room.refresh_from_db()
+                self.assertEqual(room.tutorial, flag)
+
+    def test_restart_ignores_a_tutorial_flag_that_is_not_a_boolean(self) -> None:
+        # `isinstance(True, int)` is True and `bool("false")` is True, so a truthiness test
+        # would let a client's typo invert the flag. A value that is not a JSON boolean is not a
+        # choice, and leaves the room as it was — same guard as `rate`'s score.
+        for i, sent in enumerate((1, 0, "false", "true", None, [])):
+            with self.subTest(sent=sent):
+                room = self._in_phase(Room.Phase.SUMMARY, tutorial=True, code=f"TYPE{i}")
+                self._post(f"/api/admin/rooms/{room.code}/restart", {"tutorial": sent})
+                room.refresh_from_db()
+                self.assertTrue(room.tutorial)
+
+    def test_restart_does_not_take_anonymity_from_the_body(self) -> None:
+        # §8 offers the didacticiel choice and only the didacticiel choice, and the Règles
+        # transverses fix anonymity per game. So a hand-written `{"anonymous": false}` — the kind
+        # of thing a stale client sends — must not be able to unmask a room the admin created
+        # anonymous, with nothing in the payload to tell anybody it happened.
+        room = self._in_phase(Room.Phase.SUMMARY, tutorial=False, anonymous=True)
+        self._post(f"/api/admin/rooms/{room.code}/restart", {"anonymous": False, "tutorial": True})
+        room.refresh_from_db()
+        self.assertTrue(room.anonymous)
+        self.assertTrue(room.tutorial)
 
     def test_restart_erases_quiz_attempts_and_ratings(self) -> None:
         # Neither cascades off the rounds: a rating hangs off the answer, which the round delete

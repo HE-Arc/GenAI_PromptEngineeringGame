@@ -333,13 +333,90 @@ class QuizPlayTests(TestCase):
             with self.subTest(prompt=src.prompt[:20]):
                 self.assertNotIn(src.explanation, raw)
 
-    def test_get_accepts_a_token_without_using_it(self):
-        # A `?token=` on the GET is accepted and ignored. It carries no key, so there is nothing
-        # for it to leak, and a 403 here would break a screen that has a token in hand.
+    def test_get_accepts_a_token_and_answers_with_the_callers_own_count(self):
+        # A `?token=` on the GET is accepted, and all it can resolve to is the caller's OWN count
+        # of answers. It carries no key, so there is nothing for it to leak, and a 403 here would
+        # break a screen that has a token in hand.
         room, players = self._joined()
         r = self.c.get(f"/api/rooms/{room.code}/quiz?token={players[0].token}")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.json()["questions"]), QUIZ_LENGTH)
+        self.assertEqual(r.json()["answered"], 0)
+
+    def test_get_reports_how_much_of_the_quiz_this_player_has_answered(self):
+        # THE RESUME. A reloaded phone re-reads the bank and starts again at question 0, where
+        # the POST answers 409 `already answered` for a question the player genuinely answered —
+        # so without this number the gate is not merely restarted, it is a dead end. Three
+        # answered, and the client resumes at index 3.
+        room, players = self._joined()
+        player = players[0]
+        self._answer_up_to_wrong(room, player, up_to=3)
+        r = self.c.get(f"/api/rooms/{room.code}/quiz?token={player.token}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["answered"], 3)
+        # It counts ATTEMPTS, not right answers: the didacticiel's score is a separate number and
+        # a player who got them all wrong has still been asked them all. A client that resumed on
+        # this would re-ask the three it already sat.
+        self.assertEqual(QuizAttempt.objects.filter(player=player, correct=True).count(), 0)
+        # Top level, next to the questions, and an int — the client declares its own
+        # `QuizBank & { answered: number }` because `api.ts` is frozen, so a nested or string
+        # value would be a missed resume rather than an error.
+        self.assertIsInstance(r.json()["answered"], int)
+        self.assertEqual(set(r.json()), {"questions", "answered"})
+        # And it never exceeds the bank, which is what lets the client clamp without defending
+        # itself against a number the server produced.
+        self.assertLessEqual(r.json()["answered"], QUIZ_LENGTH)
+
+    def test_get_reports_zero_for_a_player_who_has_answered_nothing(self) -> None:
+        room, players = self._joined(two=True)
+        self._answer_up_to_wrong(room, players[0], up_to=4)
+        # Somebody else's progress is not the caller's: bob has answered nothing and is told
+        # nothing about ana, or about the room.
+        for player in players:
+            with self.subTest(player=player.name):
+                r = self.c.get(f"/api/rooms/{room.code}/quiz?token={player.token}")
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(r.json()["answered"], 0 if player.name == "bob" else 4)
+
+    def test_get_reports_zero_for_a_missing_a_wrong_or_a_foreign_token(self) -> None:
+        # THE THREE NON-TOKENS, and none of them is an error. The client degrades to the old
+        # behaviour rather than to a blank screen, so 0 is the correct answer for a token that
+        # identifies nobody — and a 403 would take away a payload the caller is already entitled to.
+        first, foreign, second, owner = self._two_rooms()
+        self._answer_up_to_wrong(first, foreign, up_to=2)
+        for label, query in (
+            ("absent", ""),
+            ("empty", "?token="),
+            ("unknown", "?token=nope"),
+            # THE FOREIGN TOKEN, and the one worth pinning: this is the first place on this
+            # endpoint where a token is read at all, and the lookup is scoped to the room exactly
+            # as `answer` and `rate` scope theirs. Without that scope, bob's two answers in
+            # `first` would be counted for a player of `second` — told he has answered questions
+            # he has never seen, on a client that then jumps past them.
+            ("another room's", f"?token={foreign.token}"),
+        ):
+            with self.subTest(token=label):
+                r = self.c.get(f"/api/rooms/{second.code}/quiz{query}")
+                self.assertEqual(r.status_code, 200, r.content)
+                self.assertEqual(r.json()["answered"], 0)
+                # The questions are still all there in every case: a caller the server cannot
+                # identify gets the bank it always got, not a refusal.
+                self.assertEqual(len(r.json()["questions"]), QUIZ_LENGTH)
+        # The mirror: the same token in its OWN room resolves to its own count, so the scope costs
+        # nothing to the player it belongs to.
+        r = self.c.get(f"/api/rooms/{first.code}/quiz?token={foreign.token}")
+        self.assertEqual(r.json()["answered"], 2)
+        r = self.c.get(f"/api/rooms/{second.code}/quiz?token={owner.token}")
+        self.assertEqual(r.json()["answered"], 0)
+        self._answer_up_to_wrong(second, owner, up_to=5)
+        r = self.c.get(f"/api/rooms/{second.code}/quiz?token={owner.token}")
+        self.assertEqual(r.json()["answered"], 5)
+        # Five answers in `second` do not leak into `first`, where the same foreign token is
+        # pinned at its own 2.
+        self.assertEqual(
+            self.c.get(f"/api/rooms/{first.code}/quiz?token={foreign.token}").json()["answered"],
+            2,
+        )
 
     def test_get_on_an_unknown_room_is_404(self):
         self.assertEqual(self.c.get("/api/rooms/NOPE/quiz").status_code, 404)

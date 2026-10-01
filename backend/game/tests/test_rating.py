@@ -16,6 +16,7 @@ from unittest import mock
 
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
+from game import llm
 from game.llm import Verdict
 from game.models import Answer, Player, Rating, Room, Round
 from game.prompts import QUALITY_BAND, SCALE_MAX, SCALE_MIN, half_up, quality
@@ -482,11 +483,13 @@ class RatingPlayTests(TestCase):
         settled = Answer.objects.filter(round__room=room)
         self.assertEqual(settled.filter(quality__isnull=True).count(), 0)
         # Prompt 0 drew {7, 9} and prompt 1 drew {5, 9}: means 8 and 7, both inside the band
-        # around the critic's 6, so the two qualities are 8 and 7 — and both round scores come out
-        # at (5 + 8) // 2 == (5 + 7) // 2 == 6, which is the floor doing its job on an even split.
+        # around the critic's 6, so the two qualities are 8 and 7. The round's note is then the
+        # spec's mean of the two dimensions, and 5 + 8 is an odd sum, so the two rows no longer
+        # collapse onto one number: 6.5 and 6. A `// 2` used to make both 6, which is the whole
+        # reason §7's `/` is worth a FloatField.
         self.assertEqual({a.quality_peers for a in settled}, {7, 8})
         self.assertEqual({a.quality for a in settled}, {7, 8})
-        self.assertEqual({a.round_score for a in settled}, {6})
+        self.assertEqual({a.round_score for a in settled}, {(5 + 8) / 2, (5 + 7) / 2})
 
     def test_the_summary_phase_never_moves_on_its_own(self) -> None:
         # A round gets commented on, so nothing in this file may advance out of it. Every submit
@@ -660,16 +663,18 @@ class RatingPlayTests(TestCase):
         # reads their own round score — the one `answer` just handed them — sees it missing from
         # the column, and works out WHICH revealed line is theirs. That defeats the whole feature.
         #
-        # TWO keys, not five. `prompt`, `output` and `comment` are not blanked here any more
-        # because they are not SENT here either, in any phase: they are not in the frozen `Player`
-        # type, no screen reads them, and the prompt and output a player needs to read the round
-        # arrive in the `summary` rows. A key that is a string in one phase and null in another is
-        # a key every consumer has to null-check for a reason that no longer exists.
+        # FOUR keys, not two and not seven. `prompt`, `output` and `comment` are not blanked here
+        # any more because they are not SENT here either, in any phase: they are not in the frozen
+        # `Player` type, no screen reads them, and the prompt and output a player needs to read the
+        # round arrive in the `summary` rows. A key that is a string in one phase and null in
+        # another is a key every consumer has to null-check for a reason that no longer exists.
+        # `proximity_total` and `quality_total` ARE blanked, and `test_the_rating_phase_hides_the
+        # dimension_totals` below is why: they are scores.
         room, _players, _rows = self._rating_room(answers=3, anonymous=True)
         state = room_state(room.code)
         for p in state["players"]:
             with self.subTest(player=p["name"]):
-                for key in ("score", "round_score"):
+                for key in ("score", "round_score", "proximity_total", "quality_total"):
                     self.assertIsNone(p[key])
                 for key in ("prompt", "output", "comment"):
                     self.assertNotIn(key, p)
@@ -677,6 +682,57 @@ class RatingPlayTests(TestCase):
         # which prompt. It is the scores that cross-reference, and they are gone.
         self.assertEqual([p["name"] for p in state["players"]], ["ana", "bob", "clea"])
         self.assertEqual([p["answered"] for p in state["players"]], [True, True, True])
+
+    def test_the_rating_phase_hides_the_dimension_totals(self) -> None:
+        # THE LEAK UNDER THE OTHER ONE, and the reason the phase masks a number the summary is
+        # about to show in full. A player in the rating phase reads their own round score, adds
+        # the two halves of their own row, and gets their own total: 8 + 8 is their 16. Every
+        # other player's `proximity_total` and `quality_total` sat next to it UNMASKED, so the
+        # sum was readable straight off the board — the exact cross-reference §4 closes by hiding
+        # the ranking, which the two totals defeated from underneath.
+        #
+        # The fixture is a real state of the game, not a contrivance: rounds 0..N-1 are settled
+        # while round N is being rated, so the totals are non-null and the phase is `rating` at the
+        # same time. Every other test in this class sits in `rating` on round 0 with nothing
+        # settled, where these two keys are null for the boring reason that the round is not over
+        # yet — which is why the leak survived a suite that has always asserted on them.
+        room, _players, rows = self._rating_room(answers=2, anonymous=True)
+        settle_round(room)  # one settled round behind the reveal, as in round 2 onwards
+        masked = room_state(room.code)
+        self.assertEqual(masked["phase"], "rating")
+        # First prove the fixture HAS the numbers to leak, by reading them with the mask off. A
+        # mask test over nulls passes for the wrong reason, so the same rows are read twice and
+        # compared: settled, in the rating, and then settled, out of it. The fixture's critic is
+        # 6 and nobody rated, so quality stands on the critic's own score.
+        room.phase = Room.Phase.SUMMARY
+        room.save(update_fields=["phase"])
+        revealed = {p["name"]: (p["proximity_total"], p["quality_total"]) for p in room_state(room.code)["players"]}
+        self.assertEqual(revealed, {"ana": (5, 6), "bob": (5, 6), "clea": (None, None)})
+        self.assertEqual(
+            {p["name"]: (p["proximity_total"], p["quality_total"]) for p in masked["players"]},
+            {name: (None, None) for name in revealed},
+        )
+        # The names are still there, which is the part of the board the spec keeps: it is the
+        # scores that cross-reference, not the roster.
+        self.assertEqual([p["name"] for p in masked["players"]], [r.player.name for r in rows] + ["clea"])
+        self.assertEqual([p["answered"] for p in masked["players"]], [True, True, False])
+        # `quiz_score` and `online` are not scores, and stay.
+        self.assertEqual([p["quiz_score"] for p in masked["players"]], [0, 0, 0])
+
+    def test_the_summary_gives_the_dimension_totals_back(self) -> None:
+        # The mask is scoped to the rating phase, not to anonymity and not to the game: the
+        # summary is where the round is read out loud, and the final screen is where the two
+        # halves are the lesson. So the same rows that were null a moment ago carry their numbers
+        # again. Proximity 5 and the critic's unrated 6, so the total is 5.5 — a half, which is
+        # the spec's arithmetic and the reason the column is a float.
+        room, _players, _rows = self._rating_room(answers=2, anonymous=True)
+        settle_round(room)
+        room.phase = Room.Phase.SUMMARY
+        room.save(update_fields=["phase"])
+        view = [p for p in room_state(room.code)["players"] if p["answered"]]
+        for p in view:
+            self.assertEqual((p["proximity_total"], p["quality_total"]), (5, 6))
+            self.assertEqual(p["score"], (5 + 6) / 2)
 
     def test_the_snapshot_still_sorts_with_every_score_blanked(self) -> None:
         # THE CRASH. `room_state` sorts on `-(score)`, and `-None` is a TypeError: the whole
@@ -758,18 +814,29 @@ class RatingPlayTests(TestCase):
             {k: first[k] for k in ("proximity", "quality_llm", "quality_peers", "quality")},
             {"proximity": 5, "quality_llm": 6, "quality_peers": 7, "quality": 7},
         )
-        for key in ("proximity", "quality_llm", "quality_peers", "quality", "round_score"):
+        for key in ("proximity", "quality_llm", "quality_peers", "quality", "round_score", "quality_comment"):
             self.assertIn(key, first)
-        # Every value is an int, because the whole scale is integers: a float here would be a
-        # float in the JSON on every tick, and `5.5` in a 0-10 out-of-ten column is a display bug
-        # the plan's constraints forbid.
-        for key in ("proximity", "quality_llm", "quality_peers", "quality", "round_score"):
+        # The four judgements are INTEGERS, because the whole scale is: a float among them would
+        # be a display bug the plan's constraints forbid, and only the round's note — a mean of
+        # two of them — is allowed to carry a half.
+        for key in ("proximity", "quality_llm", "quality_peers", "quality"):
             self.assertIsInstance(first[key], int)
-        # No stray key and none missing: the whole-dict equality is the shape check, and it is
+        # `(5 + 7) / 2` exactly. This is 6.0, and it says nothing about the floor — what pins that
+        # is the odd sums elsewhere in this file. What it does show is that the round's note is a
+        # MEAN of the two dimensions and not their sum, a floor of their sum, or a quality of 7.
+        self.assertEqual(first["round_score"], (5 + 7) / 2)
+        # The critic's REASON, stored beside its score. The fixture built its answers on the ORM
+        # with no comment, so it is empty here — the offline case is
+        # `test_an_offline_settlement_carries_the_critics_own_words` in the class below. What this
+        # pins is that the key EXISTS on the row: `api.ts` types it `string`, and a summary
+        # payload that stopped carrying it would break a screen that is coded against it.
+        self.assertEqual(first["quality_comment"], "")
+        self.assertIsInstance(first["quality_comment"], str)
+        # No stray key and none missing: the whole-dict key set is the shape check, and it is
         # the shape a finished UI codes against.
         self.assertEqual(
             set(first),
-            {"author", "prompt", "output", "proximity", "quality_llm", "quality_peers", "quality", "round_score"},
+            {"author", "prompt", "output", "proximity", "quality_llm", "quality_comment", "quality_peers", "quality", "round_score"},
         )
 
     def test_the_summary_rows_follow_the_order_the_reveal_walked(self) -> None:
@@ -861,7 +928,10 @@ class SettlementBoundTests(TestCase):
         self.assertEqual(answer.quality_llm, 4)
         self.assertEqual(answer.quality_peers, 10)  # the raw mean, before the bound
         self.assertEqual(answer.quality, 7)
-        self.assertEqual(answer.round_score, (answer.score + 7) // 2)
+        # The round's note is the spec's mean, not a floor of it: (8 + 7) / 2 == 7.5, and an
+        # integer column would have awarded 7 and lost half a point of a « sur 100 » game.
+        self.assertEqual(answer.round_score, (answer.score + 7) / 2)
+        self.assertEqual(answer.round_score, 7.5)
 
     def test_a_unanimous_room_one_is_capped_three_below_a_critic_eight(self) -> None:
         # The mirror, and the one that protects the other end: a room that hates a prompt cannot
@@ -870,7 +940,7 @@ class SettlementBoundTests(TestCase):
         self.assertEqual(answer.quality_llm, 8)
         self.assertEqual(answer.quality_peers, 1)
         self.assertEqual(answer.quality, 5)
-        self.assertEqual(answer.round_score, (answer.score + 5) // 2)
+        self.assertEqual(answer.round_score, (answer.score + 5) / 2)  # (8 + 5) / 2 == 6.5
 
     def test_a_unanimous_room_inside_the_band_is_heard_exactly(self) -> None:
         # The third leg, and the one a bound implemented the wrong way round fails: a group that
@@ -888,7 +958,7 @@ class SettlementBoundTests(TestCase):
         row = room_state("BND1")["summary"]["rows"][0]
         self.assertEqual(
             {k: row[k] for k in ("proximity", "quality_llm", "quality_peers", "quality", "round_score")},
-            {"proximity": 8, "quality_llm": 4, "quality_peers": 10, "quality": 7, "round_score": 7},
+            {"proximity": 8, "quality_llm": 4, "quality_peers": 10, "quality": 7, "round_score": 7.5},
         )
 
     def test_a_rating_that_lands_after_the_settlement_never_rewrites_it(self) -> None:
@@ -921,7 +991,7 @@ class SettlementBoundTests(TestCase):
         answer.refresh_from_db()
         self.assertIsNone(answer.quality_peers)
         self.assertEqual(answer.quality, 7)
-        self.assertEqual(answer.round_score, (6 + 7) // 2)
+        self.assertEqual(answer.round_score, (6 + 7) / 2)
 
     def test_a_player_who_wrote_nothing_is_not_settled(self) -> None:
         # No row, no round counted. A player who sat out the round keeps the rounds they played
@@ -972,6 +1042,98 @@ class SettlementBoundTests(TestCase):
         self.assertEqual(room.phase, Room.Phase.SUMMARY)
         # Settled, not null: the players who left mid-round still get the critic's score they were
         # owed, and the two dimensions are averaged like any other row.
-        self.assertEqual({a.round_score for a in rnd.answers.all()}, {5})
+        self.assertEqual({a.round_score for a in rnd.answers.all()}, {(4 + 6) / 2})
         self.assertEqual({a.quality_peers for a in rnd.answers.all()}, {None})
         self.assertEqual(room_state(code)["summary"]["rows"][0]["quality"], 6)
+
+    def test_both_summary_columns_round_an_exact_half_the_same_way(self) -> None:
+        # THE SECOND ROUNDING, and the one nobody can see in a number until it is on the wall. The
+        # peers' mean of exactly 6.5 was settled by `round()` here while `prompts.quality` — reading
+        # the same rows one line below — settled it by `half_up`, so the summary printed
+        # « moyenne des pairs 6 » directly above « qualité retenue 7 », under a formula the class
+        # is invited to check, and `Game.tsx` tells them to check exactly that. The two columns
+        # must be the same rounding of the same votes, or the table contradicts its own footnote.
+        #
+        # TWO raters, on purpose: a mean of an ODD number of integers is never a half, so the
+        # three-vote fixtures in this class could never have caught it however they voted. A tie is
+        # only reachable on an even count, which is exactly why no test found this.
+        room = Room.objects.create(code="HALF", tutorial=False)
+        rnd = Round.objects.create(room=room, order=0, target="cible")
+        author = Player.objects.create(room=room, name="ana")
+        raters = [Player.objects.create(room=room, name=name) for name in ("bob", "clea")]
+        answer = rnd.answers.create(player=author, prompt="p", output="o", score=8, quality_llm=7)
+        for rater, vote in zip(raters, (6, 7), strict=True):
+            Rating.objects.create(answer=answer, rater=rater, score=vote)
+
+        settle_round(room)
+        answer.refresh_from_db()
+        # (6 + 7) / 2 == 6.5, and half-up is 7 on both sides of the line.
+        self.assertEqual(answer.quality_peers, 7)
+        self.assertEqual(answer.quality, 7)
+        # Read off the wire as the class reads it, where the two numbers are printed side by side.
+        room.phase = Room.Phase.SUMMARY
+        room.save(update_fields=["phase"])
+        row = room_state(room.code)["summary"]["rows"][0]
+        self.assertEqual((row["quality_llm"], row["quality_peers"], row["quality"]), (7, 7, 7))
+        # The critic's 7 with a band of ±3 does not move a 6.5, so both columns are 7 and the
+        # bound is not what produced the agreement — the rounding is, and this is the tie it has
+        # to settle the same way in the function and at the call site.
+        self.assertEqual(row["round_score"], (8 + 7) / 2)
+
+    def test_an_offline_settlement_carries_the_critics_own_words(self) -> None:
+        # THE REASON THE COMMENT IS KEPT, and the spec rule it satisfies: « Hors ligne : le modèle
+        # devient un écho, le jury devient un chevauchement de mots, et l'écran le dit
+        # explicitement. » With no key, `llm.grade_prompt` is `_stub_grade`: a count of keyword
+        # markers. The comment used to be dropped on the floor on the reasoning that the summary's
+        # four numbers told the story — and they do not, because with nothing else on the row the
+        # screen has only a bare integer to put under the heading « note du modèle ».
+        #
+        # The stub's own comment says what it is (« regle locale, pas un vrai jury »), so storing
+        # it is what lets the summary tell the class the number is a heuristic rather than a
+        # model's opinion. `_has_key` is pinned instead of relying on the environment, the same
+        # way `test_llm` does it, so this test cannot bill a real critic on a developer machine
+        # that exports a key.
+        with mock.patch("game.llm._has_key", return_value=False), mock.patch(
+            "game.llm.answer", return_value="la reponse"
+        ), mock.patch("game.llm.score", return_value=Verdict(8, "tres proche")):
+            code = "OFFL"
+            room = Room.objects.create(code=code, tutorial=False)
+            rnd = Round.objects.create(room=room, order=0, target="cible")
+            author = Player.objects.create(room=room, name="ana")
+            Player.objects.create(room=room, name="bob")
+            room.phase = Room.Phase.PLAYING
+            room.save(update_fields=["phase"])
+            r = self.c.post(
+                f"/api/rooms/{code}/answer",
+                data=json.dumps({"token": author.token, "prompt": "Tu es un guide, pour un public, contexte, en 3 lignes"}),
+                content_type="application/json",
+            )
+            self.assertEqual(r.status_code, 200, r.content)
+            # Stored on the row, not just in the response: the `answer` response is gone by the
+            # time the summary is read, and the summary is where the number is judged.
+            answer = Answer.objects.get()
+            self.assertEqual(answer.quality_comment, llm.STUB_COMMENT)
+            self.assertTrue(answer.quality_comment)
+            settle_round(room)
+            room.phase = Room.Phase.SUMMARY
+            room.save(update_fields=["phase"])
+        row = room_state(code)["summary"]["rows"][0]
+        self.assertEqual(row["quality_comment"], llm.STUB_COMMENT)
+        # The offline heuristic's score is on the row beside its own honesty string, so the two can
+        # never be separated on screen. It is still a number, and the game is still playable.
+        self.assertIsInstance(row["quality_llm"], int)
+        self.assertEqual(row["round_score"], (8 + row["quality"]) / 2)
+
+    def test_the_critics_comment_is_the_one_the_critic_returned(self) -> None:
+        # The keyed path, so the string on the row is a real critic's prose and not the stub's
+        # fallback: `answer` writes `critique.comment`, not `verdict.comment` and not a constant.
+        answer = self._played_round(critic=4)
+        self.assertEqual(answer.quality_comment, "methode")
+        row = room_state("BND1")["summary"]["rows"][0]
+        self.assertEqual(row["quality_comment"], "methode")
+        # And it is not the JUDGE's comment: `Verdict(8, "tres proche")` sits on the row too, and
+        # the two say different things about the same submit — one about the output, one about the
+        # method. Conflating them would put « tres proche » under « note du modèle », and the
+        # summary carries no key for the judge's verdict at all.
+        self.assertNotIn("comment", row)
+        self.assertNotEqual(row["quality_comment"], "tres proche")

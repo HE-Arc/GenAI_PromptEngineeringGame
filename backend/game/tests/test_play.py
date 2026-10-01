@@ -325,14 +325,13 @@ class PlayTest(TestCase):
             self.room.save(update_fields=["current"])
             settle_round(self.room)  # nobody rated, so `quality` stands on the critic's own score
         view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
-        # 8 + 4 of proximity, and 8 + 4 of quality. NOTE: `score` is the sum of PROXIMITY, not of the
-        # settled `round_score` — see the discrepancy this task reports, and `test_score_is_not_the
-        # sum_of_round_score` which pins the behaviour as it stands rather than as §7 of the spec
-        # describes it. The three numbers still describe the SAME two rounds, which is the property
-        # that makes them readable as one row.
+        # `score` is the sum of `round_score` over the settled rounds, each of which is
+        # `(proximité + qualité) / 2` exactly: (8 + 8) / 2 == 8 and (4 + 4) / 2 == 4, so 12 here.
+        # The three numbers still describe the SAME two rounds, which is the property that makes
+        # them readable as one row.
         self.assertEqual(view["proximity_total"], 12)
         self.assertEqual(view["quality_total"], 12)
-        self.assertEqual(view["score"], 12)  # == proximity_total here, and only because prox == qual
+        self.assertEqual(view["score"], (8 + 8) / 2 + (4 + 4) / 2)
         self.assertTrue(view["answered"])  # the cursor is on round 1, the last one she wrote
         # The two halves are not forced to be equal by the payload: a room that agreed with the
         # critic on one round and not the other still gets two distinct columns, and that gap is
@@ -367,9 +366,11 @@ class PlayTest(TestCase):
         # Nobody rated, so each round's `quality` stands on the critic's own score: 10 and 2.
         self.assertEqual(view["proximity_total"], 20)
         self.assertEqual(view["quality_total"], 12)
-        # The two dimensions are visible next to the total, and the total is not their sum.
-        self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], 16)
-        self.assertEqual(view["score"], 16)
+        # The two dimensions are visible next to the total, and the total is not their sum. The
+        # spec's own arithmetic, not a floor of it: (10 + 10) / 2 == 10 and (10 + 2) / 2 == 6.
+        spec_total = (10 + 10) / 2 + (10 + 2) / 2
+        self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], spec_total)
+        self.assertEqual(view["score"], spec_total)
 
     def test_an_unsettled_round_counts_provisionally_then_gets_corrected(self) -> None:
         # `round_score` is NULL until the class has rated the round, and a `Sum` skips NULLs. So
@@ -396,10 +397,13 @@ class PlayTest(TestCase):
         self.assertIsNone(view["proximity_total"])
         self.assertIsNone(view["quality_total"])
 
-        # Settled: (9 + 2) // 2 = 5, so the total moves DOWN by four once the class has rated.
+        # Settled: (9 + 2) / 2 = 5.5, so the total moves DOWN by 3.5 once the class has rated.
+        # The half is the spec's arithmetic and not a rounding decision: `note_tour` is a mean, and
+        # a floor here would quietly take half a point off every odd round of a game that is still
+        # presented as « sur 100 ».
         settle_round(self.room)
         view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
-        self.assertEqual(view["score"], 5)
+        self.assertEqual(view["score"], 5.5)
         self.assertEqual(view["proximity_total"], 9)
         self.assertEqual(view["quality_total"], 2)
 
@@ -434,7 +438,7 @@ class PlayTest(TestCase):
         rnd.answers.create(player=bob, prompt="p", output="o", score=9, quality_llm=9)
         settle_round(self.room)
         self.room.refresh_from_db()
-        # The score is now the fused (proximité + qualité) // 2 of the settled round, so bob's 9
+        # The score is now the fused (proximité + qualité) / 2 of the settled round, so bob's 9
         # and ana's 3 are what the sort reads — and the rating phase has passed, so they are
         # visible again.
         self.assertEqual([p["name"] for p in room_state("ABCD")["players"]], ["bob", "ana"])

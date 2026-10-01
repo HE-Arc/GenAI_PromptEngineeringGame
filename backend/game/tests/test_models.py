@@ -280,9 +280,55 @@ class SettlementColumnTests(TestCase):
         # these columns were added to a table that already had rows.
         for name in ("quality_llm", "quality_peers", "quality", "round_score"):
             with self.subTest(field=name):
-                field = Answer._meta.get_field(name)
-                self.assertTrue(field.null, f"{name} must be nullable")
-                self.assertIsInstance(field, models.IntegerField)
+                self.assertTrue(Answer._meta.get_field(name).null, f"{name} must be nullable")
+        for name in ("quality_llm", "quality_peers", "quality"):
+            with self.subTest(field=name):
+                self.assertIsInstance(Answer._meta.get_field(name), models.IntegerField)
+
+    def test_the_round_score_is_a_float_because_the_specs_mean_is_one(self) -> None:
+        # §7: `note_tour = (proximité + qualité) / 2`. The two halves are integers, so the mean is
+        # a whole number only half the time, and an `IntegerField` can only store a FLOOR of it.
+        # The floor was the schema rather than the rule, so it was invisible at the line that
+        # computed it: ten rounds of proximity 7 and quality 6 settled to 60 on a scale the final
+        # screen still calls « sur 100 », where the spec's arithmetic gives 65. Pinned as a type
+        # because that is where the truncation lived, and then by a value that has to survive the
+        # round trip: 6.5 in, 6.5 out, which an integer column could not do on SQLite either.
+        self.assertIsInstance(Answer._meta.get_field("round_score"), models.FloatField)
+        answer, _raters = _rating_fixture()
+        Answer.objects.filter(pk=answer.pk).update(round_score=6.5)
+        self.assertEqual(Answer.objects.get(pk=answer.pk).round_score, 6.5)
+        # And the sum the ranking is built on keeps the half: this one round reads 6.5, and ten
+        # such rounds would be the 65 the spec's arithmetic gives, where a floored column said 60.
+        self.assertEqual(
+            answer.player.answers.aggregate(total=Sum("round_score"))["total"],
+            6.5,
+        )
+
+    def test_the_critics_comment_is_stored_beside_its_score(self) -> None:
+        # The reason for the critic's number, stored with it. `blank=True` and NOT `null=True`,
+        # like `comment` above the settlement block: a column that could be NULL would make "the
+        # critic said nothing" and "nobody wrote a comment" the same stored value, and the summary
+        # screen has to be able to print one and hide the other. It is NOT one of the four
+        # settlement columns either — it is written on the submit, beside `quality_llm`, because
+        # both come from the same billed call.
+        field = Answer._meta.get_field("quality_comment")
+        self.assertTrue(field.blank)
+        self.assertFalse(field.null)
+        answer, _raters = _rating_fixture()
+        self.assertEqual(answer.quality_comment, "")  # a fresh row is empty, not null
+        answer.quality_comment = "il manque un role et un format"
+        answer.save(update_fields=["quality_comment"])
+        self.assertEqual(Answer.objects.get(pk=answer.pk).quality_comment, "il manque un role et un format")
+        # And a row nobody wrote a comment on is still empty, not null: the settlement walk in
+        # `views.settle_round` must not fill it in, and its `update_fields` says so below.
+        second = Answer.objects.create(
+            round=Round.objects.create(room=answer.round.room, order=1, target="t2"),
+            player=answer.player,
+            prompt="c",
+            output="d",
+            score=5,
+        )
+        self.assertEqual(second.quality_comment, "")
 
     def test_an_unsettled_round_is_ignored_by_a_sum(self) -> None:
         # THE PROPERTY THE WRITES EXIST FOR. The final ranking is a `Sum("round_score")`, and `Sum`
@@ -307,11 +353,16 @@ class SettlementColumnTests(TestCase):
         self.assertIsNone(answer.player.answers.get(round=second).round_score)
 
     def test_the_settlement_is_a_plain_update_and_leaves_the_rest_of_the_row_alone(self) -> None:
-        # `settle_round` writes with `update_fields`, so the proximity score, the prompt and the
-        # judge's comment are not part of its write and cannot be clobbered by it. Pinned because a
-        # bare `answer.save()` would rewrite every column from a possibly stale instance, and the
-        # prompt is the one thing a player must find byte-identical in the summary.
+        # `settle_round` writes with `update_fields`, so the proximity score, the prompt, the
+        # judge's comment and the CRITIC's comment are not part of its write and cannot be
+        # clobbered by it. Pinned because a bare `answer.save()` would rewrite every column from a
+        # possibly stale instance, and the prompt and the prose are the two things a player must
+        # find byte-identical in the summary.
         answer, raters = _rating_fixture()
+        # Stored first, on its own write, the way `answer` does it: the critic's prose is written
+        # by the submit and read by the summary, with the settlement in between.
+        answer.quality_comment = "role et format explicites"
+        answer.save(update_fields=["quality_comment"])
         answer.quality_llm = 6
         answer.quality_peers = 7
         answer.quality = 7
@@ -322,6 +373,9 @@ class SettlementColumnTests(TestCase):
             (answer.prompt, answer.output, answer.score, answer.comment),
             ("a", "b", 5, ""),
         )
+        # The comment survived a settlement write that did not name it, which is the whole claim:
+        # a bare `save()` from a stale instance would have rewritten it from memory.
+        self.assertEqual(answer.quality_comment, "role et format explicites")
         # The ratings are still the ones the settlement read, and the whole graph is still there.
         self.assertEqual(answer.ratings.count(), 0)
         self.assertEqual(len(raters), 3)
