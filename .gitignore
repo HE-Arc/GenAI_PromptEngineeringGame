@@ -2,3 +2,8 @@
 # why the code looks the way it does, and a record nobody can read is not a record. It used to
 # be ignored here; it is not any more.
 .superpowers/
+
+# The project wiki is a SEPARATE repository (GenAI_PromptEngineeringGame.wiki.git), cloned
+# alongside the code because that is where the spec now lives. Git would otherwise list it as
+# untracked forever, and a `git add -A` would try to commit a nested repository as a directory.
+GenAI_PromptEngineeringGame.wiki/

@@ -28,6 +28,12 @@ export interface RevealState {
 // One line of the round synthesis, shown once anonymity is lifted. `quality_llm`,
 // `quality_peers` and `quality` are all here so the screen can show the bound at work rather
 // than an unexplained verdict.
+//
+// The three numbers are meant to be CHECKABLE against each other: `quality` is `quality_peers`
+// held within ±3 of `quality_llm`, and the screen says so under the table. If the server rounds
+// the two by different rules, that sentence becomes false in front of the class, so the server
+// rounds them the same way. `quality_comment` is the critic's own reason for `quality_llm`, and
+// it is the surface that admits when there is no real model behind the number.
 export interface SummaryRow {
   author: string
   prompt: string
@@ -36,6 +42,7 @@ export interface SummaryRow {
   quality_llm: number
   quality_peers: number
   quality: number
+  quality_comment: string
   round_score: number
 }
 
