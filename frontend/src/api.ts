@@ -210,6 +210,12 @@ const REASONS: Record<string, string> = {
   'name taken': 'Ce pseudo est déjà pris. Choisis-en un autre.',
   'game already started': "La partie a déjà commencé. L’animateur doit en créer une nouvelle.",
   'already answered': 'Tu as déjà répondu pour cette manche.',
+  // Two refusals specific to the timed didacticiel. They are 409s, so without these they would
+  // land on the generic "Impossible pour le moment. Réessaie dans un instant." — which is the
+  // wrong advice here: the window has closed and retrying cannot reopen it. A player tapping at
+  // the buzzer needs to be told the room moved on, not to try again.
+  "time's up": 'C’est fini pour cette question, la suivante arrive.',
+  'not the current question': 'La classe est déjà passée à une autre question.',
   'already rated': 'Tu as déjà noté ce prompt. Le suivant arrive.',
   'not playing': "La partie n’est pas encore démarrée.",
   'quiz not open': 'Le didacticiel est fermé. L’animateur fait avancer la partie.',
