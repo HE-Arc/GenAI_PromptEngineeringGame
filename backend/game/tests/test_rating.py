@@ -18,7 +18,7 @@ from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from game.llm import Verdict
 from game.models import Answer, Player, Rating, Room, Round
-from game.prompts import QUALITY_BAND, SCALE_MAX, SCALE_MIN, quality
+from game.prompts import QUALITY_BAND, SCALE_MAX, SCALE_MIN, half_up, quality
 from game.views import (
     PRESENCE_TTL,
     _beat,
@@ -78,6 +78,45 @@ class PeerBoundTests(SimpleTestCase):
                     else:
                         self.assertIn(got, range(llm - QUALITY_BAND, llm + QUALITY_BAND + 1))
                         self.assertIn(got, range(0, 11))
+
+    def test_a_tie_breaks_half_up_and_not_to_the_even_number(self) -> None:
+        # THE TIE, and the reason `quality` calls `half_up` rather than `round()`. Python's
+        # `round()` is round-half-to-EVEN, so a peer mean of exactly 7.5 settles to 8 and one of
+        # exactly 6.5 settles to 6 — two rooms that judged a prompt identically, one point apart,
+        # for a reason no player could see and no player could argue with. Half-up is what a
+        # classroom expects of a mean, and it is MONOTONE: every tie in the range falls the same
+        # way, which is the property the second assertion pins.
+        #
+        # This test has no predecessor, and that is the point of adding it: every other case in
+        # this class was written with its votes deliberately OFF the tie, so a change of rounding
+        # mode passed all of them and the tie was never checked by anything.
+        self.assertEqual(quality(llm=7, peers=[7, 8]), 8)  # 7.5 -> 8, not the even 8 by luck
+        self.assertEqual(quality(llm=6, peers=[6, 7]), 7)  # 6.5 -> 7, which `round` would not give
+        self.assertEqual(quality(llm=None, peers=[7, 8]), 8)  # the unanchored branch, same tie
+        self.assertEqual(quality(llm=None, peers=[6, 7]), 7)
+        # Three votes, so the mean is not a .5 at all and must be untouched by the change: 7.33
+        # still rounds to 7, and 7.67 to 8. This is the case that would catch `half_up` being
+        # wrong in the other direction — a banker's-rounding-like floor of everything above the
+        # mean would move these two.
+        self.assertEqual(quality(llm=5, peers=[7, 7, 8]), 7)  # 7.33, not a tie
+        self.assertEqual(quality(llm=5, peers=[7, 8, 8]), 8)  # 7.67, not a tie
+        # Monotone across the whole tie: for every integer mean-plus-a-half there is one answer,
+        # and it is never below the floor.
+        for lo in range(1, 10):
+            with self.subTest(lo=lo):
+                self.assertEqual(half_up(lo + 0.5), lo + 1)
+                self.assertEqual(quality(llm=lo, peers=[lo, lo + 1]), lo + 1)
+
+    def test_a_tie_falls_inside_the_band_the_same_way(self) -> None:
+        # The tie has to be settled the same way on BOTH branches, and that it is not automatic:
+        # the anchored branch clamps to the band first and rounds second, so the clamp could land
+        # on a tie of its own. It does not — the band's ends are integers — and this pins it, since
+        # a rewrite that rounded before clamping would still pass every other case here.
+        self.assertEqual(quality(llm=5, peers=[8, 9]), 8)  # 8.5 clamped to 8 by the band, exactly
+        self.assertEqual(quality(llm=8, peers=[4, 5]), 5)  # 4.5 clamped up to 5 by the band
+        # And the two ends of the band are integers, so nothing rounds INTO it or out of it.
+        self.assertEqual(quality(llm=4, peers=[10, 10, 10]), 7)
+        self.assertEqual(quality(llm=8, peers=[1, 1, 1]), 5)
 
     def test_the_band_is_three(self) -> None:
         # Pinned because the number is the feature and it is otherwise a bare constant: a later
@@ -457,12 +496,20 @@ class RatingPlayTests(TestCase):
         self.assertEqual(room_state(room.code)["reveal"]["rated"], 0)
 
     def test_each_phase_block_is_gated_to_its_own_phase(self) -> None:
-        # The reveal and the summary are PHASE-GATED, and only each other: a summary screen that
-        # also found a `reveal` block would have two blocks to reconcile, and a rating screen that
-        # found a `summary` would show a round that has not been read yet. The final contract puts
-        # all three blocks in every snapshot as nullable keys — and a task that owns `test_play`'s
-        # whole-dict assertions makes that call — so what this pins is which phase fills which key.
-        phases = (Room.Phase.WAITING, Room.Phase.PLAYING, Room.Phase.RATING, Room.Phase.SUMMARY, Room.Phase.DONE)
+        # The three blocks are UNCONDITIONAL KEYS — present in every snapshot, `None` outside the
+        # phase that fills them — so what this pins is WHICH PHASE FILLS WHICH KEY, not which keys
+        # exist. A summary screen that also found a `reveal` would have two blocks to reconcile, and
+        # a rating screen that found a `summary` would show a round nobody has read yet. Asserted
+        # on the VALUE (`None` or not) rather than on `in`, because the null IS the contract: a key
+        # that went missing again would pass a membership check and break every screen.
+        phases = (
+            Room.Phase.WAITING,
+            Room.Phase.QUIZ,
+            Room.Phase.PLAYING,
+            Room.Phase.RATING,
+            Room.Phase.SUMMARY,
+            Room.Phase.DONE,
+        )
         for i, phase in enumerate(phases):
             with self.subTest(phase=phase):
                 # A room per phase, because the code is the primary key and the same one twice is
@@ -471,8 +518,39 @@ class RatingPlayTests(TestCase):
                 room.phase = phase
                 room.save(update_fields=["phase"])
                 state = room_state(room.code)
-                self.assertEqual("reveal" in state, phase == Room.Phase.RATING)
-                self.assertEqual("summary" in state, phase == Room.Phase.SUMMARY)
+                for block in ("quiz", "reveal", "summary"):
+                    self.assertIn(block, state)  # always there, in all six phases
+                self.assertEqual(state["quiz"] is not None, phase == Room.Phase.QUIZ)
+                self.assertEqual(state["reveal"] is not None, phase == Room.Phase.RATING)
+                self.assertEqual(state["summary"] is not None, phase == Room.Phase.SUMMARY)
+
+    def test_the_key_set_is_identical_in_all_six_phases(self) -> None:
+        # The property the three unconditional keys exist FOR, and the one that cannot be checked
+        # one phase at a time: a client writes its branches once against a shape that does not move
+        # under it. This compares the key SETS across all six phases, so a block that is added to
+        # the snapshot in one phase only — the bug this contract exists to remove — fails here even
+        # though every other test in the file passes.
+        shapes: set[frozenset[str]] = set()
+        for i, phase in enumerate(Room.Phase.values):
+            with self.subTest(phase=phase):
+                room, _players, _rows = self._rating_room(answers=2, code=f"KEY{i}")
+                room.phase = phase
+                room.save(update_fields=["phase"])
+                shapes.add(frozenset(room_state(room.code)))
+        # ONE shape for all six. Written as a set of key sets rather than a loop of pairwise
+        # comparisons because the failure this catches is a phase adding a key: six pairwise
+        # assertions all pass while a seventh key exists in one phase, and only the count of
+        # DISTINCT shapes drops.
+        self.assertEqual(len(shapes), 1, f"six phases produced {len(shapes)} different key sets")
+        self.assertEqual(
+            shapes.pop(),
+            frozenset(
+                {
+                    "code", "phase", "current", "total", "target", "anonymous",
+                    "players", "online_count", "quiz", "reveal", "summary",
+                }
+            ),
+        )
 
     def test_a_rating_phase_with_nothing_to_reveal_carries_a_null_reveal(self) -> None:
         # The admin can open the rating on a round nobody answered. There is no prompt, so there
@@ -541,19 +619,24 @@ class RatingPlayTests(TestCase):
         rnd.save(update_fields=["revealed"])
         self.assertEqual(room_state(room.code)["reveal"]["author_label"], before)
 
-    def test_anonymity_hides_every_prompt_and_score_during_rating(self) -> None:
-        # The leak the spec names: if the payload still carries each player's prompt and score, a
-        # player reads their own round score — the one `answer` just handed them — sees it missing
-        # from the column, and works out WHICH revealed line is theirs. That defeats the whole
-        # feature. All of it goes, on EVERY player, and `round_score` and `output` go with the two
-        # the spec names: a player recognises their own text, and `round_score` is the same
-        # proximity under a second name.
+    def test_anonymity_hides_the_score_and_the_round_score_during_rating(self) -> None:
+        # The leak the spec names: if the payload still carries each player's score, a player
+        # reads their own round score — the one `answer` just handed them — sees it missing from
+        # the column, and works out WHICH revealed line is theirs. That defeats the whole feature.
+        #
+        # TWO keys, not five. `prompt`, `output` and `comment` are not blanked here any more
+        # because they are not SENT here either, in any phase: they are not in the frozen `Player`
+        # type, no screen reads them, and the prompt and output a player needs to read the round
+        # arrive in the `summary` rows. A key that is a string in one phase and null in another is
+        # a key every consumer has to null-check for a reason that no longer exists.
         room, _players, _rows = self._rating_room(answers=3, anonymous=True)
         state = room_state(room.code)
         for p in state["players"]:
             with self.subTest(player=p["name"]):
-                for key in ("prompt", "output", "comment", "score", "round_score"):
+                for key in ("score", "round_score"):
                     self.assertIsNone(p[key])
+                for key in ("prompt", "output", "comment"):
+                    self.assertNotIn(key, p)
         # The roster itself is NOT a leak: knowing who is in the room says nothing about who wrote
         # which prompt. It is the scores that cross-reference, and they are gone.
         self.assertEqual([p["name"] for p in state["players"]], ["ana", "bob", "clea"])
@@ -575,14 +658,44 @@ class RatingPlayTests(TestCase):
     def test_the_prompt_and_the_score_come_back_after_the_rating(self) -> None:
         # The blanking is scoped to the rating phase, not to anonymity as such: the summary is
         # where the round gets read out loud, and there a player has to be able to see their own
-        # prompt against the others'.
+        # score against the others'. The PROMPT comes back on the summary ROW rather than on the
+        # player, which is where it is read from — the final `Player` type has no such key, so
+        # putting it back here would contradict the contract the screens are coded against.
         room, players, rows = self._rating_room(answers=2, anonymous=True)
         self._online(room, *players)
         room.phase = Room.Phase.SUMMARY
         room.save(update_fields=["phase"])
         state = room_state(room.code)
-        self.assertEqual(state["players"][0]["prompt"], "prompt 0")
         self.assertEqual(state["players"][0]["score"], 5)
+        self.assertEqual([r["prompt"] for r in state["summary"]["rows"]], ["prompt 0", "prompt 1"])
+
+    def test_the_player_row_carries_no_prompt_output_or_comment_in_any_phase(self) -> None:
+        # NOT BLANKED IN THE RATING PHASE — ABSENT IN ALL SIX. The judge verdict reaches a player
+        # through the `answer` POST response, which is where it was always delivered, and the
+        # prompt and output they need to read the round arrive in the `summary` rows. So the three
+        # keys are gone rather than nulled here, which is the difference between one branch a
+        # client writes once and a branch per phase it writes and then cannot delete.
+        phases = (
+            Room.Phase.WAITING,
+            Room.Phase.QUIZ,
+            Room.Phase.PLAYING,
+            Room.Phase.RATING,
+            Room.Phase.SUMMARY,
+            Room.Phase.DONE,
+        )
+        for i, phase in enumerate(phases):
+            with self.subTest(phase=phase):
+                room, _players, _rows = self._rating_room(answers=2, code=f"PRM{i}")
+                room.phase = phase
+                room.save(update_fields=["phase"])
+                for p in room_state(room.code)["players"]:
+                    self.assertEqual(
+                        set(p),
+                        {
+                            "name", "score", "answered", "round_score", "online",
+                            "proximity_total", "quality_total", "quiz_score", "quiz_done",
+                        },
+                    )
 
     # --- the snapshot: the summary ----------------------------------------------------------
 

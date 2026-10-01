@@ -1,12 +1,13 @@
 import json
 from unittest.mock import patch
 
+from django.db.models import Sum
 from django.http import HttpResponse
 from django.test import Client, TestCase
 
 from game.llm import Verdict
 from game.models import Answer, Player, Room, Round
-from game.views import _beat, _inflight, _presence, room_state
+from game.views import _beat, _inflight, _presence, room_state, settle_round
 
 
 class PlayTest(TestCase):
@@ -35,8 +36,8 @@ class PlayTest(TestCase):
     def _online(self, *names: str) -> None:
         """Give each named player a live heartbeat, as their own SSE stream would.
 
-        `maybe_advance` now counts online players, and a test client that never opens a stream has
-        no beats, so without this every round would be stuck with online_count 0.
+        `maybe_advance_phase` now counts online players, and a test client that never opens a
+        stream has no beats, so without this every round would be stuck with online_count 0.
         """
         for name in names:
             _beat("ABCD", Player.objects.get(room=self.room, name=name).pk)
@@ -210,31 +211,58 @@ class PlayTest(TestCase):
         with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(10, "parfait")):
             self._answer(t, "repete 42")
         st = room_state("ABCD")
-        self.assertEqual(set(st), {"code", "phase", "current", "total", "target", "players", "online_count"})
-        self.assertEqual((st["code"], st["current"], st["total"], st["target"]), ("ABCD", 1, 2, "Nantes"))
-        p = st["players"][0]
+        # The FULL top-level key set, all ten. This is the assertion that catches a key appearing
+        # by accident and a key going missing, which is the whole reason it is a set equality
+        # rather than a lookup: the three phase blocks are in every snapshot from here on, and a
+        # subset check would be blind to that either way.
         self.assertEqual(
-            set(p), {"name", "score", "answered", "prompt", "output", "comment", "round_score", "online"}
+            set(st),
+            {
+                "code", "phase", "current", "total", "target", "anonymous",
+                "players", "online_count", "quiz", "reveal", "summary",
+            },
+        )
+        self.assertEqual((st["code"], st["current"], st["total"], st["target"]), ("ABCD", 1, 2, "Nantes"))
+        # And all three phase blocks are present and null in `playing`, which is the other half of
+        # the contract: present, not absent.
+        self.assertIsNone(st["quiz"])
+        self.assertIsNone(st["reveal"])
+        self.assertIsNone(st["summary"])
+        p = st["players"][0]
+        # Likewise the FULL player row: nine keys, and no `prompt`, `output` or `comment`. Those
+        # three are gone in EVERY phase rather than blanked in the rating one, so a screen coding
+        # against this type finds exactly what the frozen `Player` promises.
+        self.assertEqual(
+            set(p),
+            {
+                "name", "score", "answered", "round_score", "online",
+                "proximity_total", "quality_total", "quiz_score", "quiz_done",
+            },
         )
         self.assertEqual(p["score"], 10)
-        self.assertIsNone(p["prompt"])
         self.assertFalse(p["answered"])
+        # The room was created without a bank in this fixture, so `quiz_done` is False rather than
+        # vacuously True: `count() == 0` is true of every player in an unmaterialised bank.
+        self.assertFalse(p["quiz_done"])
 
     def test_state_pins_every_field_of_an_answered_player(self) -> None:
         st = self._answered_state()
         self.assertEqual((st["current"], st["target"]), (0, "42"))
         ana = next(p for p in st["players"] if p["name"] == "ana")
-        # Whole-dict equality, so a renamed, dropped or nulled key all fail here.
+        # Whole-dict equality, so a renamed, dropped, nulled or ADDED key all fail here. This is
+        # the assertion that would have caught `prompt`/`output`/`comment` outliving the contract,
+        # so it stays a whole dict and is never narrowed to the keys it happens to mention.
         self.assertEqual(
             ana,
             {
                 "name": "ana",
                 "score": 8,
                 "answered": True,
-                "prompt": "repete 42",
-                "output": "quarante-deux",
-                "comment": "tres proche",
                 "round_score": 8,
+                "proximity_total": None,  # her round is not settled yet, so there is no total
+                "quality_total": None,
+                "quiz_score": 0,
+                "quiz_done": False,  # this room has no bank, so nothing to be done
                 "online": False,  # no stream in this test, so no heartbeat
             },
         )
@@ -246,10 +274,95 @@ class PlayTest(TestCase):
         # so a null here is a type error in the client, not a cosmetic null.
         self.assertIsInstance(bob["score"], int)
         self.assertEqual(bob["score"], 0)
+        # He wrote nothing in this round, so there is no round score to read — and no dimension
+        # totals either, which are summed over SETTLED rounds only.
+        self.assertIsNone(bob["round_score"])
+        self.assertIsNone(bob["proximity_total"])
+        self.assertIsNone(bob["quality_total"])
+        # `quiz_score` is an int even for a player who never opened the didacticiel, so the
+        # client formats "0 sur 8" rather than carrying a null branch.
+        self.assertIsInstance(bob["quiz_score"], int)
+        self.assertEqual(bob["quiz_score"], 0)
+
+    def test_the_dimension_totals_are_sums_over_settled_rounds(self) -> None:
+        # THE TWO NUMBERS THE FINAL SCREEN IS WAITING FOR. The final ranking is a single total,
+        # and it is the columns beside it that make the total mean something: a player who ends on
+        # "proximité 42, qualité 58, total 50" learns that their prompts WORK and are badly BUILT.
+        # That lesson is invisible in the total alone, which reads like a grade — so the two halves
+        # travel in the payload rather than being left to a client that cannot derive them.
+        ana = Player.objects.create(room=self.room, name="ana")
+        Player.objects.create(room=self.room, name="bob")  # bob never answers, so every round stays his to write
+        self._play()
+        # Written on the ORM and settled one round at a time, because the subject here is the SUM
+        # `room_state` reads and not the three admin clicks that would get here over HTTP.
+        for order, proximity in ((0, 8), (1, 4)):
+            rnd = Round.objects.get(room=self.room, order=order)
+            rnd.answers.create(player=ana, prompt="p", output="o", score=proximity, quality_llm=proximity)
+            self.room.current = order
+            self.room.save(update_fields=["current"])
+            settle_round(self.room)  # nobody rated, so `quality` stands on the critic's own score
+        view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
+        # 8 + 4 of proximity, and 8 + 4 of quality. NOTE: `score` is the sum of PROXIMITY, not of the
+        # settled `round_score` — see the discrepancy this task reports, and `test_score_is_not_the
+        # sum_of_round_score` which pins the behaviour as it stands rather than as §7 of the spec
+        # describes it. The three numbers still describe the SAME two rounds, which is the property
+        # that makes them readable as one row.
+        self.assertEqual(view["proximity_total"], 12)
+        self.assertEqual(view["quality_total"], 12)
+        self.assertEqual(view["score"], 12)  # == proximity_total here, and only because prox == qual
+        self.assertTrue(view["answered"])  # the cursor is on round 1, the last one she wrote
+        # The two halves are not forced to be equal by the payload: a room that agreed with the
+        # critic on one round and not the other still gets two distinct columns, and that gap is
+        # the whole lesson. They are equal in this fixture only because the critic's score was set
+        # equal to the proximity on purpose.
         self.assertEqual(
-            {k: bob[k] for k in ("prompt", "output", "comment", "round_score")},
-            {"prompt": None, "output": None, "comment": None, "round_score": None},
+            Answer.objects.filter(player=ana).aggregate(s=Sum("score"))["s"],
+            Answer.objects.filter(player=ana).aggregate(s=Sum("quality"))["s"],
         )
+
+    def test_score_is_not_the_sum_of_round_score(self) -> None:
+        # PINS THE DISCREPANCY, rather than the spec. §7 of the cahier says the final ranking
+        # "additionne les dix tours" where a tour is `(proximité + qualité) / 2`, and `models.py`
+        # says the same in its comment on `round_score`. `room_state` sums `Answer.score` — the
+        # proximity — instead. These two rounds are built so the two totals cannot be confused:
+        # 10+10 settles to 10 and 10+2 settles to 6, so the spec's total is 16 and what the payload
+        # sends is 20.
+        #
+        # This is left as a test rather than silently corrected because it is a behaviour change
+        # with a visible consequence — the leaderboard would move on every settlement, so the
+        # number a player has watched all game would change under them — and that call belongs to
+        # whoever owns the final ranking screen. What this pins is the CURRENT number, so whoever
+        # changes it has to change this test on purpose.
+        ana = Player.objects.create(room=self.room, name="ana")
+        self._play()
+        for order, (proximity, quality_llm) in enumerate(((10, 10), (10, 2))):
+            rnd = Round.objects.get(room=self.room, order=order)
+            rnd.answers.create(player=ana, prompt="p", output="o", score=proximity, quality_llm=quality_llm)
+            self.room.current = order
+            self.room.save(update_fields=["current"])
+            settle_round(self.room)
+        view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
+        # Nobody rated, so each round's `quality` stands on the critic's own score: 10 and 2.
+        self.assertEqual(view["proximity_total"], 20)
+        self.assertEqual(view["quality_total"], 12)
+        # 16 is what §7 calls the total, and it is the sum of the settled `round_score`s.
+        self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], 16)
+        # What the leaderboard actually sends is 20.
+        self.assertEqual(view["score"], 20)
+
+    def test_the_dimension_totals_are_null_before_a_player_is_settled(self) -> None:
+        # The other half, and the reason they are `number | null` rather than `number`: a player
+        # who has not finished a round yet has no totals, and a silent 0 would read as a real and
+        # terrible score rather than as "nothing yet". A `Sum` over no settled rows is NULL, and
+        # the final screen prints an em dash until these arrive.
+        _, t = self._join("ana")
+        self._play()
+        with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(9, "nickel")):
+            self._answer(t, "repete 42")
+        ana = room_state("ABCD")["players"][0]
+        self.assertEqual(ana["score"], 9)  # the proximity it was just told
+        self.assertIsNone(ana["proximity_total"])
+        self.assertIsNone(ana["quality_total"])
 
     def test_state_ranks_by_score_desc(self) -> None:
         _, ta = self._join("ana")
@@ -295,8 +408,15 @@ class PlayTest(TestCase):
         # endpoint's whole reason to work. Never parse this frame through strip().
         self.assertTrue(frame.endswith(b"\n\n"), frame)
         payload = json.loads(frame[len(b"data: ") : -2])
+        # The key set is the one from `test_state_shape_and_totals`, and the WHOLE payload is
+        # pinned below it. Both are here because this is the bytes the phones actually parse: a
+        # key that never reaches the wire is invisible to every other test in the suite.
         self.assertEqual(
-            set(payload), {"code", "phase", "current", "total", "target", "players", "online_count"}
+            set(payload),
+            {
+                "code", "phase", "current", "total", "target", "anonymous",
+                "players", "online_count", "quiz", "reveal", "summary",
+            },
         )
         self.assertEqual(
             payload,
@@ -306,29 +426,46 @@ class PlayTest(TestCase):
                 "current": 0,
                 "total": 2,
                 "target": "42",
+                "anonymous": True,  # the `Room` default, read through the snapshot
                 "players": [
                     {
                         "name": "ana",
                         "score": 8,
                         "answered": True,
-                        "prompt": "repete 42",
-                        "output": "quarante-deux",
-                        "comment": "tres proche",
                         "round_score": 8,
+                        "proximity_total": None,
+                        "quality_total": None,
+                        "quiz_score": 0,
+                        "quiz_done": False,
                         "online": False,
                     },
                     {
                         "name": "bob",
                         "score": 0,
                         "answered": False,
-                        "prompt": None,
-                        "output": None,
-                        "comment": None,
                         "round_score": None,
+                        "proximity_total": None,
+                        "quality_total": None,
+                        "quiz_score": 0,
+                        "quiz_done": False,
                         "online": False,
                     },
                 ],
                 "online_count": 0,
+                # All three present and null, which is the shape every phase carries.
+                "quiz": None,
+                "reveal": None,
+                "summary": None,
             },
         )
         r.close()
+
+    def test_anonymous_is_read_from_the_room_not_inferred(self) -> None:
+        # The flag is FIXED for the whole game, so a screen reads it once instead of inferring
+        # anonymity from whether `reveal.author` happens to be null — which is indistinguishable
+        # from a round with no author. Pinned on both values because only the `True` half of a
+        # boolean is otherwise tested.
+        for flag in (True, False):
+            with self.subTest(anonymous=flag):
+                Room.objects.filter(code="ABCD").update(anonymous=flag)
+                self.assertIs(room_state("ABCD")["anonymous"], flag)

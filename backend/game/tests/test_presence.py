@@ -230,8 +230,12 @@ class PresenceTest(TestCase):
         bob_view = next(p for p in room_state("ABCD")["players"] if p["name"] == "bob")
         self.assertFalse(bob_view["answered"])
         self.assertFalse(bob_view["online"])
-        self.assertIsNone(bob_view["prompt"])
-        self.assertIsNone(bob_view["output"])
+        # `prompt` and `output` are ABSENT from the player row rather than null: they are not in
+        # the frozen `Player` type, no screen reads them, and the round's text arrives in the
+        # `summary` rows. What this step is really about is that nothing of round 0 is attributed
+        # to bob, which `answered` and `round_score` still say on their own.
+        self.assertNotIn("prompt", bob_view)
+        self.assertNotIn("output", bob_view)
         self.assertIsNone(bob_view["round_score"])
 
         # 4. Bob's beats resume. Presence is derived from the registry, not stored anywhere

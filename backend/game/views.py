@@ -46,9 +46,9 @@ _inflight: set[tuple[int, int]] = set()
 #
 # HEARTBEAT WITH A TTL, NOT DISCONNECT DETECTION. A phone that sleeps, loses wifi or is backgrounded
 # does not reliably close its socket, so waiting for a close event to mark a player gone is a
-# promise the network cannot keep — and `maybe_advance` waiting on a player who is never coming back
-# is a frozen party. A player counts as online only while their own stream keeps beating, so a dead
-# stream ages out on its own.
+# promise the network cannot keep — and `maybe_advance_phase` waiting on a player who is never
+# coming back is a frozen party. A player counts as online only while their own stream keeps
+# beating, so a dead stream ages out on its own.
 #
 # TTL = 3.0s against a 0.5s tick, six beats of slack. Comfortably more than one tick so a single
 # late beat — a GC pause, a slow query in `room_state`, a phone that hitched — does not flap the
@@ -336,10 +336,10 @@ def _quiz_state(room: Room, online: set[int]) -> dict:
     number the lobby and the admin show, not the one a player is graded by.
 
     `done` counts the ONLINE players who have answered every question, matching the bar
-    `maybe_advance` uses to open the game: if this and the gate disagreed, the screen would say
-    "c'est parti" on a room that has not moved. A player whose phone dropped is not counted, for
-    the reason every other advance in this file counts presence: the row is there forever and the
-    person may never come back.
+    `maybe_advance_phase` uses to open the game: if this and the gate disagreed, the screen would
+    say "c'est parti" on a room that has not moved. A player whose phone dropped is not counted,
+    for the reason every other advance in this file counts presence: the row is there forever and
+    the person may never come back.
 
     Every read here is scoped to `room.questions`, not to `QuizQuestion.objects`: the bank is the
     room's, so a global count is this room's eight PLUS every other room's eight, and the total
@@ -446,18 +446,48 @@ def _summary_state(room: Room, rnd) -> dict:
 
 
 def room_state(code: str) -> dict:
+    """The whole room, one payload, for everybody: the admin screen, every phone, every spectator.
+
+    THE CONTRACT IS FIXED KEY FOR KEY, and it is the `Player` / `State` types in
+    `frontend/src/api.ts`. Two decisions in it are worth stating here rather than leaving a reader
+    to infer them from the lines below.
+
+    THE THREE PHASE BLOCKS ARE ALWAYS PRESENT, `None` outside their own phase. A client that
+    null-checks one shape is more robust than a client testing for a key's existence, and the
+    types already say `| null`. The cost is that the key SET of every snapshot is now identical in
+    all six phases, which is exactly what `test_play`'s two whole-dict assertions pin.
+
+    THE PLAYER ROW CARRIES NO PROMPT, NO OUTPUT AND NO COMMENT, IN ANY PHASE. They are not in the
+    frozen `Player` type and no screen reads them: the judge's verdict reaches a player through the
+    `answer` POST response, which is where they were always delivered, and the prompt and output
+    they need to read the round arrive in the `summary` rows. The rating phase used to blank them
+    here and send them everywhere else — a key that is a string in one phase and null in another is
+    a key every consumer has to null-check for a reason that no longer exists.
+    """
     room = get_object_or_404(Room, code=code)
     rnd = room.rounds.filter(order=room.current).first()
     by_player = {a.player_id: a for a in (rnd.answers.all() if rnd else [])}
     online = online_player_ids(room.code)
-    # The rating phase blanks the score and the prompt of every player, and the sort below reads
-    # the same value — so the two can never disagree about which players are hidden.
+    # The rating phase blanks the score of every player, and the sort below reads the same value —
+    # so the two can never disagree about which players are hidden.
     hiding = room.phase == Room.Phase.RATING
+    # The bank's size, read ONCE and off this room's questions: it is the bar `quiz_done` is
+    # measured against, and counting it per player would be one query per player for a number that
+    # is a property of the room.
+    bank = room.questions.count()
     players = []
     for p in room.players.all():
         a = by_player.get(p.id)
         total = p.answers.aggregate(total=Sum("score"))["total"] or 0
         shown = None if hiding else total
+        # The two dimensions behind `total`, over the rounds that have been SETTLED — the same
+        # rows `settle_round` writes `round_score` on, so the three numbers a player reads always
+        # describe the same set of rounds. `Sum` skips the NULLs of an unsettled round, and a
+        # player with none at all gets NULL rather than a 0 that would read as a real, terrible
+        # score.
+        settled = p.answers.filter(round_score__isnull=False).aggregate(
+            proximity=Sum("score"), quality=Sum("quality")
+        )
         players.append(
             (
                 shown,
@@ -466,16 +496,22 @@ def room_state(code: str) -> dict:
                     "name": p.name,
                     "score": shown,
                     "answered": a is not None,
-                    # Blank, and not "the prompt is elsewhere in the payload": a player who reads
-                    # their own round score at answer time, sees it missing from the column, and
-                    # works out WHICH revealed line is theirs has defeated the anonymity the whole
-                    # feature exists to provide. The output and the comment go with it for the
-                    # same reason — a player recognises their own text — and so does
-                    # `round_score`, which is the same proximity under a second name.
-                    "prompt": None if hiding or a is None else a.prompt,
-                    "output": None if hiding or a is None else a.output,
-                    "comment": None if hiding or a is None else a.comment,
                     "round_score": None if hiding else (a.score if a else None),
+                    # These two are in the payload for a teaching reason, not a decorative one. A
+                    # player who finishes on "proximité 42, qualité 58, total 50" learns that
+                    # their prompts WORK and are badly BUILT, which is the entire lesson. Collapse
+                    # the two into one number out of a hundred and that distinction disappears
+                    # behind something that reads like a grade.
+                    "proximity_total": settled["proximity"],
+                    "quality_total": settled["quality"],
+                    # An int, never None: the client formats "3 sur 8" and should not carry a
+                    # null branch that only a player who never answered would ever take.
+                    "quiz_score": p.quiz_score(),
+                    # This player's OWN progress through the gate, where `quiz.done` is the room's.
+                    # `bool(bank)` first, for the reason `_quiz_state` checks its own empty case:
+                    # `count() == 0` is true of every player, so an unmaterialised bank would read
+                    # as a lobby that had all passed.
+                    "quiz_done": bool(bank) and p.quiz_attempts.count() == bank,
                     # The NAME stays. The roster is not a leak: knowing who is in the room says
                     # nothing about who wrote which prompt. It is the scores that cross-reference.
                     "online": p.id in online,
@@ -498,23 +534,29 @@ def room_state(code: str) -> dict:
         "current": room.current,
         "total": room.rounds.count(),
         "target": rnd.target if rnd else None,
+        # Fixed for the whole game, so a screen reads it once instead of inferring anonymity from
+        # whether a name happens to be present in `reveal.author`.
+        "anonymous": room.anonymous,
         "players": [d for _score, _joined, d in players],
         # Counted off the per-player flags rather than off `online` directly, so the total and the
         # flags can never disagree in the payload the client renders.
         "online_count": sum(1 for _s, _j, d in players if d["online"]),
+        # THE THREE PHASE BLOCKS ARE UNCONDITIONAL KEYS. `None` outside the phase that fills them,
+        # never absent, so the client null-checks one shape rather than testing for a key's
+        # existence — and the frozen `State` types them `| null` rather than optional. `reveal` and
+        # `summary` are ALSO null in their own phase when there is nothing behind them: a rating
+        # phase on a round nobody answered has no prompt to describe, and a summary of nothing is
+        # still a summary.
+        "quiz": _quiz_state(room, online) if room.phase == Room.Phase.QUIZ else None,
+        "reveal": (
+            _reveal_state(room, rnd, _roster_labels(room))
+            if room.phase == Room.Phase.RATING and rnd is not None
+            else None
+        ),
+        "summary": (
+            _summary_state(room, rnd) if room.phase == Room.Phase.SUMMARY and rnd is not None else None
+        ),
     }
-    # Only in the phase that has a quiz to show. The final contract puts the three phase blocks
-    # (`quiz`, `reveal`, `summary`) in the snapshot unconditionally, `None` outside their phase, so
-    # the client null-checks one shape instead of testing for the key's existence. That is not
-    # done here: an always-present `quiz` key changes the key SET of every snapshot in every
-    # phase, which is `test_play`'s two whole-dict assertions, and this task does not own those
-    # files. The gate is the whole point of the block, so it ships where it is true.
-    if room.phase == Room.Phase.QUIZ:
-        state["quiz"] = _quiz_state(room, online)
-    if room.phase == Room.Phase.RATING and rnd is not None:
-        state["reveal"] = _reveal_state(room, rnd, _roster_labels(room))
-    if room.phase == Room.Phase.SUMMARY and rnd is not None:
-        state["summary"] = _summary_state(room, rnd)
     return state
 
 
@@ -611,12 +653,6 @@ def maybe_advance_phase(room: Room) -> None:
         return
     if rnd.answers.filter(player_id__in=online).count() == len(online):
         room.next_round()
-
-
-# The name this function had before the phase machine, kept because `tests/test_quiz.py` imports
-# it and that file belongs to another task. An alias rather than a second definition: two functions
-# that both dispatch on the phase would be two places for the quiz gate to live.
-maybe_advance = maybe_advance_phase
 
 
 @require_POST

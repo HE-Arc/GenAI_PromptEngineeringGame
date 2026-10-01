@@ -8,7 +8,14 @@ from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from game.models import Player, QuizAttempt, QuizQuestion, Room
 from game.quiz import QUESTIONS, QUIZ_LENGTH, pick
-from game.views import PRESENCE_TTL, _beat, _presence, _presence_lock, maybe_advance, room_state
+from game.views import (
+    PRESENCE_TTL,
+    _beat,
+    _presence,
+    _presence_lock,
+    maybe_advance_phase,
+    room_state,
+)
 
 
 class QuizPickTests(SimpleTestCase):
@@ -130,8 +137,9 @@ class QuizPlayTests(TestCase):
         return room, players
 
     def _online(self, room: Room, *players: Player) -> None:
-        """Give these players a live heartbeat, as their own SSE stream would. `maybe_advance`
-        counts presence, and a test client that never opens a stream has no beats."""
+        """Give these players a live heartbeat, as their own SSE stream would.
+        `maybe_advance_phase` counts presence, and a test client that never opens a stream has no
+        beats."""
         for p in players:
             _beat(room.code, p.pk)
 
@@ -535,14 +543,14 @@ class QuizPlayTests(TestCase):
     def test_an_empty_bank_does_not_open_the_gate(self):
         # A room whose bank was never materialised has nothing to pass, and `count() == 0` is true
         # of every player, so the naive comparison would open the gate on a room with no questions
-        # in it. `maybe_advance` is called directly because it is unreachable over HTTP here: with
-        # no row to name, the endpoint refuses the answer and never gets as far as advancing.
+        # in it. `maybe_advance_phase` is called directly because it is unreachable over HTTP here:
+        # with no row to name, the endpoint refuses the answer and never gets as far as advancing.
         room = self._create(tutorial=True)
         player = self._join(room, "ana")
         self._start(room)
         self._online(room, player)
         room.questions.all().delete()
-        maybe_advance(room)
+        maybe_advance_phase(room)
         self._assert_phase(room, Room.Phase.QUIZ)
 
     def test_another_rooms_questions_do_not_hold_this_gate_shut(self):
@@ -610,16 +618,23 @@ class QuizPlayTests(TestCase):
         )
         self._assert_phase(room, Room.Phase.QUIZ)
 
-    def test_the_quiz_block_is_absent_outside_the_quiz_phase(self):
-        # Pins the CURRENT shape, which is not the final contract: the finished one puts `quiz` in
-        # every snapshot, `None` outside the phase, so the client tests one nullable field instead
-        # of the key's presence. A room with no tutorial never opens the gate at all.
+    def test_the_quiz_block_is_present_and_null_outside_the_quiz_phase(self):
+        # PRESENT AND NULL, not absent. The frozen `State` types `quiz` as `QuizState | null`
+        # rather than an optional key, and a client that null-checks one shape is more robust than
+        # one testing for the key's existence — one branch instead of a branch per screen. A room
+        # with no tutorial never opens the gate at all, so this is the case that has to keep
+        # returning a null rather than dropping the key.
         room = self._create(tutorial=False)
         player = self._join(room, "ana")
         self._start(room)
         self._online(room, player)
         self.assertEqual(room.phase, Room.Phase.PLAYING)
-        self.assertNotIn("quiz", room_state(room.code))
+        state = room_state(room.code)
+        self.assertIn("quiz", state)
+        self.assertIsNone(state["quiz"])
+        # The other two blocks too, so this also pins that `quiz` is not alone in being unconditional.
+        self.assertIn("reveal", state)
+        self.assertIn("summary", state)
 
     def test_the_quiz_headline_is_zero_with_nobody_online(self):
         # 0, not None: an empty lobby is the state the admin screen looks at before anyone joins,
