@@ -20,6 +20,17 @@ from typing import NamedTuple
 
 QUIZ_LENGTH = 8
 
+# The answering window, in seconds. SHARED, and the word is the whole design: there is ONE question
+# on screen for the room, so every phone counts the same fifteen seconds and the reveal lands at
+# the same instant for everybody. §2 rejects the alternative by name — « Un compte à rebours par
+# joueur produirait un élève qui répond en deux secondes et regarde treize secondes d'écran verrouillé
+# pendant que les autres jouent » — and a per-player countdown would also mean a per-player
+# QUESTION, which is not a QCM.
+#
+# It lives here, beside the bank, because it is content: the fifteen seconds are a pedagogical
+# choice about how long a class looks at a prompt, and the admin who wants twenty edits this file.
+QUIZ_SECONDS = 15
+
 
 class Question(NamedTuple):
     prompt: str

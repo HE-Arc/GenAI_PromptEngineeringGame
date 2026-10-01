@@ -4,6 +4,7 @@ from django.db.models import Sum
 from django.db.utils import IntegrityError
 from django.db import models
 from django.test import TestCase
+from django.utils import timezone
 
 from game.models import (
     Answer,
@@ -14,7 +15,7 @@ from game.models import (
     Room,
     Round,
 )
-from game.quiz import QUESTIONS
+from game.quiz import QUESTIONS, QUIZ_SECONDS
 from game.targets import ROUNDS_PER_GAME, TARGETS, pick
 
 
@@ -113,6 +114,93 @@ class PhaseTests(TestCase):
         room.refresh_from_db()
         self.assertFalse(room.tutorial)
         self.assertFalse(room.anonymous)
+
+
+class QuizClockTests(TestCase):
+    """The room's question and the room's window: the two fields the didacticiel now runs on.
+
+    Tested HERE, on the model, and not only through the endpoints, because these are the two
+    methods both callers share. `admin_start` opens question 0 and the admin's button opens every
+    question after it, and the property worth pinning is that they are the SAME method — a second
+    writer of `quiz_deadline` is how a class ends up with a fifteen-second question 3 and a
+    thirty-second question 4.
+    """
+
+    def test_a_fresh_room_is_at_the_first_question_with_no_window(self) -> None:
+        # The defaults, and they mean different things: index 0 is a POSITION, null deadline is NO
+        # WINDOW. A deadline of the epoch would have said "expired", which is a different claim.
+        room = Room.objects.create(code="ABCD")
+        self.assertEqual(room.quiz_index, 0)
+        self.assertIsNone(room.quiz_deadline)
+
+    def test_the_two_columns_are_named_and_typed_for_the_contract(self) -> None:
+        # `quiz_index` is an int the snapshot prints as `index` and the POST compares against;
+        # `quiz_deadline` is NULLABLE because "no window" has to be storable — every existing row
+        # is null after the migration, and a room relaunched before it is started again is null too.
+        index = Room._meta.get_field("quiz_index")
+        self.assertIsInstance(index, models.IntegerField)
+        self.assertEqual(index.default, 0)
+        self.assertTrue(Room._meta.get_field("quiz_deadline").null)
+
+    def test_opening_a_question_writes_the_cursor_and_a_fifteen_second_window(self) -> None:
+        room, _player, _questions = _quiz_fixture()
+        room._open_quiz()
+        room.refresh_from_db()
+        self.assertEqual(room.quiz_index, 0)
+        seconds = (room.quiz_deadline - timezone.now()).total_seconds()
+        self.assertLessEqual(seconds, QUIZ_SECONDS)
+        self.assertGreater(seconds, QUIZ_SECONDS - 5)
+        # The same method opens any question, and it opens it at the same length: the parameter is
+        # the position, not a way to ask for a longer window.
+        room._open_quiz(4)
+        room.refresh_from_db()
+        self.assertEqual(room.quiz_index, 4)
+        seconds = (room.quiz_deadline - timezone.now()).total_seconds()
+        self.assertLessEqual(seconds, QUIZ_SECONDS)
+        self.assertGreater(seconds, QUIZ_SECONDS - 5)
+
+    def test_the_next_question_walks_the_bank_and_then_refuses(self) -> None:
+        # `_next_quiz` is the whole of the didacticiel's advance, and its return value is the
+        # whole of the transition: True opened a question, False means the bank is behind the
+        # cursor and the caller opens the game. Pinned on the boundary in both directions, because
+        # off-by-one here either skips a question nobody asked or strands the room in the quiz with
+        # nothing left to press.
+        room, _player, _questions = _quiz_fixture()
+        bank = room.questions.count()
+        self.assertEqual(bank, len(QUESTIONS))
+        for index in range(1, bank):
+            self.assertTrue(room._next_quiz(), f"question {index} should have opened")
+            room.refresh_from_db()
+            self.assertEqual(room.quiz_index, index)
+        # The bank is behind the cursor now: False, and no question 8 in a bank of eight.
+        self.assertFalse(room._next_quiz())
+        room.refresh_from_db()
+        self.assertEqual(room.quiz_index, bank - 1)
+        # Which is why the room can never be walked PAST the eighth, however many times the button
+        # is pressed — `next_quiz` alone never moves the phase, so it has nothing else to break.
+        self.assertEqual(room.phase, Room.Phase.WAITING)
+
+    def test_an_unmaterialised_bank_has_no_next_question(self) -> None:
+        # A room whose bank was never created: count 0, so nothing to walk to. The caller opens the
+        # game, which is the only reading of a gate with nothing in it that does not strand the
+        # admin on a button that does nothing.
+        room = Room.objects.create(code="WXYZ")
+        self.assertFalse(room._next_quiz())
+        room.refresh_from_db()
+        self.assertEqual((room.quiz_index, room.quiz_deadline), (0, None))
+
+    def test_opening_a_question_does_not_touch_the_phase_or_the_round_cursor(self) -> None:
+        # `save(update_fields=...)`, pinned because the phases write the same row: a bare `save()`
+        # from a half-loaded instance is how a question cursor rewrites `current`, or an
+        # `admin_restart`'s phase reset rewrites a window it never meant to see. The round cursor
+        # here is deliberately off zero, so a clobber would be visible.
+        room, _player, _questions = _quiz_fixture()
+        room.phase = Room.Phase.QUIZ
+        room.current = 4
+        room.save(update_fields=["phase", "current"])
+        room._open_quiz(2)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.current, room.quiz_index), ("quiz", 4, 2))
 
 
 class UniquenessTest(TestCase):

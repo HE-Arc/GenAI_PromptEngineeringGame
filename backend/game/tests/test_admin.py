@@ -3,9 +3,11 @@ from unittest.mock import patch
 
 from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
+from django.utils import timezone
 
 from game.llm import Verdict
 from game.models import Answer, Player, QuizAttempt, QuizQuestion, Rating, Room, Round
+from game.quiz import QUIZ_LENGTH, QUIZ_SECONDS
 from game.views import room_state
 
 
@@ -82,6 +84,38 @@ class AdminTest(TestCase):
 
     def _next(self, room: Room) -> HttpResponse:
         return self._post(f"/api/admin/rooms/{room.code}/next")
+
+    def _bank(self, room: Room) -> None:
+        """Materialise this room's eight questions, as `admin_create_room` does.
+
+        ON THE ORM and not through `POST /api/admin/rooms`, because every fixture in this module is
+        built on the ORM and the didacticiel tests below are about what the advance button does to
+        the CURSOR — not about where the questions come from, which `test_quiz` covers end to end.
+        The keys are spread over the four choices so a test cannot pass by accident on a question
+        whose answer happens to be choice 0.
+        """
+        QuizQuestion.objects.bulk_create(
+            [
+                QuizQuestion(
+                    room=room,
+                    order=i,
+                    prompt=f"question {i}",
+                    choices=["un", "deux", "trois", "quatre"],
+                    correct=i % 4,
+                    explanation=f"parce que {i}",
+                )
+                for i in range(QUIZ_LENGTH)
+            ]
+        )
+
+    def _quiz_room(self, code: str = "ABCD") -> Room:
+        """A started tutorial room with a real bank, sitting on question 0 with its window open —
+        the state `admin_start` is supposed to leave behind."""
+        room = self._room(code, tutorial=True)
+        self._bank(room)
+        self._post(f"/api/admin/rooms/{code}/start")
+        room.refresh_from_db()
+        return room
 
     def test_login_rejects_bad_password(self) -> None:
         self.assertEqual(self._login("nope").status_code, 403)
@@ -185,11 +219,96 @@ class AdminTest(TestCase):
     # --- one advance, dispatched per phase --------------------------------------------------
 
     def test_next_from_quiz_starts_the_game(self) -> None:
+        # A room whose bank was never materialised has nowhere to walk: the cursor has no question
+        # to move to, so the button opens the game rather than pressing a dead control. The banked
+        # case — seven presses and then the game — is `test_the_eighth_advance_from_the_quiz_opens_
+        # the_game` below, and this one pins only that it cannot hang.
         room = self._started(tutorial=True)
         self.assertEqual(room.phase, Room.Phase.QUIZ)
         self._next(room)
         room.refresh_from_db()
         self.assertEqual(room.phase, Room.Phase.PLAYING)
+
+    # --- the advance button, in the quiz: one question at a time --------------------------------
+
+    def test_start_opens_the_first_question_and_its_window(self) -> None:
+        # THE ADMIN'S FIRST PRESS HAS TO PUT A QUESTION ON SCREEN. It used to open a phase and
+        # leave the class on whatever their own client had decided to show, which was each
+        # player's own cursor into the bank; now there is one cursor, on the room, and `start` is
+        # the only thing that can put it at 0 — the button that opens question 1 has to walk from
+        # somewhere, and a relaunch resets it to here.
+        room = self._quiz_room()
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 0))
+        self.assertIsNotNone(room.quiz_deadline)
+        seconds = (room.quiz_deadline - timezone.now()).total_seconds()
+        self.assertLessEqual(seconds, QUIZ_SECONDS)
+        self.assertGreater(seconds, QUIZ_SECONDS - 5)
+        # And without a tutorial there is no question and no window: `start` must not open a clock
+        # on a didacticiel this room is not playing. A second code, because the first room is still
+        # in the database and the code is the primary key.
+        without = self._started(code="NOTUT", tutorial=False)
+        self.assertEqual(without.phase, Room.Phase.PLAYING)
+        self.assertEqual(without.quiz_index, 0)
+        self.assertIsNone(without.quiz_deadline)
+
+    def test_next_from_quiz_opens_the_next_question_and_its_window(self) -> None:
+        # ONE BUTTON, AND WHAT IT DOES ON THE WAY: move the room's cursor, open a FRESH fifteen
+        # seconds on the new question, and leave the phase alone. The gate does not close itself
+        # either — §2 gives the advance to a person for the same reason it gives the commentary of
+        # a round to a person.
+        room = self._quiz_room()
+        before = room.quiz_deadline
+        r = self._next(room)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"ok": True, "phase": "quiz"})
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 1))
+        self.assertGreater(room.quiz_deadline, before)
+        seconds = (room.quiz_deadline - timezone.now()).total_seconds()
+        self.assertLessEqual(seconds, QUIZ_SECONDS)
+        self.assertGreater(seconds, QUIZ_SECONDS - 5)
+
+    def test_the_eighth_advance_from_the_quiz_opens_the_game(self) -> None:
+        # « Après la huitième révélation, le même bouton ouvre la partie. » Seven presses walk
+        # 0 -> 7 and the eighth has nowhere left in the bank, so it opens the writing phase. The
+        # count is the whole claim: an implementation that opened the game on the first press, or
+        # left the room in the quiz after the eighth, fails one of the two ends of this loop.
+        room = self._quiz_room()
+        for index in range(1, QUIZ_LENGTH):
+            self._next(room)
+            room.refresh_from_db()
+            self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, index))
+        r = self._next(room)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"ok": True, "phase": "playing"})
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+        # The cursor stays on the eighth question rather than wrapping or resetting: only a restart
+        # puts it back to 0, and a game that opened the writing phase has nothing more to ask.
+        self.assertEqual(room.quiz_index, QUIZ_LENGTH - 1)
+
+    def test_next_from_quiz_before_the_deadline_does_not_reveal_the_skipped_question(self) -> None:
+        # THE HURRY-UP PATH. « Le même bouton referme la question en cours quand il est pressé avant
+        # l'échéance, pour passer plus vite quand la classe a compris. » Two things are asserted: the
+        # next question opens at once with its own window, and the one that was skipped is never
+        # revealed. The second is not a formality — the key of question 0 exists in the database
+        # forever, and if the reveal were written down at skip time rather than read off the
+        # deadline of whatever is on screen, that key would be published to every phone in the room.
+        room = self._quiz_room()
+        quiz = room_state(room.code)["quiz"]
+        self.assertFalse(quiz["revealed"])
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.quiz_index, 1)
+        # Question 1 is not revealed either, so the new window is genuinely fifteen seconds long.
+        quiz = room_state(room.code)["quiz"]
+        self.assertEqual(quiz["index"], 1)
+        self.assertFalse(quiz["revealed"])
+        self.assertIsNone(quiz["correct"])
+        self.assertIsNone(quiz["explanation"])
+        # And a skipped question leaves the room perfectly playable: the player simply has one
+        # attempt fewer, and the quiz's own score is the sum of the ones they did make.
+        self.assertEqual(QuizAttempt.objects.count(), 0)
 
     def test_next_from_playing_opens_the_rating(self) -> None:
         room = self._started(tutorial=False)
@@ -390,6 +509,46 @@ class AdminTest(TestCase):
         room.refresh_from_db()
         self.assertTrue(room.anonymous)
         self.assertTrue(room.tutorial)
+
+    def test_restart_puts_the_quiz_cursor_and_its_window_back_to_nothing(self) -> None:
+        # A RELAUNCHED GAME MUST NOT RESUME MID-QUESTION. The room now carries a cursor and a
+        # deadline, and neither cascades off anything a restart deletes: the bank survives (it
+        # belongs to the room), so a room parked on question 5 with a deadline that expired during
+        # the teacher's coffee would come back on a question nobody was asked — and, since the
+        # reveal is `now >= deadline`, on the KEY to it.
+        room = self._quiz_room()
+        for _ in range(3):
+            self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.quiz_index, 3)
+        self.assertIsNotNone(room.quiz_deadline)
+        r = self._post(f"/api/admin/rooms/{room.code}/restart")
+        self.assertEqual(r.status_code, 200)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.quiz_index, room.quiz_deadline), ("waiting", 0, None))
+        # And the relaunch really does start from the beginning rather than from wherever the last
+        # game stopped: the second game asks question 0 first, with a fresh window on it.
+        self._post(f"/api/admin/rooms/{room.code}/start")
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 0))
+        self.assertGreater(room.quiz_deadline, timezone.now())
+        self.assertEqual(room_state(room.code)["quiz"]["index"], 0)
+
+    def test_restart_without_the_didacticiel_leaves_no_question_to_resume(self) -> None:
+        # The other relaunch button. §8: « Sans didacticiel, la relance va directement dans la
+        # rédaction » — and "directly into the writing" has to mean no cursor either, or the room
+        # carries a question it is not playing into a game where `quiz` is null in every snapshot.
+        room = self._quiz_room()
+        for _ in range(2):
+            self._next(room)
+        self._post(f"/api/admin/rooms/{room.code}/restart", {"tutorial": False})
+        room.refresh_from_db()
+        self.assertEqual((room.quiz_index, room.quiz_deadline), (0, None))
+        self._post(f"/api/admin/rooms/{room.code}/start")
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+        self.assertIsNone(room.quiz_deadline)
+        self.assertIsNone(room_state(room.code)["quiz"])
 
     def test_restart_erases_quiz_attempts_and_ratings(self) -> None:
         # Neither cascades off the rounds: a rating hangs off the answer, which the round delete

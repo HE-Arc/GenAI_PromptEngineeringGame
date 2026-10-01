@@ -9,6 +9,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.http import Http404, HttpRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from game import llm, prompts
@@ -199,6 +200,14 @@ def admin_start(request: HttpRequest, code: str) -> JsonResponse:
     # moment the admin commits is the one instant nobody is waiting on anything, and it makes the
     # target set fixed for the whole game — which is what "same ten rounds for everybody" has to
     # mean. With a tutorial, the rounds sit behind the quiz until the admin advances out of it.
+    #
+    # THE FIRST QUIZ QUESTION IS PUT ON SCREEN HERE, in the same write that opens the phase, and
+    # its fifteen-second window opens with it. The admin presses start and the class has fifteen
+    # seconds on question 0 rather than an empty screen and a button to find. Every later question
+    # is opened by the same button through `_PHASE_ADVANCE[QUIZ]`, and both go through
+    # `Room._open_quiz`, so the two cannot disagree about how long a window lasts.
+    if room.tutorial:
+        room._open_quiz()
     room._go(Room.Phase.QUIZ if room.tutorial else Room.Phase.PLAYING)
     return JsonResponse({"ok": True, "total": ROUNDS_PER_GAME, "phase": room.phase})
 
@@ -264,6 +273,30 @@ def _advance_reveal_and_settle(room: Room) -> None:
         settle_round(room)
 
 
+def _advance_quiz(room: Room) -> None:
+    """The admin's "question suivante": open the next question, or the game once the eighth is
+    behind them.
+
+    ONE BUTTON FOR BOTH CASES, which is the spec's own sentence (§2) and the reason this is a
+    function rather than a lambda on the table below: « Le même bouton referme la question en cours
+    quand il est pressé avant l'échéance » and « Après la huitième révélation, le même bouton
+    ouvre la partie ». An admin interface that had to know which of the two it was would be an
+    admin interface a teacher has to read while a class waits.
+
+    THE PRESSED-BEFORE-THE-DEADLINE PATH IS THE SAME CODE, and that is deliberate rather than
+    incidental. `_next_quiz` opens question n+1 with a fresh window; question n is never
+    revealed on the way out, because the reveal is derived from a deadline that nothing writes
+    when the admin skips ahead. A class that has understood the question moves on; a class that
+    has not keeps the fifteen seconds they had.
+
+    Nothing here reads a player's answer. The clock opens and closes the window, and the game is
+    moved by a person: « le chronomètre ne fait qu'ouvrir et fermer la fenêtre de réponse ; il ne
+    fait pas avancer la partie ».
+    """
+    if not room._next_quiz():
+        room._go(Room.Phase.PLAYING)
+
+
 # What the admin's single "advance" button means in each phase. A phase absent from this table has
 # no advance: 409. Written as data so the six cases are readable at a glance, and so adding a phase
 # forces a decision here instead of defaulting to something arbitrary — `waiting` has nothing to
@@ -272,11 +305,11 @@ def _advance_reveal_and_settle(room: Room) -> None:
 #
 # The room's own methods do the moving, not lambdas that write fields: a transition that has to
 # touch the round's reveal cursor as well as the phase cannot be one line, and hiding that behind
-# a table entry would make it look like it could. The rating row is the one entry that is not a
-# one-liner, because the phase change is not the whole transition there: the round is settled on
-# the way out.
+# a table entry would make it look like it could. Two entries are not one-liners, because for
+# each of them the phase change is not the whole transition: the quiz has to move the room's
+# question cursor and open its window, and the rating row has to be settled on the way out.
 _PHASE_ADVANCE = {
-    Room.Phase.QUIZ: lambda room: room._go(Room.Phase.PLAYING),
+    Room.Phase.QUIZ: _advance_quiz,
     Room.Phase.PLAYING: lambda room: room._open_rating(),
     Room.Phase.RATING: _advance_reveal_and_settle,
     Room.Phase.SUMMARY: lambda room: room.next_round(),
@@ -366,39 +399,101 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
         if isinstance(tutorial, bool):
             room.tutorial = tutorial
         room.current = 0
+        # THE QUIZ CURSOR AND ITS WINDOW GO BACK TO NOTHING, in the same transaction as the deletes
+        # and in the same `update_fields`. A relaunched game that resumed on question 5, with a
+        # deadline that had already passed, would show a room an unrevealed key for a question
+        # nobody was asked and then open the writing phase underneath it. §8's « Sans
+        # didacticiel, la relance va directement dans la rédaction » is the same reset read from
+        # the phase: no question, no window, nothing to resume.
+        room.quiz_index = 0
+        room.quiz_deadline = None
         room.phase = Room.Phase.WAITING
-        room.save(update_fields=["current", "phase", "tutorial"])
+        room.save(
+            update_fields=["current", "phase", "tutorial", "quiz_index", "quiz_deadline"]
+        )
     return JsonResponse({"ok": True, "phase": room.phase})
 
 
+def _epoch_ms(when) -> int:
+    """`when` as epoch milliseconds — the unit `QuizState.deadline_ms` and `server_ms` are in.
+
+    MILLISECONDS and not seconds because that is what `Date.now()` returns on the other side of
+    the wire, and a client that had to multiply by a thousand to compare two clocks it was handed
+    would eventually forget.
+    """
+    return int(when.timestamp() * 1000)
+
+
 def _quiz_state(room: Room, online: set[int]) -> dict:
-    """The room's quiz headline: how far the room is through the gate, and the best score in it.
+    """The room's question on screen: which one, how long is left, and whether it has been
+    revealed.
 
     ROOM-level, not per-viewer, and it cannot be otherwise: `room_state(code)` deliberately takes
     no token — the snapshot is one payload for the admin screen, every phone and every spectator,
     and presence is global in this codebase — so it does not know who is reading. A player's OWN
-    score is `players[].quiz_score`, which the same snapshot already carries. So this block is the
-    number the lobby and the admin show, not the one a player is graded by.
+    progress is `players[].quiz_score` here and `answered_orders` on the quiz GET.
 
-    `done` counts the ONLINE players who have answered every question, matching the bar
-    `maybe_advance_phase` uses to open the game: if this and the gate disagreed, the screen would
-    say "c'est parti" on a room that has not moved. A player whose phone dropped is not counted,
-    for the reason every other advance in this file counts presence: the row is there forever and
-    the person may never come back.
+    THE THREE CLOCKS ARE THE FEATURE, and each is there for a different phone:
+
+    - `deadline_ms` is the instant the window closes, stored on the room and read here. Fifteen
+      seconds are SHARED: one question for the room, so everyone counts the same seconds and the
+      reveal lands on every screen at once.
+    - `server_ms` is this server's own clock at the moment the snapshot was built, sent so a
+      client can measure its skew against it. A phone whose clock is two minutes out would
+      otherwise count from the wrong instant and lock on the wrong side of the question — and
+      "wrong side" here is a locked screen on a question it could still have answered, for the
+      whole class. One subtraction, `(local_now - server_ms)`, and the phone has the server's
+      clock to work from.
+    - `revealed` is the comparison itself, `now >= deadline`, evaluated HERE rather than by a
+      timer thread. That is why the server owns no timer: the window is fifteen seconds of shared
+      waiting, the SSE stream already rebuilds this whole snapshot every 0.5s, and so the reveal
+      reaches every phone within half a second of the deadline with nothing running in the
+      background to be started, leaked, or lost on a restart.
+
+    `correct` and `explanation` ARE NULL UNTIL `revealed`, and this is the security property of
+    the whole phase. The snapshot is shared by every phone in the room and lands in devtools on
+    each of them, so a key present early is a QCM the class reads instead of plays. One gate,
+    here, at the only place these two fields are read — the same discipline `_quiz_get` applies
+    to the bank.
+
+    `done` counts the ONLINE players who have answered THE CURRENT question, so it is the
+    numerator of the "7 ont répondu" the room is waiting on and it goes back to zero on the next
+    question. Presence, not rows: a phone that slept is a row forever, and counting it would show
+    a bar that can never fill.
 
     Every read here is scoped to `room.questions`, not to `QuizQuestion.objects`: the bank is the
-    room's, so a global count is this room's eight PLUS every other room's eight, and the total
+    room's, so a global count is this room's eight PLUS every other room's eight, and `total`
     would be a number no player could ever reach.
     """
+    now = timezone.now()
     total = room.questions.count()
+    question = room.questions.filter(order=room.quiz_index).first()
+    # NULL deadline, NO window rather than an expired one: a room parked in the quiz phase with
+    # nothing opened on it (a fixture, a lobby that was never started) reports `revealed: False`
+    # and no key, which is the safe direction for both.
+    revealed = room.quiz_deadline is not None and now >= room.quiz_deadline
     players = list(room.players.filter(pk__in=online))
-    if not total:
-        # An empty bank must not read as "everybody is done": `count() == 0` is true of every
-        # player, so the naive comparison would report a full room at the top of the gate.
-        return {"total": 0, "done": 0, "score": 0}
     return {
+        "index": room.quiz_index,
         "total": total,
-        "done": sum(1 for p in players if p.quiz_attempts.count() == total),
+        "deadline_ms": _epoch_ms(room.quiz_deadline) if room.quiz_deadline else 0,
+        "server_ms": _epoch_ms(now),
+        "revealed": revealed,
+        "correct": question.correct if (revealed and question) else None,
+        "explanation": question.explanation if (revealed and question) else None,
+        # Distinct on `player_id`: the same player answered question 3 twice is impossible
+        # (`unique_together`), but counting rows rather than players would make the shape of the
+        # answer table a progress indicator.
+        "done": QuizAttempt.objects.filter(
+            player_id__in=online, question__room=room, question__order=room.quiz_index
+        )
+        .values_list("player_id", flat=True)
+        .distinct()
+        .count(),
+        # The room's own online players, counted from the roster rather than from `online` — a
+        # presence entry left behind by a player deleted mid-quiz must not claim a phone in a
+        # room that has none. Same reason `done` and `online_count` cannot disagree on screen.
+        "online_count": len(players),
         # 0, never None, with nobody online: same rule as `Player.quiz_score` — the client should
         # not carry a null branch only a room with nobody in it would ever take.
         "score": max((p.quiz_score() for p in players), default=0),
@@ -587,7 +682,10 @@ def room_state(code: str) -> dict:
                     # An int, never None: the client formats "3 sur 8" and should not carry a
                     # null branch that only a player who never answered would ever take.
                     "quiz_score": p.quiz_score(),
-                    # This player's OWN progress through the gate, where `quiz.done` is the room's.
+                    # Has THIS player sat the whole didacticiel — a per-player fact that used to
+                    # be the gate's own condition and is now only a line on the roster, since
+                    # nothing opens the game on it. `quiz.done` in the snapshot is a different
+                    # number: the players who have answered the question ON SCREEN.
                     # `bool(bank)` first, for the reason `_quiz_state` checks its own empty case:
                     # `count() == 0` is true of every player, so an unmaterialised bank would read
                     # as a lobby that had all passed.
@@ -640,28 +738,6 @@ def room_state(code: str) -> dict:
     return state
 
 
-def _maybe_open_playing(room: Room, online: set[int]) -> None:
-    """Open the game once every player who is there has answered the whole didacticiel.
-
-    Same bar as the round close, and for the same reason: `room.players` is a phone that slept,
-    not a person who is going to answer. The count is the room's OWN online players rather than
-    `len(online)`, so a presence entry left behind by a player deleted mid-quiz cannot make the
-    comparison unreachable and pin the room on the gate forever.
-
-    The question count is read from this room's bank rather than from `quiz.QUIZ_LENGTH`, so a
-    bank the admin has grown past eight is not gated on a hardcoded eight — and it is read off
-    `room.questions`, so a second room's eight questions cannot hold this room's gate shut.
-    """
-    total = room.questions.count()
-    if not total:
-        return  # nothing was materialised, so there is no gate to pass
-    players = list(room.players.filter(pk__in=online))
-    if not players:
-        return  # every presence entry is a player this room does not have: `all([])` is True
-    if all(p.quiz_attempts.count() == total for p in players):
-        room._go(Room.Phase.PLAYING)
-
-
 def _maybe_advance_reveal(room: Room, rnd, online: set[int]) -> None:
     """Walk the reveal when everyone who is here and may rate this prompt has rated it.
 
@@ -699,10 +775,14 @@ def _maybe_advance_reveal(room: Room, rnd, online: set[int]) -> None:
 def maybe_advance_phase(room: Room) -> None:
     """Move the game on if the players who are there have done what the phase is waiting for.
 
-    Three phases advance on their own: the didacticiel, once everybody online has answered the
-    eight questions; the round, once everybody online has written a prompt; and the rating, one
-    prompt at a time. The others wait for the admin — a round gets commented on, and nothing
-    should move the game while it is.
+    TWO phases advance on their own, not three: the round, once everybody online has written a
+    prompt, and the rating, one prompt at a time. The others wait for the admin — and that
+    includes the DIDACTICIEL, which is the change this function exists to record. The gate used
+    to open itself when the last online player answered the eighth question, and it does not any
+    more: §2 gives the advance to a person (« L'admin décide du passage à la question suivante »)
+    for the same reason it gives the commentary of a round to a person — a tour se commente, and
+    so does a QCM. Nothing here reads a quiz answer, and `_PHASE_ADVANCE[QUIZ]` is the only thing
+    that moves the room out of the gate now.
 
     The bar is the online players, not `room.players`: a phone that slept or lost wifi is still a
     row in that table forever, so the old comparison waited on someone who was never coming back and
@@ -711,9 +791,9 @@ def maybe_advance_phase(room: Room) -> None:
     still answer the round that is open when they get back.
 
     Renamed from `maybe_advance` because it is no longer "maybe the round": it dispatches on the
-    phase now, and there are three things it can advance.
+    phase now, and there are two things it can advance.
     """
-    if room.phase not in (Room.Phase.QUIZ, Room.Phase.PLAYING, Room.Phase.RATING):
+    if room.phase not in (Room.Phase.PLAYING, Room.Phase.RATING):
         return
     online = online_player_ids(room.code)
     if not online:
@@ -721,9 +801,6 @@ def maybe_advance_phase(room: Room) -> None:
         # whose every phone dropped would satisfy "all online players have answered" vacuously —
         # `0 == 0` — and open itself unattended. A phase is only ever closed by a real player's
         # submit.
-        return
-    if room.phase == Room.Phase.QUIZ:
-        _maybe_open_playing(room, online)
         return
     rnd = room.rounds.filter(order=room.current).first()
     if not rnd:
@@ -960,49 +1037,72 @@ def _quiz_get(request: HttpRequest, code: str) -> JsonResponse:
     Unauthenticated, and not phase-gated, on purpose: what it returns is the eight prompts and
     their choices, which is what is on the screen anyway, so reading it leaks nothing the player
     could not read by looking. What it never returns is what a later phase cannot: the
-    answer, and the reason. That stays in the POST, which is a write.
+    answer, and the reason. Those travel in the POST response, and to the room's phones through
+    the snapshot's `revealed` gate, which is closed until the deadline passes.
 
-    ONE THING IS NOW DERIVED FROM `?token=`, and it is `answered` — how many of this room's
-    questions THIS player has already answered. The client sends its own token, the same spelling
-    `events` uses, and needs the number to resume the didacticiel where it left off: a reloaded
-    screen otherwise starts again at question 0, and the POST there answers 409 `already answered`
-    for a question this player genuinely did answer, so the resume is not a missing feature but a
-    dead end. It is a COUNT OF THE CALLER'S OWN ROWS, so reading a token here discloses nothing to
-    anyone else: the same token from another room, or a token nobody has, simply resolves to no
-    player and the count is 0 — the pre-token behaviour, never a 403. Refusing the request
-    instead would break a screen that is already entitled to the eight questions.
+    ONE THING IS DERIVED FROM `?token=`, and it is `answered_orders` — the question ORDERS THIS
+    player has already answered. A LIST and not the count it used to be, and the reason is the
+    change above: the question on screen belongs to the room, so "how many have I done" cannot
+    answer "have I done THIS one". A player who answered question 0 and then looked away has one
+    answered and is looking at question 4, which they have not done; a client that resumed on a
+    count would either re-ask the four it skipped past the one, or lock a player out of a
+    question they never saw. Membership in this list is the whole of "my screen is locked".
 
-    `question__room=room` on the count is belt and braces rather than a fix for a live bug — a
+    The client sends its own token, the same spelling `events` uses. It is a list of the CALLER'S
+    OWN rows, so reading a token here discloses nothing to anyone else: the same token from
+    another room, or a token nobody has, simply resolves to no player and the list is empty — the
+    pre-token behaviour, never a 403. Refusing the request instead would break a screen that is
+    already entitled to the eight questions.
+
+    `question__room=room` on the filter is belt and braces rather than a fix for a live bug — a
     `Player` belongs to exactly one room, so its attempts are already this room's — but it makes
-    "answered is greater than the bank" unrepresentable rather than merely improbable, which is
-    what lets the client clamp without having to defend itself against a number from the server.
+    "answered an order this room never asked" unrepresentable rather than merely improbable.
+    Ordered, so the client reads a stable list rather than whatever the database returned.
     """
     room = get_object_or_404(Room, code=code)
     player = room.players.filter(token=request.GET.get("token", "")).first()
-    answered = player.quiz_attempts.filter(question__room=room).count() if player else 0
+    answered = (
+        list(
+            player.quiz_attempts.filter(question__room=room)
+            .order_by("question__order")
+            .values_list("question__order", flat=True)
+        )
+        if player
+        else []
+    )
     return JsonResponse(
         {
             "questions": [
                 {"order": q.order, "prompt": q.prompt, "choices": q.choices}
                 for q in room.questions.order_by("order")
             ],
-            "answered": answered,
+            "answered_orders": answered,
         }
     )
 
 
 def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
-    """Answer one question, and reveal it.
+    """Answer the question on screen, without being told whether it was right.
 
-    The response is `{"correct", "correct_index", "explanation", "score"}` and the whole point of it
-    is the revelation: the explanation travels in the SAME response that tells the player whether
-    they were right, which is why `QuizQuestion.explanation` is stored rather than read from `quiz.py`
-    at answer time — it belongs to the exact row the player was shown, so an edited bank cannot
-    retroactively change the reason a past game gave.
+    THE RESPONSE STILL CARRIES `correct`, `correct_index`, `explanation` and `score` — they are
+    the answer to THIS player's tap, and the answer arrives here. What changed is that they are
+    NOT the thing the player is waiting for: the fifteen seconds are a shared clock, the screen
+    locks on the tap, and the class-wide reveal comes when the deadline passes. A client that
+    wants the suspense reads `revealed` from the snapshot and ignores these four until then.
+
+    Two refusals stand between the tap and the write, and both are the deadline rather than the
+    player:
+
+    - past `quiz_deadline`, the server refuses. A player who did not tap has nothing, and blocks
+      nobody: this is the rule that makes a slow phone a private loss instead of a frozen class.
+    - an order that is not the room's current question is refused too, because a shared clock
+      means there is exactly one question worth an attempt. Under the old per-player flow a
+      client walked its own cursor through the eight and any order in the bank was legal; now the
+      question on screen is the only one that exists.
 
     The client names a question by its `order` and a choice by its index, and sends nothing else
-    that is checked: the player is the token, the question is this room's row with that order, the
-    key is the row's.
+    that is checked: the player is the token, the question is this room's row with that order,
+    the key is the row's.
     """
     room = get_object_or_404(Room, code=code)
     if room.phase != Room.Phase.QUIZ:
@@ -1019,10 +1119,24 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
     # and then miss every row. Same guard as the 1-10 rating scale.
     if not isinstance(order, int) or isinstance(order, bool):
         return json_error("question index required", 400)
+    # THE SHARED QUESTION. One question for the room, so an answer to any other one is an answer
+    # to a question nobody was shown — which is what the admin pressing "question suivante" early
+    # produces, and what a stale client produces after a reconnect onto a question the room has
+    # already left. Checked before the deadline so the message names what the player actually got
+    # wrong: they are late, on a question that has moved on.
+    if order != room.quiz_index:
+        return json_error("not the current question", 409)
+    # THE DEADLINE, AND THE ONLY THING IT IS. A NULL deadline is no window at all rather than an
+    # open one, so a room nobody has started asking in refuses rather than accepting forever.
+    # Compared on the SERVER's clock: the phone's own is two minutes out on half the class and
+    # the window is fifteen seconds long.
+    if room.quiz_deadline is None or timezone.now() >= room.quiz_deadline:
+        return json_error("time's up", 409)
     # `(room, order)` and not `order` alone: `order` is unique WITHIN a room, so an unscoped
     # lookup would grade this player against whichever room's row happened to come first — an
     # order that exists in this room and not in that one, a question they were never shown, and a
-    # score for it.
+    # score for it. Unreachable in normal play, which is exactly why the fixture that walks the
+    # whole bank needs it.
     question = room.questions.filter(order=order).first()
     if question is None:
         return json_error("no such question", 400)
@@ -1040,7 +1154,9 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
             QuizAttempt.objects.create(player=player, question=question, choice=choice, correct=correct)
     except IntegrityError:
         return json_error("already answered", 409)
-    maybe_advance_phase(room)
+    # NO `maybe_advance_phase` HERE, and its absence is the point of the whole phase: the last
+    # question answered does not open the game. The admin's button does, from
+    # `_PHASE_ADVANCE[QUIZ]`, exactly as it opens each of the next seven questions.
     return JsonResponse(
         {
             "correct": correct,

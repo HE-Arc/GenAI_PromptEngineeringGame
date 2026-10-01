@@ -1,7 +1,11 @@
 import secrets
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
+
+from game.quiz import QUIZ_SECONDS
 
 
 def _token() -> str:
@@ -31,6 +35,24 @@ class Room(models.Model):
     # it mid-game would tell players whose name appeared and whose did not, which leaks the
     # mapping the anonymity exists to hide.
     anonymous = models.BooleanField(default=True)
+    # WHICH didacticiel question the room is on, 0-based, and when its answering window closes.
+    #
+    # BOTH ARE ROOM STATE, not player state, and that is the whole change. The question on screen
+    # belongs to the ROOM now: one question, one deadline, one reveal, for every phone in the
+    # class. There is no per-player cursor left to disagree with another one.
+    #
+    # `quiz_deadline` is NULL when no window is open — a room waiting in the lobby, or one the
+    # admin has just relaunched — and NULL means NO WINDOW rather than an expired one, so a client
+    # can tell « nobody has asked anything yet » from « too late », which a deadline of zero could
+    # not.
+    #
+    # A DATETIME rather than a flag or a counter, because the reveal is a COMPARISON — `now >=
+    # deadline`, evaluated when the snapshot is built — and that is what lets the server run no
+    # timer thread at all: the window is fifteen seconds of shared WAITING, and the SSE stream
+    # already rebuilds the whole snapshot twice a second, so the reveal reaches every phone
+    # within half a second of the deadline.
+    quiz_index = models.IntegerField(default=0)
+    quiz_deadline = models.DateTimeField(null=True, blank=True)
 
     def current_round(self):
         """The round being played, or None before the game starts. None is a real answer: in
@@ -43,6 +65,43 @@ class Room(models.Model):
         a round reset says so in the method that owns the transition, not here."""
         self.phase = phase
         self.save(update_fields=["phase"])
+
+    def _open_quiz(self, index: int = 0) -> None:
+        """Put question `index` on screen and open its answering window.
+
+        The window is opened HERE, by whoever put the question on screen, and nowhere else:
+        `admin_start` opens the first one, the admin's advance button opens each of the next, and
+        so the two paths cannot write different deadlines. It is deliberately NOT closed by the
+        player who answered, and NOT closed here when the question is skipped: the admin pressing
+        the button early moves the room on to the next question and the one it left is simply no
+        longer on screen, which is the whole of the hurry-up path (§2).
+
+        `save(update_fields=...)` and not a bare `save()`: a bare save from a half-loaded instance
+        is how a phase change rewrites a field nobody meant to touch, and the two phase writers in
+        this file keep their own two fields.
+        """
+        self.quiz_index = index
+        self.quiz_deadline = timezone.now() + timedelta(seconds=QUIZ_SECONDS)
+        self.save(update_fields=["quiz_index", "quiz_deadline"])
+
+    def _next_quiz(self) -> bool:
+        """Open the next question's window. False when the bank is behind the cursor.
+
+        FALSE IS THE EIGHTH REVEAL BEING OVER, and it is the caller's cue to open the game: §2 says
+        « le didacticiel bloque l'écriture des prompts, mais il ne se termine jamais tout seul », so
+        nothing here reads a player's answer. It is the same button that opened question 0.
+
+        The count is `self.questions`, THIS room's bank, for the reason every other count in this
+        codebase is room-scoped: a second room's eight questions must not end this room's
+        didacticiel early, and an unmaterialised bank (count 0) must not keep it shut forever —
+        it falls straight through to opening the game, which is the only sensible reading of a
+        gate with nothing in it.
+        """
+        nxt = self.quiz_index + 1
+        if nxt >= self.questions.count():
+            return False
+        self._open_quiz(nxt)
+        return True
 
     def _open_rating(self) -> None:
         """Close the writing phase and put the first prompt of the round on screen.
