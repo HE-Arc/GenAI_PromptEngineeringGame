@@ -1,4 +1,6 @@
+import json
 import os
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
@@ -219,3 +221,157 @@ class StubTest(SimpleTestCase):
 
     def test_ignores_case_and_accents_are_matched_as_letters(self) -> None:
         self.assertEqual(llm.score("p", "UN ESCARGOT SUR UN CLAVIER", "un escargot sur un clavier").score, 10)
+
+
+# The critic is what the peer band is clamped around, so its verdict has to be a real
+# judgement: the prompt alone, nothing else. Two things are pinned here that no other test
+# covers — what the rubric rewards, and what the payload is allowed to carry.
+GOOD_PROMPT = "Tu es un critique. Public : debutants. Contexte : TP. Rends 3 puces."
+BARE_PROMPT = "ecris un truc sur la recette"
+
+
+@UNKEYED
+class PromptCriticTests(SimpleTestCase):
+    def test_no_key_stub_rates_a_structured_prompt_above_a_bare_one(self) -> None:
+        good = llm.grade_prompt(GOOD_PROMPT)
+        bad = llm.grade_prompt(BARE_PROMPT)
+        self.assertGreater(good.score, bad.score)
+
+    def test_stub_rates_the_markers_it_claims_to_rate(self) -> None:
+        # Pins the stub's arithmetic, because "above a bare prompt" is a very weak claim: a
+        # stub that returned 9 and 8 would pass it while judging nothing. Role, public,
+        # contexte and format are 2 points each over a base of 1; a length bound is the
+        # last point, so the reachable ceiling is exactly 10.
+        self.assertEqual(llm.grade_prompt(GOOD_PROMPT).score, 9)
+        self.assertEqual(llm.grade_prompt(BARE_PROMPT).score, 1)
+
+    def test_stub_rewards_a_length_bound_it_cannot_have_forgotten(self) -> None:
+        # The same prompt plus the one criterion it was missing, and the ceiling. Which is
+        # the point of that criterion: without it, a prompt that says nothing about length
+        # is not finished.
+        self.assertEqual(llm.grade_prompt(f"{GOOD_PROMPT} En moins de 50 mots.").score, 10)
+
+    def test_empty_prompt_scores_zero(self) -> None:
+        self.assertEqual(llm.grade_prompt("").score, 0)
+
+    def test_stub_comment_says_it_is_local(self) -> None:
+        self.assertIn("Local", llm.grade_prompt("n'importe quoi").comment)
+
+    def test_no_key_never_builds_a_client(self) -> None:
+        # Patched over `OpenAI` rather than `_chat`: a client that is never constructed is
+        # a stronger claim than a call that never happened, and it is the one the module
+        # docstring makes about all three entry points.
+        with patch.object(llm, "OpenAI", side_effect=AssertionError("client built")):
+            llm.grade_prompt("peu importe")
+
+
+class PromptCriticCallTests(SimpleTestCase):
+    """The keyed path, with `_has_key` pinned rather than the environment.
+
+    `_chat` is mocked here, not `llm.OpenAI`, because what these tests are about is the
+    payload and the token cap: the arguments to the call, which a mock at the client level
+    would only show after `_chat` had already been given the right ones.
+    """
+
+    def test_keyed_path_parses_the_verdict(self) -> None:
+        with mock.patch("game.llm._has_key", return_value=True), mock.patch.object(
+            llm, "_chat", return_value='{"score": 6, "comment": "correct"}'
+        ):
+            self.assertEqual(llm.grade_prompt("p").score, 6)
+
+    def test_keyed_path_clamps_out_of_range(self) -> None:
+        for raw, expected in (('{"score": 12}', 10), ('{"score": -3}', 0), ('{"score": null}', 0)):
+            with self.subTest(raw=raw):
+                with mock.patch("game.llm._has_key", return_value=True), mock.patch.object(
+                    llm, "_chat", return_value=raw
+                ):
+                    self.assertEqual(llm.grade_prompt("p").score, expected)
+
+    def test_critic_uses_its_own_token_cap(self) -> None:
+        with mock.patch("game.llm._has_key", return_value=True), mock.patch.object(
+            llm, "_chat", return_value='{"score": 1}'
+        ) as chat:
+            llm.grade_prompt("p")
+        self.assertEqual(chat.call_args.kwargs["max_tokens"], llm.CRITIC_MAX_TOKENS)
+
+    def test_critic_never_sees_a_peer_rating(self) -> None:
+        # The whole guardrail rests on the critic judging the prompt alone. If peer scores
+        # ever reached this call, a group rating low would pull the arbiter down with it.
+        with mock.patch("game.llm._has_key", return_value=True), mock.patch.object(
+            llm, "_chat", return_value='{"score": 1}'
+        ) as chat:
+            llm.grade_prompt("mon prompt", target="une recette")
+        self.assertNotIn("pairs", json.dumps(chat.call_args.kwargs["messages"]))
+
+    def test_the_critic_payload_is_the_prompt_and_the_target_and_nothing_else(self) -> None:
+        # Stronger than the "pairs" sentinel, which only rules out one field: this pins the
+        # key set, so a rating, a player name or a previous round cannot be added here
+        # without this test moving.
+        with mock.patch("game.llm._has_key", return_value=True), mock.patch.object(
+            llm, "_chat", return_value='{"score": 1}'
+        ) as chat:
+            llm.grade_prompt("mon prompt", target="une recette")
+        payload = json.loads(chat.call_args.kwargs["messages"][1]["content"])
+        self.assertEqual(payload, {"prompt": "mon prompt", "cible": "une recette"})
+
+    def test_the_critic_is_asked_for_json_at_zero_temperature(self) -> None:
+        # Asserted through `llm.OpenAI` so the arguments that actually reach the API are
+        # checked. temperature=0 because this is an arbitration between a model and a group
+        # of players, not a creative call: the same prompt must get the same number twice,
+        # or the score it produces means nothing.
+        client = _client('{"score": 4, "comment": "contexte manquant"}')
+        with patch.object(llm, "_has_key", return_value=True), patch.object(
+            llm, "OpenAI", return_value=client
+        ):
+            verdict = llm.grade_prompt("ecris un truc", "une recette")
+        kwargs = client.chat.completions.create.call_args.kwargs
+        self.assertEqual(kwargs["temperature"], 0.0)
+        self.assertEqual(kwargs["response_format"], {"type": "json_object"})
+        self.assertEqual(kwargs["max_tokens"], llm.CRITIC_MAX_TOKENS)
+        self.assertEqual(verdict, Verdict(4, "contexte manquant"))
+
+    def test_the_critic_cap_is_the_judge_cap_without_being_the_play_cap(self) -> None:
+        # Same number as JUDGE_MAX_TOKENS because both calls return the same shape — one
+        # integer and one short sentence — so it is a property of the output, not a
+        # coincidence. Still its own constant: PLAY_MAX_TOKENS is the one that has to
+        # differ, and a critic silently given 800 tokens would only ever waste the call.
+        self.assertEqual(llm.CRITIC_MAX_TOKENS, llm.JUDGE_MAX_TOKENS)
+        self.assertNotEqual(llm.CRITIC_MAX_TOKENS, llm.PLAY_MAX_TOKENS)
+
+
+@KEYED
+class CriticRubricTest(SimpleTestCase):
+    """The critic rubric is prose to a model, so these pin the parts that are rules, not tone."""
+
+    def test_it_scores_the_method_and_not_the_result(self) -> None:
+        # The critic arbitrates the peer band, so it has to be rating something the players
+        # controlled. A rubric that compared the answer to the target would be a second
+        # judge wearing a critic's name, and the ±3 band around it would mean nothing.
+        self.assertIn("la METHODE de ce prompt, pas son resultat", llm.CRITIC_SYS)
+        self.assertNotIn("proximite", llm.CRITIC_SYS)
+
+    def test_it_refuses_the_lucky_result(self) -> None:
+        # The failure mode a method rubric has to name out loud: a prompt that worked once by
+        # luck is still a bad prompt, and a model that rewards the outcome teaches players
+        # to re-roll rather than to iterate.
+        self.assertIn("resultat chanceux", llm.CRITIC_SYS)
+        self.assertIn("Tu ne compares pas la reponse a la cible", llm.CRITIC_SYS)
+
+    def test_it_names_the_five_criteria(self) -> None:
+        for criterion in ("role et le public", "contexte", "format de sortie", "longueur", "exemple"):
+            with self.subTest(criterion=criterion):
+                self.assertIn(criterion, llm.CRITIC_SYS)
+
+    def test_length_is_bounded_but_not_over_specified(self) -> None:
+        # Both halves are rubric text, so both are pinned. "Ni sur-specifiee ni laissee
+        # implicite" is the only place the two failure modes are told apart, and it is what
+        # keeps the game away from prompts that dictate their own output word for word.
+        self.assertIn("sur-specifiee", llm.CRITIC_SYS)
+        self.assertIn("laissee implicite", llm.CRITIC_SYS)
+
+    def test_it_keeps_the_zero_to_ten_scale_and_the_json_shape(self) -> None:
+        # Same contract as the judge, so the same Verdict parses it: the frontend renders
+        # 0-10 and `prompts.quality` clamps to it.
+        self.assertIn("de 0 a 10", llm.CRITIC_SYS)
+        self.assertIn('{"score": entier, "comment": texte court', llm.CRITIC_SYS)
+
