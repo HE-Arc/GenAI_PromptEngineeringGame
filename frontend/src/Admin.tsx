@@ -323,7 +323,7 @@ export default function Admin() {
         return {
           state: quizClosed
             ? 'La bonne réponse est affichée, la classe peut commenter.'
-            : 'Les quinze secondes sont ouvertes à toute la classe.',
+            : 'Les trente secondes sont ouvertes à toute la classe.',
           timer: quizClosed
             ? undefined
             : `${noun(countdown(quizWindow.left), 'seconde', 'secondes')} pour répondre`,

@@ -14,7 +14,7 @@ import {
 } from './api'
 import type { Link } from './useRoom'
 
-/* The didacticiel: ONE question for the whole room, fifteen seconds that belong to the server,
+/* The didacticiel: ONE question for the whole room, thirty seconds that belong to the server,
  * and a reveal that lands for everyone at the same instant.
  *
  * The screen owns none of the sequence. Which question is on screen is `state.quiz.index`, whether
@@ -148,9 +148,10 @@ export default function Quiz({
 
   // The ranking, and when it is allowed to arrive. Answering the eighth question is not the end of
   // it: the reveal for that eighth question has not happened yet, and a leaderboard appearing
-  // thirteen seconds early is a scroll the player did not ask for in the middle of the suspense the
-  // whole phase is built on. So it waits for the reveal, and then it is there for as long as the
-  // host takes to comment — which is the only moment a player is actually looking for it.
+  // twenty-eight seconds early is a scroll the player did not ask for in the middle of the
+  // suspense the whole phase is built on. So it waits for the reveal, and then it is there for as
+  // long as the host takes to comment — which is the only moment a player is actually looking
+  // for it.
   const finished =
     total > 0 && answeredOrders.size >= total && (revealed || question === null)
 
@@ -193,7 +194,7 @@ export default function Quiz({
       // Typed, and then deliberately not read. This response carries the key — `correct_index`
       // and the explanation — and reading it here is exactly the bug this phase exists to avoid:
       // a player who chooses and is told "juste" in the same second has learned nothing and has
-      // fifteen seconds of screen left to stare at. What the POST buys is the right to stop
+      // thirty seconds of screen left to stare at. What the POST buys is the right to stop
       // tapping. What to draw is decided by `state.quiz.revealed`, which the server sets at the
       // deadline and not one millisecond before.
       setAnswered((a) => ({ ...a, [order]: choice }))
@@ -290,7 +291,7 @@ export default function Quiz({
             <RoundTrack current={index} total={total} />
 
             {/* The shared clock. Read off `deadline_ms` against the server's own clock, so a
-                phone that opens this page ten seconds late shows five seconds rather than fifteen
+                phone that opens this page ten seconds late shows twenty seconds rather than thirty
                 and a phone whose time is two minutes out locks on the same side of the question
                 as everybody else. When the window is shut the number is replaced by the word,
                 because "0" running down into minus one is not a state the room is ever in. */}

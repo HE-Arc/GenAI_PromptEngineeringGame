@@ -122,8 +122,8 @@ class QuizClockTests(TestCase):
     Tested HERE, on the model, and not only through the endpoints, because these are the two
     methods both callers share. `admin_start` opens question 0 and the admin's button opens every
     question after it, and the property worth pinning is that they are the SAME method — a second
-    writer of `quiz_deadline` is how a class ends up with a fifteen-second question 3 and a
-    thirty-second question 4.
+    writer of `quiz_deadline` is how a class ends up with a thirty-second question 3 and a
+    ten-second question 4.
     """
 
     def test_a_fresh_room_is_at_the_first_question_with_no_window(self) -> None:
@@ -142,7 +142,7 @@ class QuizClockTests(TestCase):
         self.assertEqual(index.default, 0)
         self.assertTrue(Room._meta.get_field("quiz_deadline").null)
 
-    def test_opening_a_question_writes_the_cursor_and_a_fifteen_second_window(self) -> None:
+    def test_opening_a_question_writes_the_cursor_and_a_thirty_second_window(self) -> None:
         room, _player, _questions = _quiz_fixture()
         room._open_quiz()
         room.refresh_from_db()

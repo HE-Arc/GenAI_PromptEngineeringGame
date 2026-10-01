@@ -202,7 +202,7 @@ def admin_start(request: HttpRequest, code: str) -> JsonResponse:
     # mean. With a tutorial, the rounds sit behind the quiz until the admin advances out of it.
     #
     # THE FIRST QUIZ QUESTION IS PUT ON SCREEN HERE, in the same write that opens the phase, and
-    # its fifteen-second window opens with it. The admin presses start and the class has fifteen
+    # its thirty-second window opens with it. The admin presses start and the class has thirty
     # seconds on question 0 rather than an empty screen and a button to find. Every later question
     # is opened by the same button through `_PHASE_ADVANCE[QUIZ]`, and both go through
     # `Room._open_quiz`, so the two cannot disagree about how long a window lasts.
@@ -287,7 +287,7 @@ def _advance_quiz(room: Room) -> None:
     incidental. `_next_quiz` opens question n+1 with a fresh window; question n is never
     revealed on the way out, because the reveal is derived from a deadline that nothing writes
     when the admin skips ahead. A class that has understood the question moves on; a class that
-    has not keeps the fifteen seconds they had.
+    has not keeps the thirty seconds they had.
 
     Nothing here reads a player's answer. The clock opens and closes the window, and the game is
     moved by a person: « le chronomètre ne fait qu'ouvrir et fermer la fenêtre de réponse ; il ne
@@ -435,7 +435,7 @@ def _quiz_state(room: Room, online: set[int]) -> dict:
 
     THE THREE CLOCKS ARE THE FEATURE, and each is there for a different phone:
 
-    - `deadline_ms` is the instant the window closes, stored on the room and read here. Fifteen
+    - `deadline_ms` is the instant the window closes, stored on the room and read here. Thirty
       seconds are SHARED: one question for the room, so everyone counts the same seconds and the
       reveal lands on every screen at once.
     - `server_ms` is this server's own clock at the moment the snapshot was built, sent so a
@@ -445,7 +445,7 @@ def _quiz_state(room: Room, online: set[int]) -> dict:
       whole class. One subtraction, `(local_now - server_ms)`, and the phone has the server's
       clock to work from.
     - `revealed` is the comparison itself, `now >= deadline`, evaluated HERE rather than by a
-      timer thread. That is why the server owns no timer: the window is fifteen seconds of shared
+      timer thread. That is why the server owns no timer: the window is thirty seconds of shared
       waiting, the SSE stream already rebuilds this whole snapshot every 0.5s, and so the reveal
       reaches every phone within half a second of the deadline with nothing running in the
       background to be started, leaked, or lost on a restart.
@@ -1086,7 +1086,7 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
 
     THE RESPONSE STILL CARRIES `correct`, `correct_index`, `explanation` and `score` — they are
     the answer to THIS player's tap, and the answer arrives here. What changed is that they are
-    NOT the thing the player is waiting for: the fifteen seconds are a shared clock, the screen
+    NOT the thing the player is waiting for: the thirty seconds are a shared clock, the screen
     locks on the tap, and the class-wide reveal comes when the deadline passes. A client that
     wants the suspense reads `revealed` from the snapshot and ignores these four until then.
 
@@ -1129,7 +1129,7 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
     # THE DEADLINE, AND THE ONLY THING IT IS. A NULL deadline is no window at all rather than an
     # open one, so a room nobody has started asking in refuses rather than accepting forever.
     # Compared on the SERVER's clock: the phone's own is two minutes out on half the class and
-    # the window is fifteen seconds long.
+    # the window is thirty seconds long.
     if room.quiz_deadline is None or timezone.now() >= room.quiz_deadline:
         return json_error("time's up", 409)
     # `(room, order)` and not `order` alone: `order` is unique WITHIN a room, so an unscoped

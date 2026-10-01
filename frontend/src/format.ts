@@ -34,7 +34,7 @@ export const fr = (n: number | null): string => (n === null ? '—' : FR.format(
 // The shared countdown, in whole seconds.
 //
 // Rounded UP, and that is the only decision in it. `Math.floor` would show 0 for the last whole
-// second of a fifteen-second window and then sit on 0 for another second, so the room reads "0"
+// second of a thirty-second window and then sit on 0 for another second, so the room reads "0"
 // while the server is still accepting answers — a clock that lies about the deadline on the one
 // question where the deadline is the whole point. Ceil gives 1 until the last millisecond is gone
 // and then stops, because `open` is false by then and nothing draws the number at all.

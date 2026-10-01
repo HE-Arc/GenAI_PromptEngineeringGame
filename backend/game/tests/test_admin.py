@@ -252,7 +252,7 @@ class AdminTest(TestCase):
         self.assertIsNone(without.quiz_deadline)
 
     def test_next_from_quiz_opens_the_next_question_and_its_window(self) -> None:
-        # ONE BUTTON, AND WHAT IT DOES ON THE WAY: move the room's cursor, open a FRESH fifteen
+        # ONE BUTTON, AND WHAT IT DOES ON THE WAY: move the room's cursor, open a FRESH thirty
         # seconds on the new question, and leave the phase alone. The gate does not close itself
         # either — §2 gives the advance to a person for the same reason it gives the commentary of
         # a round to a person.
@@ -300,7 +300,7 @@ class AdminTest(TestCase):
         self._next(room)
         room.refresh_from_db()
         self.assertEqual(room.quiz_index, 1)
-        # Question 1 is not revealed either, so the new window is genuinely fifteen seconds long.
+        # Question 1 is not revealed either, so the new window is genuinely thirty seconds long.
         quiz = room_state(room.code)["quiz"]
         self.assertEqual(quiz["index"], 1)
         self.assertFalse(quiz["revealed"])

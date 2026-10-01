@@ -266,7 +266,7 @@
   font-weight: 600;
 }
 
-/* The didacticiel's shared fifteen seconds, as an instrument.
+/* The didacticiel's shared thirty seconds, as an instrument.
  *
  * Drawn between the question track and the illuminated panel, because that is where a class reads
  * it: the question is above, and the four answers are below, so the clock sits at the throat of
@@ -492,7 +492,7 @@
  * time to decode a segmented bar.
  *
  * The left edge is the only part of it that changes, and it changes for one reason: it takes the
- * sodium while the shared fifteen seconds are running. So a glance is enough to tell which half of
+ * sodium while the shared thirty seconds are running. So a glance is enough to tell which half of
  * the didacticiel the room is in, without reading a word of it. */
 .runshow {
   display: grid;

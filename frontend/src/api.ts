@@ -9,7 +9,7 @@ export type Phase = 'waiting' | 'quiz' | 'playing' | 'rating' | 'summary' | 'don
 // clocks matter:
 //
 // - `deadline_ms` is when the server stops accepting answers for the current question. The
-//   fifteen seconds are SHARED: one question at a time for the whole class, so everyone
+//   thirty seconds are SHARED: one question at a time for the whole class, so everyone
 //   sees the same question and the reveal lands at the same instant for everyone.
 // - `server_ms` is the server's own clock at that moment, sent so a client can correct for
 //   skew against its own. A phone whose clock is two minutes out would otherwise count down

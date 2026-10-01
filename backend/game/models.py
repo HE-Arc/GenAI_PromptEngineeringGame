@@ -48,7 +48,7 @@ class Room(models.Model):
     #
     # A DATETIME rather than a flag or a counter, because the reveal is a COMPARISON — `now >=
     # deadline`, evaluated when the snapshot is built — and that is what lets the server run no
-    # timer thread at all: the window is fifteen seconds of shared WAITING, and the SSE stream
+    # timer thread at all: the window is thirty seconds of shared WAITING, and the SSE stream
     # already rebuilds the whole snapshot twice a second, so the reveal reaches every phone
     # within half a second of the deadline.
     quiz_index = models.IntegerField(default=0)

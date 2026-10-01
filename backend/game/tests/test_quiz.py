@@ -175,7 +175,7 @@ class QuizPlayTests(TestCase):
         """Put the room's answering window `seconds` from now, as the passage of time would.
 
         THE SERVER'S CLOCK, never the test's: the deadline is stored, so a test moves it rather
-        than sleeping. Fifteen seconds of real sleeping would be fifteen seconds of real sleeping
+        than sleeping. Thirty seconds of real sleeping would be thirty seconds of real sleeping
         per assertion, and a test suite is the wrong place to spend that.
         """
         Room.objects.filter(code=room.code).update(
@@ -184,21 +184,21 @@ class QuizPlayTests(TestCase):
         room.refresh_from_db()
 
     def _open_window(self, room: Room) -> None:
-        """The window as `admin_start` and the advance button leave it: fifteen seconds."""
+        """The window as `admin_start` and the advance button leave it: thirty seconds."""
         self._move_deadline(room, QUIZ_SECONDS)
 
     def _close_window(self, room: Room) -> None:
-        """The window as the fifteen seconds leave it: already past."""
+        """The window as the thirty seconds leave it: already past."""
         self._elapse(room, QUIZ_SECONDS)
 
     def _elapse(self, room: Room, seconds: float) -> None:
         """Run the clock: `seconds` of the shared window have gone by.
 
-        The deadline is an ABSOLUTE instant, so "sixteen seconds into the window" is a deadline of
-        one second ago, not one of sixteen seconds ahead. Writing it the other way round — moving a
+        The deadline is an ABSOLUTE instant, so "thirty seconds into the window" is a deadline of
+        one second ago, not one of thirty seconds ahead. Writing it the other way round — moving a
         deadline forward to express a lateness — produces a test that passes the exact case it
         exists to fail, which is why this is a helper with a name that says what it means and not a
-        raw `_move_deadline(room, 16)` at every call site.
+        raw `_move_deadline(room, 30)` at every call site.
         """
         self._move_deadline(room, QUIZ_SECONDS - seconds)
 
@@ -697,9 +697,9 @@ class QuizPlayTests(TestCase):
 
     # --- the shared window -------------------------------------------------------------------
 
-    def test_start_puts_question_zero_on_screen_with_fifteen_seconds(self):
+    def test_start_puts_question_zero_on_screen_with_thirty_seconds(self):
         # THE WINDOW OPENS WITH THE QUESTION. An admin who presses start and leaves a class on a
-        # blank screen for fifteen seconds of them wondering whether something is wrong has spent
+        # blank screen for thirty seconds of them wondering whether something is wrong has spent
         # the first question on nothing, and the fixture every other test in this file builds on
         # would not notice.
         room, players = self._joined()
@@ -712,12 +712,12 @@ class QuizPlayTests(TestCase):
         quiz = room_state(room.code)["quiz"]
         self.assertEqual(quiz["index"], 0)
         self.assertEqual(quiz["total"], QUIZ_LENGTH)
-        # Fifteen seconds, within the millisecond the snapshot's own `server_ms` truncates and the
+        # Thirty seconds, within the millisecond the snapshot's own `server_ms` truncates and the
         # few milliseconds between the deadline being written and the snapshot being built.
         self.assertAlmostEqual(quiz["deadline_ms"] - quiz["server_ms"], QUIZ_SECONDS * 1000, delta=100)
 
     def test_an_answer_one_second_before_the_deadline_is_accepted(self):
-        # FOURTEEN SECONDS IN. The window is fifteen, so this is the last moment it is legal, and
+        # TWENTY-NINE SECONDS IN. The window is thirty, so this is the last moment it is legal, and
         # the request itself costs a millisecond or two — which is why the margin below is one
         # second and not one millisecond.
         room, players = self._joined()
@@ -727,7 +727,7 @@ class QuizPlayTests(TestCase):
         self.assertEqual(QuizAttempt.objects.count(), 1)
 
     def test_an_answer_one_second_past_the_deadline_is_refused(self):
-        # SIXTEEN SECONDS IN, and the refusal is THE DEADLINE and nothing else. Every other reason
+        # THIRTY-ONE SECONDS IN, and the refusal is THE DEADLINE and nothing else. Every other reason
         # the endpoint can say no is held still across this pair of tests: the phase is `quiz`,
         # the token is this player's, the order is the one on screen, the choice is in range, and
         # there is no attempt yet — so the clock is the only variable, and the error names it.
@@ -765,7 +765,7 @@ class QuizPlayTests(TestCase):
     def test_an_expired_window_is_closed_until_the_admin_opens_the_next_one(self):
         # The expiry does NOT advance anything: it reveals, and only the admin moves. Which is why
         # this is 409 here and 200 one button later — the player is not locked out of the
-        # didacticiel, they are locked out of THIS question, and the next one is fifteen seconds
+        # didacticiel, they are locked out of THIS question, and the next one is thirty seconds
         # away whenever the teacher decides.
         room, players = self._joined()
         self._close_window(room)
@@ -836,7 +836,7 @@ class QuizPlayTests(TestCase):
         self._assert_phase(room, Room.Phase.PLAYING)
 
     def test_the_button_opens_the_next_question_and_stays_in_the_quiz(self):
-        # ONE BUTTON, SEVEN TIMES. It moves the room's cursor and opens a fresh fifteen-second
+        # ONE BUTTON, SEVEN TIMES. It moves the room's cursor and opens a fresh thirty-second
         # window, and it does not touch the phase — the gate is not a gate that closes itself
         # either.
         room, players = self._joined()
@@ -869,7 +869,7 @@ class QuizPlayTests(TestCase):
         # THE HURRY-UP PATH, and it is deliberate: « Le même bouton referme la question en cours
         # quand il est pressé avant l'échéance, pour passer plus vite quand la classe a compris. »
         # Two things follow and both are asserted. The next question opens immediately, with its
-        # own fifteen seconds — not zero, and not the old deadline. And the question that was
+        # own thirty seconds — not zero, and not the old deadline. And the question that was
         # skipped is NEVER revealed: the key is gone with the question, because the reveal is read
         # off the deadline of whatever is on screen and nothing writes a deadline for a question
         # the room has left.

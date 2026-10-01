@@ -1,15 +1,15 @@
 /* The didacticiel's clock, and the only place in this console where the time comes from the
  * server rather than from the phone.
  *
- * The fifteen seconds belong to the ROOM: one question, one window, one instant of revelation for
+ * The thirty seconds belong to the ROOM: one question, one window, one instant of revelation for
  * every phone in it. §2 of the cahier says so, and it is why a per-player countdown is not a
  * slower feature but a different feature — the student who answers in two seconds and then
- * watches thirteen of a locked screen.
+ * watches twenty-eight seconds of a locked screen.
  *
  * Two ways to get that wrong, and this file exists because of both.
  *
- * Starting fifteen seconds on mount is wrong even when the clocks agree: a phone that opens the
- * page ten seconds after the question appeared would show fifteen and offer four buttons the
+ * Starting thirty seconds on mount is wrong even when the clocks agree: a phone that opens the
+ * page ten seconds after the question appeared would show thirty and offer four buttons the
  * server has already stopped listening to.
  *
  * Counting from the local clock is worse: a phone whose time is two minutes out would lock on the
@@ -20,7 +20,7 @@
  * So there are two numbers here and they are not interchangeable. The SKEW is the offset between
  * the two clocks, and it is measured from a frame of the server's clock and then frozen — because
  * re-deriving it from an old frame against a fresh `Date.now()` injects exactly the drift the
- * field exists to remove: a room that sits still for fifteen seconds sends no frames at all, and a
+ * field exists to remove: a room that sits still for thirty seconds sends no frames at all, and a
  * skew recomputed on every render would then report the server's clock as frozen too. The SAMPLE
  * is the local clock re-read on a timer, and it is re-read rather than incremented, so a phone
  * that slept, a background tab whose timers were throttled to once a minute, and a long render
@@ -36,7 +36,7 @@ import { useEffect, useLayoutEffect, useState } from 'react'
 import type { QuizState } from './api'
 
 // A quarter second. Fast enough that the figure on screen is never a whole second behind the
-// room, slow enough that a phone held in one hand for fifteen seconds does not wake its CPU four
+// room, slow enough that a phone held in one hand for thirty seconds does not wake its CPU four
 // times a second to redraw a number that is only read once a second.
 const BEAT_MS = 250
 
@@ -60,8 +60,8 @@ export function useQuizWindow(quiz: QuizState | null): QuizWindow {
 
   // A layout effect, and that is the whole reason for it. The skew has to be in place before the
   // browser paints, or the first frame of the one screen in this console that IS a clock is drawn
-  // from an uncorrected local time — a phone two minutes out flashing fifteen seconds for one
-  // frame of a fifteen-second question. There is no server render here, so nothing warns about
+  // from an uncorrected local time — a phone two minutes out flashing thirty seconds for one
+  // frame of a thirty-second question. There is no server render here, so nothing warns about
   // reading the wall clock here.
   //
   // The setState inside it is the one this file asks the linter to allow, and the rule's own
