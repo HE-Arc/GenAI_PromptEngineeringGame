@@ -1,2 +1,4 @@
-superpowers/
+# The implementation plans under docs/superpowers/plans/ ARE tracked: a plan is the record of
+# why the code looks the way it does, and a record nobody can read is not a record. It used to
+# be ignored here; it is not any more.
 .superpowers/
