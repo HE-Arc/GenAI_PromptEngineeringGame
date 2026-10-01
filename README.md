@@ -8,9 +8,9 @@ une enigme. Le bareme est une proximite, pas une egalite: sur un paragraphe, rep
 mot pour mot n'est ni attendu ni atteignable, donc 10 se gagne en restituant la substance,
 et la longueur d'une reponse n'est jamais penalisee en soi.
 
-La specification — contexte, regles de jeu, bareme, objectifs — vit dans le
-[wiki du projet](https://github.com/HE-Arc/GenAI_PromptEngineeringGame/wiki/Cahier-des-charges),
-pas dans ce depot. Ce README couvre l'installation, les commandes et les tests.
+La specification est dans [`docs/cahier-des-charges.md`](docs/cahier-des-charges.md), a cote
+du code qu'elle decrit: contexte, regles de jeu, bareme, objectifs. Ce README couvre
+l'installation, les commandes et les tests.
 
 ## Lancer
 
