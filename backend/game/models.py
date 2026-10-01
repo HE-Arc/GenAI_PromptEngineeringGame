@@ -1,5 +1,6 @@
 import secrets
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -8,23 +9,42 @@ def _token() -> str:
 
 
 class Room(models.Model):
-    class Status(models.TextChoices):
+    # One field for where the game is, not a status plus a boolean: two fields describing the
+    # same instant can contradict each other, and the SSE snapshot is the only place the phase
+    # is read, so a contradiction there is invisible until a player is on the wrong screen.
+    class Phase(models.TextChoices):
         WAITING = "waiting", "waiting"
+        QUIZ = "quiz", "quiz"
         PLAYING = "playing", "playing"
+        RATING = "rating", "rating"
+        SUMMARY = "summary", "summary"
         DONE = "done", "done"
 
     code = models.CharField(max_length=8, primary_key=True)
-    status = models.CharField(max_length=8, choices=Status.choices, default=Status.WAITING)
+    phase = models.CharField(max_length=8, choices=Phase.choices, default=Phase.WAITING)
     current = models.IntegerField(default=0)
+    # Does this game open with the didacticiel? Fixed for the whole game, decided by the
+    # admin at creation, so every player in the room faces the same gate. A restart carries
+    # the flag: relaunching "without" means without, twice, not once.
+    tutorial = models.BooleanField(default=True)
+    # Anonymity during cross-rating is a per-game choice, not a per-round setting: flipping
+    # it mid-game would tell players whose name appeared and whose did not, which leaks the
+    # mapping the anonymity exists to hide.
+    anonymous = models.BooleanField(default=True)
+
+    def current_round(self):
+        """The round being played, or None before the game starts. None is a real answer: in
+        `waiting` there are no rounds yet, and every caller has to survive that."""
+        return self.rounds.filter(order=self.current).first()
 
     def next_round(self) -> None:
         """Advance one round, or finish the game. No-op at the last round."""
         if self.current + 1 < self.rounds.count():
             self.current += 1
-            self.status = self.Status.PLAYING
+            self.phase = self.Phase.PLAYING
         else:
-            self.status = self.Status.DONE
-        self.save(update_fields=["current", "status"])
+            self.phase = self.Phase.DONE
+        self.save(update_fields=["current", "phase"])
 
 
 class Round(models.Model):
@@ -40,6 +60,10 @@ class Round(models.Model):
     # column is `varchar` and SQLite does not enforce the length. A 300-character target would
     # have been stored fine and nobody would have found out from this line.
     target = models.CharField(max_length=1000)
+    # Which of this round's prompts is on screen. An index into the round's answers ordered
+    # by id, NOT a player id: the reveal order is the order the answers landed, which is
+    # join order, and a rating is a rate against a specific revealed line.
+    revealed = models.IntegerField(default=0)
 
     class Meta:
         unique_together = [("room", "order")]
@@ -54,6 +78,13 @@ class Player(models.Model):
     class Meta:
         unique_together = [("room", "name")]
 
+    def quiz_score(self) -> int:
+        """How many didacticiel questions this player got right. An integer, never None: the
+        snapshot formats it as "3 sur 8" and the frontend should not carry a null branch that
+        only a player who never answered would ever take. Deliberately NOT part of the final
+        ranking — a gate you must pass must not also be points you can farm."""
+        return self.quiz_attempts.filter(correct=True).count()
+
 
 class Answer(models.Model):
     round = models.ForeignKey(Round, on_delete=models.CASCADE, related_name="answers")
@@ -65,3 +96,85 @@ class Answer(models.Model):
 
     class Meta:
         unique_together = [("round", "player")]
+
+
+class QuizQuestion(models.Model):
+    # The didacticiel bank, materialised. Not named `Question`: `game.quiz.Question` is
+    # already the NamedTuple of one hard-coded bank entry, and two `Question`s in adjacent
+    # modules imported by the same `views.py` cannot be told apart at a glance — this is a row
+    # in the table, that is a value in a file.
+
+    # `order` is this room's identity for a question and it is unique, because the quiz endpoint
+    # addresses a question by it: two rows sharing an order would make "which question is this"
+    # ambiguous, and the ambiguity would surface as a player being told their 3rd answer was
+    # right when the question they saw was the 4th.
+    order = models.IntegerField(unique=True)
+    prompt = models.TextField()
+    # A JSONField, not a delimited text column: the four choices are read back whole, never
+    # matched against, and no query ever asks "which questions have this choice". Storing them
+    # as text would only add a parse that could disagree with the row it came from.
+    choices = models.JSONField()
+    # An index into `choices`, kept as the quiz bank does: rewriting a choice must not
+    # invalidate the key, which a stored answer string would.
+    correct = models.IntegerField()
+    # Persisted, not read from `quiz.py` at answer time: the explanation belongs to the exact
+    # version of the question the player was shown, and it travels in the response that reveals
+    # the answer.
+    explanation = models.TextField()
+
+
+class QuizAttempt(models.Model):
+    # `correct` is stored rather than derived from `question.correct` at read time, so the score
+    # a player got is the score they were shown. Recomputing it later would silently rescore
+    # every past game the day the bank is edited.
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="quiz_attempts")
+    question = models.ForeignKey(QuizQuestion, on_delete=models.CASCADE, related_name="attempts")
+    choice = models.IntegerField()
+    correct = models.BooleanField()
+
+    class Meta:
+        # One attempt per question, enforced in the database: the client sends an answer the
+        # moment a button is tapped and a retry on a flaky phone is indistinguishable from a
+        # second answer. `unique_together` is the source of truth, not a check in the view.
+        unique_together = [("player", "question")]
+
+
+class Rating(models.Model):
+    # One peer score per revealed prompt per rater. CASCADE all the way: a restart deletes the
+    # rounds, and the ratings must go with them — a rating whose prompt no longer exists has no
+    # row to be drawn next to.
+    answer = models.ForeignKey(Answer, on_delete=models.CASCADE, related_name="ratings")
+    rater = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="ratings_given")
+    score = models.IntegerField()
+
+    class Meta:
+        # One rating per rater per prompt, in the database. The client cannot know which
+        # prompt it is rating — the phase decides that — so this row is the only place the
+        # rule can live, and it is what `rate` catches to answer 409.
+        unique_together = [("answer", "rater")]
+        constraints = [
+            # 1-10 is the scale the whole rating phase is drawn against: the visual scale, the
+            # visual summary and the ±3 band around the critic all assume it. A score outside it
+            # is not a display problem, it is a wrong ranking produced silently.
+            models.CheckConstraint(condition=models.Q(score__gte=1, score__lte=10), name="rating_score_1_10"),
+        ]
+
+    def save(self, *args, **kwargs) -> None:
+        """Refuse a self-rating. `ValidationError`, not `IntegrityError`: unlike the score range
+        above, this rule is not in the database at all."""
+        # NO-ONE-RATES-THEIR-OWN-PROMPT IS NOT A DATABASE CONSTRAINT. It looks like one and
+        # the plan used to ask for it as one — `~models.Q(answer__player=models.F("rater"))`
+        # — which Django rejects at import with `models.E041: 'constraints' refers to the
+        # joined field`. A CheckConstraint is compiled to SQL against THIS table, and
+        # `answer__player` is a JOIN through Answer. There is no way to write it.
+        #
+        # So the rule is enforced where it can be: the view refuses it, because the view
+        # derives the target from the reveal and the client never names it, which makes that
+        # check unforgeable; and this guard is the backstop for a path that does not go
+        # through the view — a future management command, a shell, a data fix.
+        #
+        # The guard reads the author through `self.answer`, so it costs one query and only on
+        # create; it raises before any write, so it leaves no broken transaction behind.
+        if self.answer_id and self.rater_id and self.answer.player_id == self.rater_id:
+            raise ValidationError("a player cannot rate their own prompt")
+        super().save(*args, **kwargs)
