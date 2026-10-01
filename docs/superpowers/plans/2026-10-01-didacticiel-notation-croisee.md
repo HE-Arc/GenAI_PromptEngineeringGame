@@ -1170,7 +1170,7 @@ export interface RevealState {
 export interface SummaryRow {
   author: string; prompt: string; output: string
   proximity: number; quality_llm: number; quality_peers: number
-  quality: number; round_score: number
+  quality: number; quality_comment: string; round_score: number
 }
 export interface Player {
   name: string
@@ -1180,6 +1180,8 @@ export interface Player {
   online: boolean
   quiz_score: number | null
   quiz_done: boolean
+  proximity_total: number | null
+  quality_total: number | null
 }
 export interface State {
   code: string; phase: Phase; current: number; total: number
@@ -1191,8 +1193,19 @@ export interface State {
 }
 ```
 
-Retirer `prompt`, `output` et `comment` de `Player` : le serveur ne les envoie plus en
-phase `rating`, et les garder en type ferait croire à un client qu'ils sont là.
+**Cet extrait a été écrit avant la tâche 7 et il est PÉRIMÉ sur deux points.** Ne le prenez
+pas pour le contrat : `frontend/src/api.ts` fait foi, et il est plus large que ci-dessus.
+
+- `Player` compte **onze** champs, pas huit : `proximity_total` et `quality_total` ont été
+  ajoutés par la tâche 7, avec les scores ils rendent la note de tour vérifiable à l'écran
+  (« proximité 42, qualité 58 »). Un lecteur qui «corrige » `api.ts` pour coller à cet
+  extrait cassera le tableau final.
+- `SummaryRow` porte `quality_comment`, absent ici. C'est la phrase du critique, et hors ligne
+  c'est le seul endroit où l'écran dit au joueur que le nombre vient d'une règle locale et pas
+  d'un modèle.
+
+`prompt`, `output` et `comment` ne sont plus dans `Player`, et ce n'est plus seulement en phase
+`rating` : ils ne sont envoyés dans aucune phase, la ligne de joueur du flux ne les porte pas.
 
 - [ ] **Étape 2 : vérifier que ça compile**
 
