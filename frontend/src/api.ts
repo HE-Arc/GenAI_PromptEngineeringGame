@@ -4,12 +4,35 @@
 
 export type Phase = 'waiting' | 'quiz' | 'playing' | 'rating' | 'summary' | 'done'
 
-// Progress through the didacticiel, for the player the snapshot was built for. Null outside
-// the quiz phase: the gate is closed, and a client that renders a "2/8" over a game it is not
-// playing is a client showing a progress bar for nothing.
+// The didacticiel, as the room sees it. ROOM-level, not per-viewer: the snapshot is one
+// payload for every phone and the admin screen, so it cannot say who is reading. The three
+// clocks matter:
+//
+// - `deadline_ms` is when the server stops accepting answers for the current question. The
+//   fifteen seconds are SHARED: one question at a time for the whole class, so everyone
+//   sees the same question and the reveal lands at the same instant for everyone.
+// - `server_ms` is the server's own clock at that moment, sent so a client can correct for
+//   skew against its own. A phone whose clock is two minutes out would otherwise count down
+//   from the wrong instant and lock the wrong side of the question.
+// - `revealed` is `now >= deadline`, and it is the ONLY thing that makes `correct` and
+//   `explanation` public. Before it, they are null: a key shipped to the client is a QCM the
+//   player can read in devtools instead of playing.
+//
+// The admin, not this block, decides when the NEXT question opens. A clock that advances the
+// game on its own takes the teacher's commentary away from them.
 export interface QuizState {
+  index: number
   total: number
+  deadline_ms: number
+  server_ms: number
+  revealed: boolean
+  correct: number | null
+  explanation: string | null
+  // How many of the room's online players have answered the current question, and the room's
+  // best QCM score. A teacher watching the room does not need per-player detail here, and the
+  // per-player score is already on `Player.quiz_score`.
   done: number
+  online_count: number
   score: number
 }
 
@@ -55,8 +78,17 @@ export interface Question {
   choices: string[]
 }
 
+// The bank, fetched once, plus what THIS player has already answered.
+//
+// `answered_orders` is a list of question orders, not a count, and the distinction is the
+// whole reason this type is not a number. The question on screen belongs to the ROOM now, so
+// "how many have I done" cannot answer "have I done THIS one": a player who answers the first
+// question and then looks away has one answered, and is looking at the fifth, which they have
+// not done. A count cannot tell those apart, and a client that assumed it would lock a player
+// out of a question they never saw.
 export interface QuizBank {
   questions: Question[]
+  answered_orders: number[]
 }
 
 // The reveal, in the response that answers it.
