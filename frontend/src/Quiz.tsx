@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ConsoleBar, Readout, RoundTrack, Section } from './ui'
 import {
+  ApiError,
   describe,
   getName,
   getToken,
@@ -20,6 +21,18 @@ import type { Link } from './useRoom'
 // with a question, so nothing here can spoil the next one: the answer comes back from the POST
 // that answers it, which is the only copy of it the client ever holds. The shapes live in
 // `api.ts` beside the rest of the wire contract, not here.
+//
+// `answered` is declared here rather than in `api.ts` because that file is the frozen half of the
+// wire contract and this field is landing in it separately. `QuizBank` plus the one field is
+// still a named shape: `questions` is checked, so a change to the bank still fails to compile
+// here, which is the whole reason for typing a response instead of casting the payload loose.
+type ResumableBank = QuizBank & {
+  // How many of THIS player's questions are already in the database, counted by the server. It
+  // is that player's own history and nothing else: no other player is named, counted or implied
+  // by it, so the endpoint stays exactly as unauthenticated as it was — the token identifies
+  // whose count to report, it does not unlock anything.
+  answered: number
+}
 
 // The letters are on the buttons and not in the text: a class of ten reading the same four
 // rows of prose aloud should not also have to hear "A point virgule", and the letter is the one
@@ -38,9 +51,19 @@ export default function Quiz({
   onRetry: () => void
 }) {
   const [questions, setQuestions] = useState<Question[] | null>(null)
-  // Which question is on screen, and what has already been answered on it. Local, because the
-  // snapshot cannot carry it: `quiz.done` is a count of attempts and says nothing about whether
-  // the player has read the explanation for the one in front of them.
+  // Which question is on screen, and what has already been answered on it.
+  //
+  // It starts at whatever the server says this player has already answered, not at 0, and that
+  // is the whole fix for the locked player. The cursor used to be a pure browser invention, so a
+  // reload threw it away: the player came back to question 0, answered it again, hit the unique
+  // constraint, got a 409, and — because « Suivant » is only rendered once the reveal is on
+  // screen and a 409 never produces one — had no way forward at all. Not a bad end to a
+  // question: an unreachable end of the didacticiel, and with it a player who can never post
+  // eight attempts, a room whose automatic opening never fires, and a ranking §2 promises them.
+  //
+  // The server is the authority on it because it is the only party that knows what is in the
+  // database. The cursor stays local once set, because advancing is a re-render and asking the
+  // server after every question would put a round trip between a button and the next question.
   const [at, setAt] = useState(0)
   const [picked, setPicked] = useState<number | null>(null)
   // `correct_index`, not `correct`: the reveal has to point at the good choice, and the two
@@ -48,6 +71,10 @@ export default function Quiz({
   const [why, setWhy] = useState<QuizAnswered | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  // Said once, after the cursor has jumped forward over a question the player cannot re-take.
+  // Separate from `err` because it is not a fault: nothing failed, the server simply knows more
+  // than the screen did, and the copy has to sound like that rather than like an error.
+  const [resumed, setResumed] = useState('')
   // The running tally, from this screen's own POSTs. The snapshot carries it too, but the
   // stream is up to half a second behind a button press and the ranking at the end of the quiz
   // is the one number a player is looking at when they reach it.
@@ -69,8 +96,31 @@ export default function Quiz({
           { headers: { Accept: 'application/json' } },
         )
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = (await res.json()) as QuizBank
-        if (!gone) setQuestions(data.questions)
+        const data = (await res.json()) as ResumableBank
+        if (gone) return
+        setQuestions(data.questions)
+        // Clamped to the bank rather than trusted raw. The count is this player's and the
+        // questions are this room's, so it cannot exceed the length — but a cursor is an index
+        // into an array, and an index one past the end renders a blank screen instead of the
+        // ranking. A clamp turns any disagreement between the two into the finished screen,
+        // which is where a player who has answered everything belongs anyway.
+        //
+        // `Number.isFinite` before the clamp, not after, because `Math.min(undefined, 8)` is
+        // `NaN` rather than 0 and a `NaN` index makes `questions[at]` undefined — which would
+        // blank the screen entirely instead of starting at question 1. A server that has not
+        // sent the field yet therefore behaves like the one that sends zero, which is the only
+        // sensible thing for a resume to degrade to.
+        const done = Number.isFinite(data.answered)
+          ? Math.max(0, Math.min(data.answered, data.questions.length))
+          : 0
+        if (done > 0) {
+          setAt(done)
+          setResumed(
+            done >= data.questions.length
+              ? 'Tu avais déjà terminé le didacticiel. Voici le classement.'
+              : `Reprise à la question ${done + 1} : les ${done} précédentes sont déjà validées.`,
+          )
+        }
       } catch (e) {
         if (!gone) setErr(e instanceof Error ? e.message : 'quiz indisponible')
       }
@@ -109,10 +159,37 @@ export default function Quiz({
       setWhy(res)
       setScore(res.score)
     } catch (e) {
+      // A 409 here is the server saying this player already has an attempt on THIS question,
+      // which after a reload is the whole bug: the screen thinks it is on an unanswered
+      // question, the database says otherwise, and only one of the two can move. It has to be
+      // the screen.
+      //
+      // Matched on the status AND the reason rather than on the status alone. `already answered`
+      // is also what the same route returns when the didacticiel has closed under the player, and
+      // jumping the cursor forward in that case would walk them off the end of the bank and
+      // strand them somewhere worse than where they started. Any other 409 keeps the ordinary
+      // error line, and `quiz not open` is already translated in `api.ts` for exactly this phase.
+      if (e instanceof ApiError && e.status === 409 && e.message === 'already answered') {
+        skip()
+        return
+      }
       setErr(describe(e))
     } finally {
       setBusy(false)
     }
+  }
+
+  // Forward one question, saying why. Shared by the resume and by the 409 so the two can never
+  // disagree about where "the next question" is, and clamped at `total` rather than at the last
+  // question: a 409 on the eighth means this player has already answered the eighth, and the
+  // only place left to send them is the ranking, which is exactly where the spec puts a player
+  // who has finished. Clamping one earlier would leave them tapping a button that 409s forever.
+  function skip() {
+    setAt((a) => Math.min(a + 1, total))
+    setPicked(null)
+    setWhy(null)
+    setErr('')
+    setResumed('Tu avais déjà répondu à celle-là. On continue à la suivante.')
   }
 
   function next() {
@@ -120,6 +197,9 @@ export default function Quiz({
     setPicked(null)
     setWhy(null)
     setErr('')
+    // Said once, then cleared: it describes the question the player was on when they arrived,
+    // and carrying it onto the eighth would be a note about a question that is now off screen.
+    setResumed('')
   }
 
   // The class ranking, sorted on the didacticiel's own score. Sorted here rather than asked of
@@ -149,16 +229,29 @@ export default function Quiz({
             is one — the reveal is the part of this screen that happens to the player rather
             than to the room, so it is the part worth a voice. */}
         <p className="visually-hidden" aria-live="polite">
-          {why
-            ? why.correct_index === picked
-              ? 'Bonne réponse.'
-              : 'Réponse incorrecte.'
-            : question
-              ? `Question ${at + 1} sur ${total}.`
-              : ''}
+        {why
+          ? why.correct_index === picked
+            ? 'Bonne réponse.'
+            : 'Réponse incorrecte.'
+          : question
+            ? `Question ${at + 1} sur ${total}.`
+            : ''}
         </p>
 
         {!questions && !err && <p className="prose prose--dim">Lecture des questions…</p>}
+
+        {/* One line, in the calm colour the console uses for facts about people rather than
+            faults, because that is what this is: a statement about where the player is, not a
+            complaint. It is `role="status"` rather than `role="alert"` for the same reason — an
+            alert interrupts, and being told you have resumed is not an interruption. It sits
+            above the question, where the first thing a player reads is an explanation of why
+            they are not on question 1. Rendered even with no question on screen, because the
+            case that most needs saying is the one where the cursor has just run off the end. */}
+        {resumed && (
+          <p className="notice" role="status">
+            {resumed}
+          </p>
+        )}
 
         {question && (
           <>

@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import { fr } from './format'
 import { linkWord, type Link } from './useRoom'
 import type { Player } from './api'
 
@@ -306,8 +307,9 @@ export type BoardColumn = { label: string; value: (p: Player) => number | null }
 // A null score is not a zero and it must never render as a blank. The server blanks every score
 // during the rating phase on purpose, and a cell that draws nothing in a column of numbers reads
 // as a missing value, which is the inference the phase exists to prevent — so the cell says "—".
+// `fr` owns that dash, so no caller here can forget it and print a zero instead.
 function Dash({ value }: { value: number | null }) {
-  return <span className="board__pts num">{value ?? '—'}</span>
+  return <span className="board__pts num">{fr(value)}</span>
 }
 
 // Rank alone tells you nothing when you are fifth of seven. The bar is drawn against the
@@ -359,9 +361,12 @@ export function Board({
             {p.name}
             {p.name === myName && <span className="board__tag">toi</span>}
           </span>
+          {/* The dimension columns, through the same formatter as the total. `proximity_total`
+              and `quality_total` are sums over settled rounds, and a round is a mean of two
+              out-of-ten numbers, so both are as fractional as the rounds that made them. */}
           {columns.map((c) => (
             <span className="board__cell" key={c.label}>
-              {c.value(p) ?? '—'}
+              {fr(c.value(p))}
             </span>
           ))}
           <Dash value={p.score} />

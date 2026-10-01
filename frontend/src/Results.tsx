@@ -1,4 +1,5 @@
 import { Board, ConsoleBar, Section, type BoardColumn } from './ui'
+import { fr } from './format'
 import { getName, type State } from './api'
 import type { Link } from './useRoom'
 
@@ -45,8 +46,8 @@ export default function Results({
     points === 0
       ? 'Aucun tour n’a été noté dans cette partie.'
       : winners.length === 1
-        ? `${winners[0].name} l’emporte avec ${points} ${points > 1 ? 'points' : 'point'}.`
-        : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${points} ${points > 1 ? 'points' : 'point'}.`
+        ? `${winners[0].name} l’emporte avec ${fr(points)} ${points > 1 ? 'points' : 'point'}.`
+        : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${fr(points)} ${points > 1 ? 'points' : 'point'}.`
 
   return (
     <div className="deck">

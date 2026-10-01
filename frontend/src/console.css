@@ -572,6 +572,26 @@
   font-size: 0.75rem;
   font-weight: 600;
 }
+/* The critic's cell is the one that carries a sentence, so it is the one that gets a row of its
+ * own. `grid-column: 1 / -1` rather than a wider track: the other three figures stay a tidy
+ * grid of equal boxes, and the critic reads as the cell that outgrew the format because it has
+ * something to say, which is exactly what it is. A `<p>` for the same reason the others are
+ * `<span>` — a cell that may hold two sentences of prose cannot be a phrasing element, and the
+ * browser would eventually have to be told which one it is. */
+.tally__fig--critic {
+  grid-column: 1 / -1;
+  gap: 0.35rem;
+}
+/* The reason, in the judge's own voice and at the judge's own size — the same `prose--sm` the
+ * verdict in `Game.tsx` uses for `result.comment`, because it IS the same sentence about the
+ * same kind of number. Sodium, and only on the first line: offline this is where the console
+ * admits there was no model, and that admission should be findable while scanning the row rather
+ * than read at the end of it. */
+.tally__why {
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--rail);
+  color: var(--ink-dim);
+}
 /* The model's answer to one prompt, behind a disclosure rather than below the fold. Nine of
  * these on one screen is a wall of preformatted text, and what a class reads out loud is the
  * prompt; the summary marker keeps the 48px target the rest of the console's controls hold. */

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, Readout, ScoreScale, Section, Step } from './ui'
+import { fr } from './format'
 import { absent, describe, getName, getToken, post, present, type Player, type State } from './api'
 import type { Link } from './useRoom'
 
@@ -231,7 +232,13 @@ export default function Game({
             Every figure is drawn, including the two the bound is made of. The critic's score and
             the peers' average are the only reason the retained quality is the number it is, and
             a round synthesis that printed the verdict without its inputs would be asking a class
-            to accept an arithmetic result they cannot check. */}
+            to accept an arithmetic result they cannot check.
+             *
+             * Every figure goes through `fr`, because §7's note_tour is a real division and the
+             * server stopped pretending otherwise: a round of proximity 7 and quality 6 is 6,5, and
+             * a board that printed "6.5" would be the only Americanism in a French room. `fr` also
+             * prints the em-dash for an absent `quality_peers` — a round where nobody rated — so a
+             * cell never shows a zero that nobody earned. */}
         {scored && state.summary && (
           <section className="tally">
             <h2 className="label">Les notes de la manche {state.summary.round + 1}</h2>
@@ -243,26 +250,42 @@ export default function Game({
                     {row.author === myName && <span className="board__tag">toi</span>}
                   </span>
                   <span className="tally__round num">
-                    {row.round_score}
+                    {fr(row.round_score)}
                     <span className="tally__roundden">/ 10</span>
                   </span>
                 </div>
                 <pre className="slot tally__prompt">{row.prompt}</pre>
                 <div className="tally__figs">
                   <span className="tally__fig">
-                    <b className="num">{row.proximity}</b>
+                    <b className="num">{fr(row.proximity)}</b>
                     <span>proximité</span>
                   </span>
                   <span className="tally__fig">
-                    <b className="num">{row.quality}</b>
+                    <b className="num">{fr(row.quality)}</b>
                     <span>qualité retenue</span>
                   </span>
-                  <span className="tally__fig">
-                    <b className="num">{row.quality_llm}</b>
+                  {/* The critic's cell is the one that spans the row, because it is the one that
+                      * carries a sentence. The reason sits inside the same box as the number it
+                      * explains, in the same voice and the same `prose--sm` as the judge's comment
+                      * in `.verdict` above — it is the same act, the critic accounting for itself.
+                      *
+                      * It travels here rather than in a banner of its own because that is the whole
+                      * point of it: with no API key this string is the admission that there was no
+                      * model, only a count of keyword markers, and the spec asks for that admission
+                      * to reach the player (« l'écran le dit explicitement »). One surface, sitting
+                      * on the number it qualifies, is a thing that can be right. A second
+                      * "you are offline" notice elsewhere would be a second thing that can be
+                      * wrong, and a class holding both would have to decide which one to believe.
+                      * An empty comment renders nothing rather than an empty panel. */}
+                  <div className="tally__fig tally__fig--critic">
+                    <b className="num">{fr(row.quality_llm)}</b>
                     <span>note du modèle</span>
-                  </span>
+                    {row.quality_comment && (
+                      <p className="prose prose--sm tally__why">{row.quality_comment}</p>
+                    )}
+                  </div>
                   <span className="tally__fig">
-                    <b className="num">{row.quality_peers}</b>
+                    <b className="num">{fr(row.quality_peers)}</b>
                     <span>moyenne des pairs</span>
                   </span>
                 </div>
