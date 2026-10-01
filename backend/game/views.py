@@ -478,7 +478,25 @@ def room_state(code: str) -> dict:
     players = []
     for p in room.players.all():
         a = by_player.get(p.id)
-        total = p.answers.aggregate(total=Sum("score"))["total"] or 0
+        # THE RANKING TOTAL. Three cases, and getting this wrong deletes the game.
+        #
+        # `Answer.score` is the judge's proximity on the output alone. `Answer.round_score` is
+        # `(proximity + quality) // 2`, written once `settle_round` closes the round's rating.
+        # The spec says the final ranking "additionne les dix tours" where a tour is the second
+        # one — so summing `score` alone, which is what this used to do, drops the quality
+        # dimension entirely and lets a player whose prompts are badly built but whose output
+        # happened to land tie with a player who writes carefully.
+        #
+        # But `round_score` is NULL until the class has rated the round, and the spec also says
+        # the board is "mis à jour en direct pendant la rédaction". Summing settled rounds alone
+        # would freeze the board for the whole writing phase. So the open round contributes its
+        # PROXIMITY, provisionally: the board moves the moment a player answers, and the number
+        # is corrected — not merely recomputed — when the round settles. That correction is the
+        # teaching moment: a player who sees their total drop by two at the summary is seeing the
+        # price of a weak prompt, which is the thing the whole didacticiel is for.
+        settled = p.answers.aggregate(total=Sum("round_score"))["total"] or 0
+        open_round = p.answers.filter(round_score__isnull=True).aggregate(s=Sum("score"))["s"] or 0
+        total = settled + open_round
         shown = None if hiding else total
         # The two dimensions behind `total`, over the rounds that have been SETTLED — the same
         # rows `settle_round` writes `round_score` on, so the three numbers a player reads always
@@ -652,7 +670,18 @@ def maybe_advance_phase(room: Room) -> None:
         _maybe_advance_reveal(room, rnd, online)
         return
     if rnd.answers.filter(player_id__in=online).count() == len(online):
-        room.next_round()
+        # `_open_rating`, NOT `next_round`. This line used to be `next_round()`, which skipped
+        # `rating` and `summary` outright and went straight to the following round: the last
+        # player to answer ended the round before the class ever saw a prompt to rate, so the
+        # cross-rating never ran in a normal game and a teacher had to advance by hand every
+        # round to get the feature at all.
+        #
+        # It read correctly when there was no rating phase, and stayed correct-looking after one
+        # was added, because `next_round` is what this function had always done. The whole test
+        # module parked its rooms in `rating` on the ORM, so nothing in it could catch the
+        # transition INTO the phase it was testing. `test_playing_a_round_actually_opens_the_rating`
+        # walks the real path for that reason.
+        room._open_rating()
 
 
 @require_POST
