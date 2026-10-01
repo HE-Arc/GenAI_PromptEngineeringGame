@@ -1,6 +1,42 @@
+import random
+from unittest import mock
+
 from django.test import SimpleTestCase
 
-from game.quiz import QUESTIONS, QUIZ_LENGTH
+from game.quiz import QUESTIONS, QUIZ_LENGTH, pick
+
+
+class QuizPickTests(SimpleTestCase):
+    def test_pick_returns_a_permutation_of_the_whole_bank(self):
+        picked = pick()
+        self.assertEqual(len(picked), QUIZ_LENGTH)
+        self.assertEqual({q.prompt for q in picked}, {q.prompt for q in QUESTIONS})
+
+    def test_pick_never_repeats_a_question(self):
+        picked = pick()
+        self.assertEqual(len({q.prompt for q in picked}), len(picked))
+
+    def test_pick_actually_shuffles_rather_than_returning_the_bank_in_file_order(self):
+        # The bank is exactly one quiz long, so the only variety between two rooms is the
+        # ORDER. A `pick` that quietly returned QUESTIONS untouched would pass every other
+        # test here and make every room ask its questions in the same sequence, which is
+        # exactly the thing this function exists to prevent.
+        with mock.patch("game.quiz.random.sample", side_effect=lambda pool, n: tuple(pool)):
+            self.assertEqual([q.prompt for q in pick()], [q.prompt for q in QUESTIONS])
+
+    def test_pick_is_reproducible_under_a_seed(self):
+        # Real seeding, not a patched-out `random.seed` — mocking the seeding function
+        # proves nothing about reproducibility, it only proves the mock was called. This
+        # also pins that the order comes from the stdlib RNG rather than a hardcoded
+        # rotation, which is what makes a bug report from a classroom reproducible.
+        state = random.getstate()
+        try:
+            random.seed(0)
+            first = pick(3)
+            random.seed(0)
+            self.assertEqual(pick(3), first)
+        finally:
+            random.setstate(state)
 
 
 class QuizBankTests(SimpleTestCase):

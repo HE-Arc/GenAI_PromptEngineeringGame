@@ -15,6 +15,7 @@ comparable register, whichever way round the correct one falls.
 Player-visible strings carry no accents, like the rest of the game. The comments do.
 """
 
+import random
 from typing import NamedTuple
 
 QUIZ_LENGTH = 8
@@ -172,3 +173,17 @@ QUESTIONS: tuple[Question, ...] = (
         ),
     ),
 )
+
+
+def pick(n: int = QUIZ_LENGTH) -> tuple[Question, ...]:
+    """The order one room asks its questions in.
+
+    With `n == len(QUESTIONS)` this is a PERMUTATION, not a subset, and that is the whole
+    point: the bank is exactly one quiz long, so the only variety available between two rooms
+    is the ORDER. Calling it a draw would suggest a subset gets chosen, and the day someone
+    grows the bank to sixteen questions, this would quietly start hiding six of them from
+    every player who was meant to be quizzed on all sixteen.
+
+    Returns a tuple, like the bank, so a caller cannot reorder what it was handed.
+    """
+    return tuple(random.sample(QUESTIONS, n))
