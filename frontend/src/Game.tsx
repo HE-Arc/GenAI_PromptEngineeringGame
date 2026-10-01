@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, Readout, ScoreScale, Section, Step } from './ui'
-import { fr } from './format'
+import { AnswerMeter, Board, ConsoleBar, PlayerName, Readout, ScoreScale, Section, Step } from './ui'
+import { fr, noun } from './format'
 import { absent, describe, getName, getToken, post, present, type Player, type State } from './api'
 import type { Link } from './useRoom'
 
@@ -117,7 +117,7 @@ export default function Game({
   // line is never more or less true than the game is.
   const caption = (() => {
     if (!alreadyDone) return left === 1 ? 'À toi de répondre' : 'Réponses envoyées'
-    return left === 0 ? 'Tout le monde a répondu' : `En attente de ${left} ${left > 1 ? 'joueurs' : 'joueur'}`
+    return left === 0 ? 'Tout le monde a répondu' : `En attente de ${noun(left, 'joueur', 'joueurs')}`
   })()
 
   // One notice, never two, and the most specific thing we know wins. Both cases are the same
@@ -245,10 +245,11 @@ export default function Game({
             {state.summary.rows.map((row) => (
               <div className="tally__row" key={row.author}>
                 <div className="tally__head">
-                  <span className={row.author === myName ? 'board__name board__name--me' : 'board__name'}>
-                    {row.author}
-                    {row.author === myName && <span className="board__tag">toi</span>}
-                  </span>
+                  <PlayerName
+                    name={row.author}
+                    isMe={row.author === myName}
+                    className={row.author === myName ? 'board__name board__name--me' : 'board__name'}
+                  />
                   <span className="tally__round num">
                     {fr(row.round_score)}
                     <span className="tally__roundden">/ 10</span>

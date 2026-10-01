@@ -167,6 +167,17 @@ export type State = {
   summary: { round: number; rows: SummaryRow[] } | null
 }
 
+// The cross-rating scale, declared here because this file is where the room-state contract
+// lives, and named as the server names it — `SCALE_MIN, SCALE_MAX = 1, 10` at
+// backend/game/prompts.py:30 — so the two halves of one rule are greppable from either end. It
+// was written out in three places on this side, and a client that drifts from the bound the
+// server enforces is a client that offers a note the server will refuse.
+//
+// The two numbers are not interchangeable and neither is the default: 1 is the lowest note a
+// player may give, while the score a round hands out is read on a 0-10 scale.
+export const SCALE_MIN = 1
+export const SCALE_MAX = 10
+
 // The players whose phones are actually on the stream. Split out in one place because the
 // answer meter and the roster must agree on it, and a progress indicator that can never fill
 // is worse than no indicator.

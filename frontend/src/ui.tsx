@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react'
-import { fr } from './format'
+import { fr, noun, nounOf } from './format'
 import { linkWord, type Link } from './useRoom'
-import type { Player } from './api'
+import { SCALE_MAX, type Player } from './api'
 
 /* The instrument panel. Every screen is built from these, which is what makes six screens
  * read as one device: the same lamp, the same track, the same meter, the same board. */
@@ -145,13 +145,14 @@ export function Roster({ players, online, myName }: { players: Player[]; online:
           sentence the panel says, in the panel's own terms. `polite`, because a player who is
           mid-word does not want a reconnect to talk over them. */}
       <p className="visually-hidden" aria-live="polite">
-        {online} {online > 1 ? 'joueurs connectés' : 'joueur connecté'} sur {players.length} dans
-        la pièce.
+        {noun(online, 'joueur connecté', 'joueurs connectés')} sur {players.length} dans la pièce.
       </p>
       <p className="roster">
         <span className="roster__n num">{online}</span>
+        {/* The count is the sibling above, set as a figure, so this is the noun alone: the same
+            rule `noun` applies, asked for the word rather than the pair. */}
         <span className="roster__unit">
-          {online > 1 ? 'joueurs connectés' : 'joueur connecté'}
+          {nounOf(online, 'joueur connecté', 'joueurs connectés')}
         </span>
       </p>
       <p className="roster__total">sur {players.length} dans la pièce</p>
@@ -159,6 +160,31 @@ export function Roster({ players, online, myName }: { players: Player[]; online:
         <Lamps lit={lit} total={players.length} mine={mine} />
       </div>
     </div>
+  )
+}
+
+// A player's name, plus the "toi" badge when the name is the reader's own. It is one component
+// because the badge is the same mark everywhere it appears — the accent means "yours" across the
+// whole console — and a copy of it is a place where that meaning can drift.
+//
+// `className` is passed rather than derived: the roster list sets the name in a row of its own
+// and never flags it, while the board, the tally and the didacticiel standings all set the same
+// base class and add the `--me` modifier. Those are different rules about the same box, so the
+// box stays the caller's and only the badge is shared.
+export function PlayerName({
+  name,
+  isMe,
+  className,
+}: {
+  name: string
+  isMe: boolean
+  className: string
+}) {
+  return (
+    <span className={className}>
+      {name}
+      {isMe && <span className="board__tag">toi</span>}
+    </span>
   )
 }
 
@@ -170,10 +196,7 @@ export function RosterList({ players, myName }: { players: Player[]; myName: str
       {players.map((p) => (
         <div className="rosterlist__row" key={p.name}>
           <span className={`lamp lamp--${p.online ? 'on' : 'off'}`} aria-hidden="true" />
-          <span className="rosterlist__name">
-            {p.name}
-            {p.name === myName && <span className="board__tag">toi</span>}
-          </span>
+          <PlayerName name={p.name} isMe={p.name === myName} className="rosterlist__name" />
           {/* Said in words as well as shown by an unlit lamp: colour alone would leave this
               invisible to a player who cannot separate the two hues. */}
           {!p.online && <span className="rosterlist__away">hors ligne</span>}
@@ -281,7 +304,7 @@ export function Readout({ label, value, code }: { label: string; value: string; 
 // existing call site on the 0-10 reading without touching it, which is the whole argument for
 // extending this component instead of writing a second scale beside it: one instrument, two
 // calibrations, and the two cannot drift apart visually because there is only one set of rules.
-export function ScoreScale({ score, min = 0, max = 10 }: { score: number; min?: number; max?: number }) {
+export function ScoreScale({ score, min = 0, max = SCALE_MAX }: { score: number; min?: number; max?: number }) {
   const lit = Math.max(min, Math.min(max, Math.round(score)))
   // Hidden for the same reason as the meter: the score is written out in full beside it, and
   // this exists to show how big that number is, which is a thing words cannot do.
@@ -357,10 +380,11 @@ export function Board({
       {players.map((p, i) => (
         <div className="board__row" key={p.name}>
           <span className="board__rank">{i + 1}</span>
-          <span className={p.name === myName ? 'board__name board__name--me' : 'board__name'}>
-            {p.name}
-            {p.name === myName && <span className="board__tag">toi</span>}
-          </span>
+          <PlayerName
+            name={p.name}
+            isMe={p.name === myName}
+            className={p.name === myName ? 'board__name board__name--me' : 'board__name'}
+          />
           {/* The dimension columns, through the same formatter as the total. `proximity_total`
               and `quality_total` are sums over settled rounds, and a round is a mean of two
               out-of-ten numbers, so both are as fractional as the rounds that made them. */}

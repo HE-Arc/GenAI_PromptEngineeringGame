@@ -7,7 +7,7 @@ import Quiz from './Quiz'
 import Rating from './Rating'
 import Results from './Results'
 import { ConsoleBar } from './ui'
-import { getToken } from './api'
+import { getToken, type State } from './api'
 import { useRoom, type Link } from './useRoom'
 
 // Real paths, not hash routes. `/admin` and `/room/<CODE>` are what an admin bookmarks,
@@ -91,6 +91,26 @@ function Fault({ code, onRetry, onLeave }: { code: string; onRetry: () => void; 
   )
 }
 
+// The one list of screens in the console, and it carries what each screen needs to draw itself.
+// The screen is a discriminated field rather than a bare word because the alternative was a
+// second ladder of conditions below, re-testing the same five facts and handing a narrowed `state`
+// or a `code!` to each component in a hand-written order. Here the resolver below decides it and
+// the switch renders it, so there is one list to keep right.
+//
+// `code` is a string on every case that has a room — the resolver reached them by testing it — and
+// `state` is a snapshot on every case that has one, which is why no case needs an assertion.
+type View =
+  | { screen: 'admin' }
+  | { screen: 'join' }
+  | { screen: 'gate'; code: string }
+  | { screen: 'fault'; code: string }
+  | { screen: 'connecting'; code: string }
+  | { screen: 'lobby'; state: State }
+  | { screen: 'results'; state: State }
+  | { screen: 'quiz'; state: State; code: string }
+  | { screen: 'rating'; state: State; code: string }
+  | { screen: 'game'; state: State; code: string }
+
 export default function App() {
   const [{ screen, code }, setRoute] = useState(route)
 
@@ -101,36 +121,35 @@ export default function App() {
   const token = code ? getToken(code) : null
   const { state, link, retry } = useRoom(code, token)
 
-  // The screen, resolved the same way the returns below resolve it, so the focus effect and
-  // the routing can never disagree about which screen is on. The URL is not enough: a round
-  // ending moves Game -> Results without the address changing at all, which is the largest
-  // swap in the game and the one where a player most needs to be told.
+  // The screen, resolved once. The URL is not enough: a round ending moves Game -> Results
+  // without the address changing at all, which is the largest swap in the game and the one
+  // where a player most needs to be told.
   //
   // `quiz` and `rating` are screens of their own and `summary` is not: the synthesis of a round
   // that has just been scored stays on the play screen with the composer, because the player is
   // still in the middle of writing ten prompts and the round they are about to be handed is the
   // next thing they need. A separate tab would put the standings and the work in two places and
   // make the second look like a summary of the game rather than of the last round.
-  const view =
+  const view: View =
     screen === 'admin'
-      ? 'admin'
+      ? { screen: 'admin' }
       : !code
-        ? 'join'
+        ? { screen: 'join' }
         : !token
-          ? 'gate'
+          ? { screen: 'gate', code }
           : link === 'failed'
-            ? 'fault'
+            ? { screen: 'fault', code }
             : !state
-              ? 'connecting'
+              ? { screen: 'connecting', code }
               : state.phase === 'waiting'
-                ? 'lobby'
+                ? { screen: 'lobby', state }
                 : state.phase === 'done'
-                  ? 'results'
+                  ? { screen: 'results', state }
                   : state.phase === 'quiz'
-                    ? 'quiz'
+                    ? { screen: 'quiz', state, code }
                     : state.phase === 'rating'
-                      ? 'rating'
-                      : 'game'
+                      ? { screen: 'rating', state, code }
+                      : { screen: 'game', state, code }
 
   // The screen changed and nothing else about the page did, so a keyboard or screen-reader
   // user was given a different screen with no signal whatsoever: the same URL bar, the same
@@ -153,11 +172,17 @@ export default function App() {
   const seen = useRef<string | null>(null)
   useEffect(() => {
     const from = seen.current
-    seen.current = view
-    if (from === null || from === view || from === 'connecting' || view === 'connecting') return
+    seen.current = view.screen
+    if (
+      from === null ||
+      from === view.screen ||
+      from === 'connecting' ||
+      view.screen === 'connecting'
+    )
+      return
     const h = document.querySelector<HTMLElement>('.screen h1')
     if (h) h.focus()
-  }, [view])
+  }, [view.screen])
 
   useEffect(() => {
     const on = () => setRoute(route())
@@ -174,24 +199,91 @@ export default function App() {
 
   // No navigation callback: the console never leaves /admin. Every exit is a state reset in
   // Admin, which is why nothing here has to hand it a router.
-  if (screen === 'admin') return <><SkipLink /><Admin /></>
-  if (screen === 'join') return <><SkipLink /><Join onJoined={(c) => go(`/room/${c}`)} /></>
-
-  // No token means this phone is not, or was never, in the room. The join form comes back
-  // with the code already filled in, which also covers someone following a shared link
-  // before they have joined, at no cost.
-  if (!token) return <><SkipLink /><Gate code={code!} onJoined={(c) => go(`/room/${c}`)} /></>
-  if (link === 'failed') return <><SkipLink /><Fault code={code!} onRetry={retry} onLeave={() => go('/')} /></>
-  if (!state) return <><SkipLink /><Connecting code={code!} link={link} /></>
-  if (state.phase === 'waiting') return <><SkipLink /><Lobby state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
-  if (state.phase === 'done') return <><SkipLink /><Results state={state} link={link} onRetry={retry} onLeave={() => go('/')} /></>
-  // Both of these are gated screens the phase switch opens and closes. The eight questions and
-  // the nine prompts are short, deliberate and single-purpose: a composer half-written on the
-  // play screen has to be somewhere to go while the didacticiel runs, and unmounting this
-  // screen is where its local question index and the note in flight go.
-  if (state.phase === 'quiz') return <><SkipLink /><Quiz state={state} code={code!} link={link} onRetry={retry} /></>
-  if (state.phase === 'rating') return <><SkipLink /><Rating state={state} code={code!} link={link} onRetry={retry} /></>
-  return <><SkipLink /><Game state={state} code={code!} link={link} onRetry={retry} /></>
+  //
+  // One switch on the screen resolved above, rather than a ladder re-testing the same five
+  // conditions: two hand-maintained lists of the same question could disagree about which screen
+  // a player was looking at, and only an assertion that they agreed was checking. Each case is
+  // exactly the return it replaced, in the same order, with the same components and the same
+  // props; `code` and `state` are carried by `View`, so nothing here asserts them.
+  switch (view.screen) {
+    case 'admin':
+      return (
+        <>
+          <SkipLink />
+          <Admin />
+        </>
+      )
+    case 'join':
+      return (
+        <>
+          <SkipLink />
+          <Join onJoined={(c) => go(`/room/${c}`)} />
+        </>
+      )
+    // No token means this phone is not, or was never, in the room. The join form comes back
+    // with the code already filled in, which also covers someone following a shared link
+    // before they have joined, at no cost.
+    case 'gate':
+      return (
+        <>
+          <SkipLink />
+          <Gate code={view.code} onJoined={(c) => go(`/room/${c}`)} />
+        </>
+      )
+    case 'fault':
+      return (
+        <>
+          <SkipLink />
+          <Fault code={view.code} onRetry={retry} onLeave={() => go('/')} />
+        </>
+      )
+    case 'connecting':
+      return (
+        <>
+          <SkipLink />
+          <Connecting code={view.code} link={link} />
+        </>
+      )
+    case 'lobby':
+      return (
+        <>
+          <SkipLink />
+          <Lobby state={view.state} link={link} onRetry={retry} onLeave={() => go('/')} />
+        </>
+      )
+    case 'results':
+      return (
+        <>
+          <SkipLink />
+          <Results state={view.state} link={link} onRetry={retry} onLeave={() => go('/')} />
+        </>
+      )
+    // Both of these are gated screens the phase switch opens and closes. The eight questions and
+    // the nine prompts are short, deliberate and single-purpose: a composer half-written on the
+    // play screen has to be somewhere to go while the didacticiel runs, and unmounting this
+    // screen is where its local question index and the note in flight go.
+    case 'quiz':
+      return (
+        <>
+          <SkipLink />
+          <Quiz state={view.state} code={view.code} link={link} onRetry={retry} />
+        </>
+      )
+    case 'rating':
+      return (
+        <>
+          <SkipLink />
+          <Rating state={view.state} code={view.code} link={link} onRetry={retry} />
+        </>
+      )
+    case 'game':
+      return (
+        <>
+          <SkipLink />
+          <Game state={view.state} code={view.code} link={link} onRetry={retry} />
+        </>
+      )
+  }
 }
 
 // The stream is open but no frame has arrived yet. This is the only state that is genuinely a

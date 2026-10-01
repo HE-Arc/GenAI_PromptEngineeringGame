@@ -1,5 +1,5 @@
 import { Board, ConsoleBar, Section, type BoardColumn } from './ui'
-import { fr } from './format'
+import { fr, nounOf } from './format'
 import { getName, type State } from './api'
 import type { Link } from './useRoom'
 
@@ -42,12 +42,17 @@ export default function Results({
   // the room code, and it is worth more for that: a player who has just seen it ten times
   // stops seeing it. Here the board itself carries the result, with the leading row in
   // sodium, so nothing extra has to be invented to announce it.
+  //
+  // The count is printed by `fr` and the noun asked of `nounOf`, because these are the two
+  // sentences that already own the count in another shape: it is a real division and reads
+  // with a comma, and `noun` would print the raw number beside it.
+  const point = nounOf(points, 'point', 'points')
   const verdict =
     points === 0
       ? 'Aucun tour n’a été noté dans cette partie.'
       : winners.length === 1
-        ? `${winners[0].name} l’emporte avec ${fr(points)} ${points > 1 ? 'points' : 'point'}.`
-        : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${fr(points)} ${points > 1 ? 'points' : 'point'}.`
+        ? `${winners[0].name} l’emporte avec ${fr(points)} ${point}.`
+        : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${fr(points)} ${point}.`
 
   return (
     <div className="deck">

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, DangerButton, Readout, Roster, RosterList, Step } from './ui'
-import { countdown } from './format'
+import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
 import { absent, describe, post, present, type Phase, type QuizState } from './api'
 import { useRoom } from './useRoom'
@@ -61,12 +61,6 @@ function advanceLabel(phase: Phase, quiz: QuizState | null, windowClosed: boolea
   }
 }
 
-// A count with its noun attached, because "3 joueur" is the kind of thing a screen is believed
-// rather than read. Written out at each call site in the rest of this file; hoisted here because
-// the run-of-show says five of these in six sentences and the ternary was about to be pasted for
-// the fifth time.
-const noun = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : one}`
-
 // One block of plain French about where the game is. Four parts and no more: what the phase is
 // called, one sentence about the state of it, the counts, and what the host can do about it.
 //
@@ -94,6 +88,45 @@ function useMountFocus<T extends HTMLElement>() {
     ref.current?.focus()
   }, [])
   return ref
+}
+
+// The two relaunch targets, drawn together because they are always offered together: after a
+// finished game, where a relaunch is the obvious thing to do and "with the didacticiel" is the
+// primary action, and behind the armed confirm of a running one, where both are the ghost half of
+// a destructive pair. Same two buttons, same order, same strings — the only difference between
+// the two sites is which of them is primary, so that is the only thing this component takes.
+//
+// The comment on the caller says why the pair is one action at all; what is left out of it is
+// only that the pair was written down twice.
+function RelaunchButtons({
+  busy,
+  primary,
+  onRestart,
+}: {
+  busy: boolean
+  primary: boolean
+  onRestart: (withTutorial: boolean) => void
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        className={`btn ${primary ? 'btn--signal' : 'btn--ghost'} btn--wide`}
+        disabled={busy}
+        onClick={() => onRestart(true)}
+      >
+        Relancer avec le didacticiel
+      </button>
+      <button
+        type="button"
+        className="btn btn--ghost btn--wide"
+        disabled={busy}
+        onClick={() => onRestart(false)}
+      >
+        Relancer sans didacticiel
+      </button>
+    </>
+  )
 }
 
 export default function Admin() {
@@ -286,6 +319,11 @@ export default function Admin() {
   // short with no way to tell that from a player who is just slow.
   const lit = here.flatMap((p, i) => (p.answered ? [i] : []))
   const left = here.length - lit.length
+  // The room, but only once the two questions the right-hand column asks have been answered:
+  // is there a snapshot, and does it have rounds to number. Both blocks down there ride on it,
+  // and it was typed out four times for two blocks — four chances for the round counter and the
+  // standings to disagree about whether there is a round to show.
+  const round = state !== null && state.total > 0 ? state : null
   // The phase is part of the arm key as well as the round: an advance moves the phase, and a
   // confirm must never survive it.
   const roomKeyNow = `${code}:${phase}:${state?.current ?? 0}`
@@ -591,24 +629,7 @@ export default function Admin() {
                   would be the alternative, and a thumb reaching for either of them in a noisy
                   room picks the other. */}
               {phase === 'done' ? (
-                <>
-                  <button
-                    type="button"
-                    className="btn btn--signal btn--wide"
-                    disabled={busy}
-                    onClick={() => void restart(true)}
-                  >
-                    Relancer avec le didacticiel
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--wide"
-                    disabled={busy}
-                    onClick={() => void restart(false)}
-                  >
-                    Relancer sans didacticiel
-                  </button>
-                </>
+                <RelaunchButtons busy={busy} primary onRestart={restart} />
               ) : (
                 phase !== 'waiting' &&
                 phase !== 'connecting' && (
@@ -617,26 +638,7 @@ export default function Admin() {
                     armedLabel="Confirmer : effacer la partie en cours"
                     confirming={armedNow === 'restart'}
                     disabled={busy}
-                    choices={
-                      <>
-                        <button
-                          type="button"
-                          className="btn btn--ghost btn--wide"
-                          disabled={busy}
-                          onClick={() => void restart(true)}
-                        >
-                          Relancer avec le didacticiel
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--ghost btn--wide"
-                          disabled={busy}
-                          onClick={() => void restart(false)}
-                        >
-                          Relancer sans didacticiel
-                        </button>
-                      </>
-                    }
+                    choices={<RelaunchButtons busy={busy} primary={false} onRestart={restart} />}
                     onArm={() => arm('restart')}
                   />
                 )
@@ -685,18 +687,10 @@ export default function Admin() {
                 nothing. The named roster takes both of the phases the board skips, because the
                 host's decision there is whether to force the room on and that turns on knowing
                 *who* is unreachable rather than how many. */}
-            {state && state.total > 0 && phase === 'playing' && (
-              <Step current={state.current} total={state.total} />
-            )}
-            {state && state.total > 0 && phase === 'playing' && (
-              <Board players={players} myName="" />
-            )}
-            {state && state.total > 0 && phase === 'summary' && (
-              <Step current={state.current} total={state.total} />
-            )}
-            {state && state.total > 0 && phase === 'summary' && (
-              <Board players={players} myName="" />
-            )}
+            {round && phase === 'playing' && <Step current={round.current} total={round.total} />}
+            {round && phase === 'playing' && <Board players={players} myName="" />}
+            {round && phase === 'summary' && <Step current={round.current} total={round.total} />}
+            {round && phase === 'summary' && <Board players={players} myName="" />}
             {(phase === 'waiting' || phase === 'quiz' || phase === 'rating') &&
               players.length > 0 && <RosterList players={players} myName="" />}
           </div>

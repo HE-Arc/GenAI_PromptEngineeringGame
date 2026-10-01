@@ -31,6 +31,22 @@ const FR = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 })
 
 export const fr = (n: number | null): string => (n === null ? '—' : FR.format(n))
 
+// A count with its noun attached, because "3 joueur" is the kind of thing a screen is believed
+// rather than read.
+//
+// It lives here and not in any one screen because the rule was being written out again at every
+// site that shows a count: the run-of-show says five of these in six sentences, the roster panel
+// says it twice, a meter caption and a countdown say it once each, and the final verdict says it
+// twice more. One rule about French plurals, in one file, next to the formatter that owns the
+// other half of how a number reaches the screen.
+export const noun = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : one}`
+
+// The same rule without the count, for the two sentences that already own the count in another
+// shape: one draws it in a sibling span because it is set as a figure, and one has already printed
+// it through `fr`. Neither can hand the count to `noun` — one would print the number twice, the
+// other would print it in the American notation `fr` exists to keep off the screen.
+export const nounOf = (n: number, one: string, many: string) => (n > 1 ? many : one)
+
 // The shared countdown, in whole seconds.
 //
 // Rounded UP, and that is the only decision in it. `Math.floor` would show 0 for the last whole

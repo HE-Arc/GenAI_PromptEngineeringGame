@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AnswerMeter, ConsoleBar, RoundTrack, ScoreScale } from './ui'
-import { ApiError, describe, getName, getToken, post, type State } from './api'
+import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
 
 /* The cross-rating screen. The most constrained surface in the console, and the constraints are
@@ -111,6 +111,11 @@ export default function Rating({
       if (e instanceof ApiError && e.message === 'your own prompt') {
         setRefused(true)
         setSeen(promptAt)
+        // And stop here, as the Quiz screen stops on its 409: `refused` replaces the form with
+        // the panel, and the form is the only thing on this screen that draws `err`. An error
+        // written on this branch is an error nobody reads, and one that survives into the next
+        // prompt if the reset above ever stopped clearing it.
+        return
       }
       setErr(describe(e))
     } finally {
@@ -193,7 +198,7 @@ export default function Rating({
                 until "Noter" is pressed — a radio group claims a selection the moment it is
                 touched, and here a mis-tap is one more tap to fix and nothing else. */}
             <div className="rates" role="group" aria-labelledby="rate-label">
-              {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+              {Array.from({ length: SCALE_MAX - SCALE_MIN + 1 }, (_, i) => i + SCALE_MIN).map((n) => (
                 <button
                   key={n}
                   type="button"
@@ -220,7 +225,7 @@ export default function Rating({
                 Calibrated 1-10 and not 0-10, because the lowest note a player may give is 1 and
                 a scale that lit all ten ticks for a 10 is right while a scale that lit nothing
                 for a 1 would be a lie. */}
-            {picked !== null && <ScoreScale score={picked} min={1} />}
+            {picked !== null && <ScoreScale score={picked} min={SCALE_MIN} />}
 
             {err && (
               <p className="err err--inline" role="alert">

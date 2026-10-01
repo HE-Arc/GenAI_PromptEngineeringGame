@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ConsoleBar, Readout, RoundTrack, Section } from './ui'
-import { countdown, fr } from './format'
+import { ConsoleBar, PlayerName, Readout, RoundTrack, Section } from './ui'
+import { countdown, fr, noun } from './format'
 import { useQuizWindow } from './serverClock'
 import {
   ApiError,
@@ -461,10 +461,11 @@ export default function Quiz({
                 {rows.map((p, i) => (
                   <div className="qboard__row" key={p.name}>
                     <span className="board__rank">{i + 1}</span>
-                    <span className={p.name === myName ? 'board__name board__name--me' : 'board__name'}>
-                      {p.name}
-                      {p.name === myName && <span className="board__tag">toi</span>}
-                    </span>
+                    <PlayerName
+                      name={p.name}
+                      isMe={p.name === myName}
+                      className={p.name === myName ? 'board__name board__name--me' : 'board__name'}
+                    />
                     <span className="qboard__pts num">{fr(p.quiz_score)}</span>
                     <span className="qboard__of num">/ {total}</span>
                   </div>
@@ -479,7 +480,7 @@ export default function Quiz({
             <p className="prose prose--sm prose--cool">
               {waiting.length === 0
                 ? 'Tout le monde a terminé. L’animateur ouvre la partie.'
-                : `En attente de ${waiting.length} ${waiting.length > 1 ? 'joueurs' : 'joueur'}.`}
+                : `En attente de ${noun(waiting.length, 'joueur', 'joueurs')}.`}
             </p>
           </>
         )}
