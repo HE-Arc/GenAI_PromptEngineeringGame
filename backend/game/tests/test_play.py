@@ -102,7 +102,11 @@ class PlayTest(TestCase):
 
         self._answer(tb, "Nantes")
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
+        # Not `(1, "playing")`. When the last player answers, the round STOPS being written and
+        # opens the rating; the next round is not created until the class has rated this one.
+        # A player who is told "manche 2" before they have seen a single prompt to rate has
+        # skipped the whole point of the game.
+        self.assertEqual((self.room.current, self.room.phase), (0, "rating"))
 
     @patch("game.llm.score", return_value=Verdict(5, "moyen"))
     @patch("game.llm.answer", return_value="x")
@@ -222,11 +226,23 @@ class PlayTest(TestCase):
                 "players", "online_count", "quiz", "reveal", "summary",
             },
         )
-        self.assertEqual((st["code"], st["current"], st["total"], st["target"]), ("ABCD", 1, 2, "Nantes"))
-        # And all three phase blocks are present and null in `playing`, which is the other half of
-        # the contract: present, not absent.
+        # Still round 0, on its own target. The last player's answer opened the RATING, it did not
+        # advance to round 1 — which is why `phase` below is `rating` and every block is null.
+        self.assertEqual((st["code"], st["current"], st["total"], st["target"]), ("ABCD", 0, 2, "42"))
+        # The didacticiel block is null outside the quiz, and so is the summary. `reveal` is NOT
+        # null: the room is in the rating phase, so the prompt on screen is exactly what a client
+        # must find there. A test that asserted all three null would have been asserting the shape
+        # of a `playing` room while the fixture sat in `rating`.
         self.assertIsNone(st["quiz"])
-        self.assertIsNone(st["reveal"])
+        self.assertIsNone(st["summary"])
+        # The reveal itself: one prompt to rate, the first player in join order, and no votes yet.
+        # `author` is None under the room's default anonymity while `author_label` is always a
+        # display string — a screen must never have to decide whether it has a label to draw.
+        self.assertEqual(
+            st["reveal"],
+            {"index": 0, "count": 1, "prompt": "repete 42", "author": None,
+             "author_label": "Joueur 1", "rated": 0},
+        )
         self.assertIsNone(st["summary"])
         p = st["players"][0]
         # Likewise the FULL player row: nine keys, and no `prompt`, `output` or `comment`. Those
@@ -239,8 +255,15 @@ class PlayTest(TestCase):
                 "proximity_total", "quality_total", "quiz_score", "quiz_done",
             },
         )
-        self.assertEqual(p["score"], 10)
-        self.assertFalse(p["answered"])
+        # `None`, not a number: the room is anonymous and in the rating phase, so the score is
+        # blanked on purpose. A player who reads their own score, sees it missing from the column,
+        # and works out which revealed line is theirs has defeated the anonymity the feature
+        # exists to provide. The name survives — the roster is not a leak.
+        self.assertIsNone(p["score"])
+        # `answered` still True: the player DID answer round 0, and the mask is on the score, not
+        # on the fact of having answered. Blanking it would tell a returning player they never
+        # played a round they did play.
+        self.assertTrue(p["answered"])
         # The room was created without a bank in this fixture, so `quiz_done` is False rather than
         # vacuously True: `count() == 0` is true of every player in an unmaterialised bank.
         self.assertFalse(p["quiz_done"])
@@ -320,19 +343,18 @@ class PlayTest(TestCase):
             Answer.objects.filter(player=ana).aggregate(s=Sum("quality"))["s"],
         )
 
-    def test_score_is_not_the_sum_of_round_score(self) -> None:
-        # PINS THE DISCREPANCY, rather than the spec. §7 of the cahier says the final ranking
-        # "additionne les dix tours" where a tour is `(proximité + qualité) / 2`, and `models.py`
-        # says the same in its comment on `round_score`. `room_state` sums `Answer.score` — the
-        # proximity — instead. These two rounds are built so the two totals cannot be confused:
-        # 10+10 settles to 10 and 10+2 settles to 6, so the spec's total is 16 and what the payload
-        # sends is 20.
+    def test_score_is_the_sum_of_the_settled_round_scores(self) -> None:
+        # The ranking sums the SETTLED `round_score`, which is `(proximité + qualité) / 2` — §7 of
+        # the cahier says the final ranking "additionne les dix tours", and `models.py` says the
+        # same in its comment on `round_score`. It does NOT sum `Answer.score`, which is the
+        # judge's proximity on the output alone.
         #
-        # This is left as a test rather than silently corrected because it is a behaviour change
-        # with a visible consequence — the leaderboard would move on every settlement, so the
-        # number a player has watched all game would change under them — and that call belongs to
-        # whoever owns the final ranking screen. What this pins is the CURRENT number, so whoever
-        # changes it has to change this test on purpose.
+        # The two totals are built so they cannot be confused: a round of proximity 10 with a
+        # quality of 10 settles to 10, and a round of proximity 10 with a quality of 2 settles to
+        # 6. The spec's total is therefore 16, while the proximities alone add up to 20. A player
+        # whose prompts are badly written but whose output happens to land would otherwise tie
+        # with a player who writes carefully — in a game whose only question is whether the prompt
+        # was any good.
         ana = Player.objects.create(room=self.room, name="ana")
         self._play()
         for order, (proximity, quality_llm) in enumerate(((10, 10), (10, 2))):
@@ -345,10 +367,41 @@ class PlayTest(TestCase):
         # Nobody rated, so each round's `quality` stands on the critic's own score: 10 and 2.
         self.assertEqual(view["proximity_total"], 20)
         self.assertEqual(view["quality_total"], 12)
-        # 16 is what §7 calls the total, and it is the sum of the settled `round_score`s.
+        # The two dimensions are visible next to the total, and the total is not their sum.
         self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], 16)
-        # What the leaderboard actually sends is 20.
-        self.assertEqual(view["score"], 20)
+        self.assertEqual(view["score"], 16)
+
+    def test_an_unsettled_round_counts_provisionally_then_gets_corrected(self) -> None:
+        # `round_score` is NULL until the class has rated the round, and a `Sum` skips NULLs. So
+        # if the total were settled-rounds-only, the board would sit frozen through the whole
+        # writing phase — and the spec asks for the opposite: the ranking is "mis à jour en direct
+        # pendant la rédaction". Therefore an answered-but-unsettled round contributes its
+        # PROXIMITY, provisionally, and is corrected when the round settles.
+        #
+        # The correction is the teaching moment, and it can go DOWN: a player whose prompt worked
+        # but was badly written sees their total drop at the summary. That is the price of a weak
+        # prompt made visible, which is the entire point of rating prompts.
+        ana = Player.objects.create(room=self.room, name="ana")
+        self._play()
+        rnd = Round.objects.get(room=self.room, order=0)
+        rnd.answers.create(player=ana, prompt="p", output="o", score=9, quality_llm=2)
+        self.assertIsNone(rnd.answers.get(player=ana).round_score)
+
+        # Provisional: the proximity alone, while the round is still open.
+        view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
+        self.assertEqual(view["score"], 9)
+        # The dimension breakdown stays NULL until settlement — a silent 0 would read as a real
+        # and terrible score rather than as "nothing decided yet", and the final screen prints an
+        # em dash until these arrive.
+        self.assertIsNone(view["proximity_total"])
+        self.assertIsNone(view["quality_total"])
+
+        # Settled: (9 + 2) // 2 = 5, so the total moves DOWN by four once the class has rated.
+        settle_round(self.room)
+        view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
+        self.assertEqual(view["score"], 5)
+        self.assertEqual(view["proximity_total"], 9)
+        self.assertEqual(view["quality_total"], 2)
 
     def test_the_dimension_totals_are_null_before_a_player_is_settled(self) -> None:
         # The other half, and the reason they are `number | null` rather than `number`: a player
@@ -365,17 +418,25 @@ class PlayTest(TestCase):
         self.assertIsNone(ana["quality_total"])
 
     def test_state_ranks_by_score_desc(self) -> None:
-        _, ta = self._join("ana")
-        _, tb = self._join("bob")
+        self._join("ana")
+        self._join("bob")
         self._play()
         self._online("ana", "bob")
-        with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(3, "bof")):
-            self._answer(ta, "repete 42")
-        with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(9, "nickel")):
-            self._answer(tb, "repete 42")
+        # Deliberately NOT through `answer`: with both of them connected, the second submit
+        # closes the writing phase and opens the rating, and the rating blanks every score by
+        # design — at which point the board shows join order and there is nothing to rank. This
+        # test is about the SORT, so it needs scores that exist, which means settled rounds.
+        rnd = Round.objects.get(room=self.room, order=0)
+        # `_join` hands back a token; the row is what `Answer` needs.
+        ana = Player.objects.get(room=self.room, name="ana")
+        bob = Player.objects.get(room=self.room, name="bob")
+        rnd.answers.create(player=ana, prompt="p", output="o", score=3, quality_llm=3)
+        rnd.answers.create(player=bob, prompt="p", output="o", score=9, quality_llm=9)
+        settle_round(self.room)
         self.room.refresh_from_db()
-        self.room.current = 0  # keep both answers in the same round for the ranking assertion
-        self.room.save()
+        # The score is now the fused (proximité + qualité) // 2 of the settled round, so bob's 9
+        # and ana's 3 are what the sort reads — and the rating phase has passed, so they are
+        # visible again.
         self.assertEqual([p["name"] for p in room_state("ABCD")["players"]], ["bob", "ana"])
 
     def test_state_breaks_a_tie_by_join_order(self) -> None:

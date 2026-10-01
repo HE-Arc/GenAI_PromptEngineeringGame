@@ -212,6 +212,42 @@ class RatingPlayTests(TestCase):
             {"token": rater.token, "score": score},
         )
 
+    def test_playing_a_round_actually_opens_the_rating(self) -> None:
+        """The regression that matters most, because it is the one nobody would notice.
+
+        Every other test in this class builds its room parked in `rating` on the ORM. So the
+        whole file passed while the real path was broken: `maybe_advance_phase` called
+        `room.next_round()` when the last player answered, which skips `rating` AND `summary`
+        entirely and goes straight to the next round. A class playing normally — last student
+        taps send, round closes, next round opens — would never have seen the cross-rating at
+        all, and the teacher would have had to press "open the rating" by hand every round to
+        get the feature this whole project exists for.
+
+        It is here, and it walks `POST /answer` twice, because a test that hand-builds the phase
+        it is testing cannot catch a bug in the transition INTO that phase.
+        """
+        self._post("/api/admin/rooms", {"tutorial": False})
+        code = Room.objects.get().code
+        for name in ("ana", "bob"):
+            self._post(f"/api/rooms/{code}/join", {"name": name})
+        self._post(f"/api/admin/rooms/{code}/start")
+        room = Room.objects.get(code=code)
+        players = list(room.players.order_by("created_at"))
+        self._online(room, *players)
+
+        with (
+            mock.patch("game.llm.answer", return_value="le resultat"),
+            mock.patch("game.llm.score", return_value=Verdict(8, "bien")),
+            mock.patch("game.llm.grade_prompt", return_value=Verdict(6, "moyen")),
+        ):
+            for p in players:
+                self._post(f"/api/rooms/{code}/answer", {"token": p.token, "prompt": "mon prompt"})
+                room.refresh_from_db()
+
+        self.assertEqual(room.phase, Room.Phase.RATING, "the last answer must open the rating")
+        self.assertEqual(room.current, 0, "and it must not have skipped to the next round")
+        self.assertEqual(room.rounds.get(order=0).revealed, 0, "on the FIRST prompt")
+
     def _age_out(self, player: Player) -> None:
         """Push a player's last beat into the past, as a sleeping phone does, without sleeping.
         The registry's own lock is taken, so a test writing it is not doing what the SSE threads

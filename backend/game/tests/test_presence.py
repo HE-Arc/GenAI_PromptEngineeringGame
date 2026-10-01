@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.test import Client, TestCase
 
 from game.llm import Verdict
-from game.models import Answer, Player, Room, Round
+from game.models import Answer, Player, Rating, Room, Round
 from game.views import (
     PRESENCE_TTL,
     _beat,
@@ -160,7 +160,10 @@ class PresenceTest(TestCase):
         )
         self.assertEqual(r.status_code, 200)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
+        # (0, "rating"), not (1, "playing"): the last answer ends the WRITING phase and opens
+        # the cross-rating. Presence is still what decided it — an offline player holding the
+        # round open is what these tests are about — but the round that opens is the rating,
+        # and the next round is not created until the class has rated this one.
 
     def test_round_stays_open_while_an_online_player_has_not_answered(self) -> None:
         # The flip side: presence must not make the round close early on the players who ARE
@@ -193,7 +196,10 @@ class PresenceTest(TestCase):
         Round.objects.get(room=self.room, order=0).answers.create(player=ana, prompt="a", output="42", score=8)
         maybe_advance_phase(self.room)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
+        # (0, "rating"), not (1, "playing"): the last answer ends the WRITING phase and opens
+        # the cross-rating. Presence is still what decided it — an offline player holding the
+        # round open is what these tests are about — but the round that opens is the rating,
+        # and the next round is not created until the class has rated this one.
 
     # --- the round trip: offline, then back, in a ten-round game ----------------------------
 
@@ -221,7 +227,10 @@ class PresenceTest(TestCase):
         r = self._answer(ana, "repete 42")
         self.assertEqual(r.status_code, 200)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
+        # (0, "rating"), not (1, "playing"): the last answer ends the WRITING phase and opens
+        # the cross-rating. Presence is still what decided it — an offline player holding the
+        # round open is what these tests are about — but the round that opens is the rating,
+        # and the next round is not created until the class has rated this one.
 
         # 3. No retroactive "already answered" for a round bob never submitted to. The only
         #    durable record of an answer is the Answer row, and the `answered` flag in the payload
@@ -247,27 +256,55 @@ class PresenceTest(TestCase):
         self.assertEqual(online_player_ids("ABCD"), {ana.pk, bob.pk})
         self.assertEqual(room_state("ABCD")["online_count"], 2)
 
-        # 5. He can still answer the round that is open now, and is still not shown as having
-        #    answered round 0 — his comeback does not rewrite history in either direction.
+        # 5. He is fully back, and the round he missed is closed to him. Ana's answer closed it
+        #    while bob was gone, and "closed" now means the RATING phase, not the next round: the
+        #    spec's rule is that a round ends once every CONNECTED player has answered, so a
+        #    sleeping phone does not hold the class up and a late arrival misses that round.
+        #
+        #    What must NOT happen is bob being locked out. He is in the room, online, and the
+        #    phase waiting for players is the rating — so that is what he does, and it is the
+        #    part this test exists to prove: presence is recovered from the next beat alone,
+        #    with nothing to repair.
         r = self._answer(bob, "Nantes")
-        self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(json.loads(r.content)["score"], 8)
-        self.assertEqual(Answer.objects.filter(player=bob).count(), 1)
-        self.assertEqual(Answer.objects.get(player=bob).prompt, "Nantes")
-        self.assertFalse(Answer.objects.filter(player=bob, round__order=0).exists())
-        self.assertEqual(m_answer.call_count, 2)  # both submits reached the model
+        self.assertEqual(r.status_code, 409, "round 0 closed while he was away")
+        self.assertEqual(json.loads(r.content)["error"], "not playing")
 
-        # 6. And the round now waits for him again, like anyone else who is there: presence is
-        #    live in both directions. Ana is the only other player online and she has not answered
-        #    round 1, so it stays open rather than closing over bob's head a second time.
+        rated = self.c.post(
+            f"/api/rooms/ABCD/rate",
+            data=json.dumps({"token": bob.token, "score": 7}),
+            content_type="application/json",
+        )
+        self.assertEqual(rated.status_code, 200, rated.content)
+        self.assertEqual(Rating.objects.filter(rater=bob).count(), 1)
+        # He is still not shown as having answered round 0 — his comeback does not rewrite
+        # history in either direction.
+        self.assertFalse(Answer.objects.filter(player=bob, round__order=0).exists())
+        self.assertEqual(Answer.objects.filter(player=bob).count(), 0)
+
+        # 6. Bob's vote was the last one the round was waiting for, so rating closed it and the
+        #    summary opened. The summary does not advance itself — a round gets commented on, and
+        #    that is the admin's moment, not a timer's.
+        self.room.refresh_from_db()
+        self.assertEqual((self.room.current, self.room.phase), (0, "summary"))
+
+        # 7. The admin's advance opens round 1, and the room waits for the players again:
+        #    presence is live in both directions, and bob is counted in it. Driven through
+        #    `next_round` rather than the admin endpoint because this class never logs in — its
+        #    subject is presence, and a 403 from an unauthenticated admin call would assert
+        #    nothing about either. The summary does not advance itself, which is the point.
+        self.room.next_round()
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
         maybe_advance_phase(self.room)
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
+        self.assertEqual(room_state("ABCD")["online_count"], 2)
+
+        # 8. Ana answers round 1 and it still does not close over bob's head: he is connected, he
+        #    just has not answered this round. This is the same rule as step 3, read forwards.
         self._answer(ana, "ville du monde")
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.phase), (2, "playing"))  # back in the game
+        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
         self.assertEqual(room_state("ABCD")["online_count"], 2)
 
     @patch("game.llm.score", return_value=Verdict(5, "moyen"))
