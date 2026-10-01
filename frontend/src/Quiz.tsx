@@ -1,42 +1,36 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ConsoleBar, Readout, RoundTrack, Section } from './ui'
+import { countdown, fr } from './format'
+import { useQuizWindow } from './serverClock'
 import {
   ApiError,
   describe,
   getName,
   getToken,
   post,
-  type Question,
   type QuizAnswered,
   type QuizBank,
   type State,
 } from './api'
 import type { Link } from './useRoom'
 
-/* The didacticiel: one question on screen at a time, the answer revealed the moment it is
- * given, and the eight-question ranking at the end. */
+/* The didacticiel: ONE question for the whole room, fifteen seconds that belong to the server,
+ * and a reveal that lands for everyone at the same instant.
+ *
+ * The screen owns none of the sequence. Which question is on screen is `state.quiz.index`, whether
+ * the window is still open is a comparison against the server's own deadline, and whether THIS
+ * player has already answered comes from the bank fetch. There is no cursor here, and that is the
+ * whole point: a cursor is a browser invention, so a reload used to throw it away, the player came
+ * back to question one, answered it again, got the unique-constraint 409, and — because « Suivant »
+ * is only drawn once the reveal is on screen and a 409 never produces one — had no way forward at
+ * all. Not a bad end to a question. An unreachable end of the didacticiel.
+ */
 
-// The bank is fetched once from its own endpoint, which is right — eight questions and their
-// order are drawn per room, and the snapshot is rebuilt every 500ms. `correct` never arrives
-// with a question, so nothing here can spoil the next one: the answer comes back from the POST
-// that answers it, which is the only copy of it the client ever holds. The shapes live in
-// `api.ts` beside the rest of the wire contract, not here.
-//
-// `answered` is declared here rather than in `api.ts` because that file is the frozen half of the
-// wire contract and this field is landing in it separately. `QuizBank` plus the one field is
-// still a named shape: `questions` is checked, so a change to the bank still fails to compile
-// here, which is the whole reason for typing a response instead of casting the payload loose.
-type ResumableBank = QuizBank & {
-  // How many of THIS player's questions are already in the database, counted by the server. It
-  // is that player's own history and nothing else: no other player is named, counted or implied
-  // by it, so the endpoint stays exactly as unauthenticated as it was — the token identifies
-  // whose count to report, it does not unlock anything.
-  answered: number
-}
-
-// The letters are on the buttons and not in the text: a class of ten reading the same four
-// rows of prose aloud should not also have to hear "A point virgule", and the letter is the one
-// thing a screen reader user gets for free from the row's own name.
+// The letters are on the buttons and not in the text: a class of ten reading the same four rows
+// of prose aloud should not also have to hear "A point virgule", and the letter is the one thing
+// a screen reader user gets for free from the row's own name. They are also what the reveal
+// speaks in — the one fact about a QCM that is unambiguous to a player who cannot see either of
+// the two colours.
 const LETTERS = ['A', 'B', 'C', 'D']
 
 export default function Quiz({
@@ -50,43 +44,39 @@ export default function Quiz({
   link: Link
   onRetry: () => void
 }) {
-  const [questions, setQuestions] = useState<Question[] | null>(null)
-  // Which question is on screen, and what has already been answered on it.
+  const [bank, setBank] = useState<QuizBank | null>(null)
+  // What this browser has sent, keyed by the question's `order`.
   //
-  // It starts at whatever the server says this player has already answered, not at 0, and that
-  // is the whole fix for the locked player. The cursor used to be a pure browser invention, so a
-  // reload threw it away: the player came back to question 0, answered it again, hit the unique
-  // constraint, got a 409, and — because « Suivant » is only rendered once the reveal is on
-  // screen and a 409 never produces one — had no way forward at all. Not a bad end to a
-  // question: an unreachable end of the didacticiel, and with it a player who can never post
-  // eight attempts, a room whose automatic opening never fires, and a ranking §2 promises them.
+  // `choice: null` is the one case the room cannot resolve for us: the server said this player had
+  // already answered, so the lock is known and the choice is not. It is a real state — a phone that
+  // reloaded mid-question — and it is why the reveal below has a third verdict rather than two.
   //
-  // The server is the authority on it because it is the only party that knows what is in the
-  // database. The cursor stays local once set, because advancing is a re-render and asking the
-  // server after every question would put a round trip between a button and the next question.
-  const [at, setAt] = useState(0)
-  const [picked, setPicked] = useState<number | null>(null)
-  // `correct_index`, not `correct`: the reveal has to point at the good choice, and the two
-  // only differ on a wrong answer — which is exactly when the screen most needs to be right.
-  const [why, setWhy] = useState<QuizAnswered | null>(null)
+  // A map rather than one choice, because the ROOM moves the question and this screen does not. A
+  // value keyed to the room's index cannot go stale, and it is what holds the lock in place between
+  // the POST and the next frame — the POST is the authority on its own outcome, and the stream is
+  // half a second behind a thumb.
+  const [answered, setAnswered] = useState<Record<number, number | null>>({})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  // Said once, after the cursor has jumped forward over a question the player cannot re-take.
-  // Separate from `err` because it is not a fault: nothing failed, the server simply knows more
-  // than the screen did, and the copy has to sound like that rather than like an error.
-  const [resumed, setResumed] = useState('')
-  // The running tally, from this screen's own POSTs. The snapshot carries it too, but the
-  // stream is up to half a second behind a button press and the ranking at the end of the quiz
-  // is the one number a player is looking at when they reach it.
-  const [score, setScore] = useState<number | null>(null)
   const revealRef = useRef<HTMLDivElement>(null)
+
+  const quiz = state.quiz
+  // The only clock on this screen, and it is the server's. See `serverClock.ts`: the skew is
+  // measured once per frame and frozen, and `open` is a comparison against `deadline_ms` rather
+  // than a timer that has been running since mount.
+  const { open, left } = useQuizWindow(quiz)
 
   // Fetched once. An effect because the bank does not arrive with the snapshot and cannot be
   // derived from it; keyed on the room rather than on anything that moves, so a frame arriving
   // every 500ms does not refetch eight questions fifty times a round.
   //
   // The token rides the query string for the same reason it does on the stream: this browser is
-  // the player's identity for this room, and a GET has no body to put it in.
+  // the player's identity for this room, and a GET has no body to put it in. It buys
+  // `answered_orders` — which questions of this room's bank THIS player has already sent — and
+  // nothing else, which is a count of the caller's own rows and discloses no other player.
+  //
+  // `correct` and `explanation` never arrive with a question; they are in the snapshot after the
+  // deadline, or in the POST response, and this screen reads neither before `revealed` is true.
   useEffect(() => {
     let gone = false
     void (async () => {
@@ -96,33 +86,12 @@ export default function Quiz({
           { headers: { Accept: 'application/json' } },
         )
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = (await res.json()) as ResumableBank
+        const data = (await res.json()) as QuizBank
         if (gone) return
-        setQuestions(data.questions)
-        // Clamped to the bank rather than trusted raw. The count is this player's and the
-        // questions are this room's, so it cannot exceed the length — but a cursor is an index
-        // into an array, and an index one past the end renders a blank screen instead of the
-        // ranking. A clamp turns any disagreement between the two into the finished screen,
-        // which is where a player who has answered everything belongs anyway.
-        //
-        // `Number.isFinite` before the clamp, not after, because `Math.min(undefined, 8)` is
-        // `NaN` rather than 0 and a `NaN` index makes `questions[at]` undefined — which would
-        // blank the screen entirely instead of starting at question 1. A server that has not
-        // sent the field yet therefore behaves like the one that sends zero, which is the only
-        // sensible thing for a resume to degrade to.
-        const done = Number.isFinite(data.answered)
-          ? Math.max(0, Math.min(data.answered, data.questions.length))
-          : 0
-        if (done > 0) {
-          setAt(done)
-          setResumed(
-            done >= data.questions.length
-              ? 'Tu avais déjà terminé le didacticiel. Voici le classement.'
-              : `Reprise à la question ${done + 1} : les ${done} précédentes sont déjà validées.`,
-          )
-        }
+        setBank(data)
       } catch (e) {
-        if (!gone) setErr(e instanceof Error ? e.message : 'quiz indisponible')
+        if (gone) return
+        setErr(describe(e))
       }
     })()
     return () => {
@@ -130,47 +99,114 @@ export default function Quiz({
     }
   }, [code])
 
+  const questions = bank?.questions ?? null
   const total = questions?.length ?? 0
-  const question = questions?.[at] ?? null
-  const finished = questions !== null && at >= total
-  const answered = why !== null
+  const index = quiz?.index ?? 0
 
-  // The explanation is the point of the screen. A keyboard or screen-reader user has just
-  // activated a button and the next thing that happens is that four buttons go dead and a
-  // paragraph appears above them — a change nothing announces. Focus is what says "you are
-  // handed something now", and `block: 'nearest'` is the smallest scroll that will do it, so a
-  // short phone is not yanked past the answer it just earned.
-  useEffect(() => {
-    if (!why) return
-    revealRef.current?.scrollIntoView({ block: 'nearest' })
-    revealRef.current?.focus()
-  }, [why])
+  // Which row of the bank the room is showing. Matched on `order` first and by position second,
+  // because the two are the same thing for a bank drawn in order and only one of them is right for
+  // a bank that is not. The fallback is the difference between a question and a blank panel, and a
+  // blank panel on the eighth question of eight is a player who cannot finish.
+  const question = questions?.find((q) => q.order === index) ?? questions?.[index] ?? null
+  // And what we name it when we answer it. The server looks the question up by `order`, so this is
+  // what the POST carries and what `answered_orders` is checked against — never the position.
+  const order = question?.order ?? index
+
+    // Three separate facts about whether this player may answer, and they are three because they are
+  // three different situations. `inSession` is what this browser just POSTed, `fromBank` is what the
+  // server already had when this screen asked, and the lock is their OR.
+  //
+  // Keeping `fromBank` alone would be wrong in a way that only shows up mid-question: the bank
+  // arrives after the first render, so a player who taps an answer in the first half second would
+  // see the notice flip from "Réponse envoyée" to "tu avais déjà répondu" the moment their own
+  // answer showed up in a fetch that had not even happened yet. Both together, never one.
+  const inSession = answered[order] !== undefined
+  const picked = inSession ? (answered[order] ?? null) : null
+  const fromBank = (bank?.answered_orders ?? []).includes(order)
+  const sent = inSession || fromBank
+  // The reload: the server had this one and this browser did not. Stable, because `inSession` is
+  // false and stays false until the player answers something.
+  const lockedBefore = fromBank && !inSession
+  // The 409: this browser tried and the server said there was already an attempt.
+  const refused = inSession && !fromBank && picked === null
+
+  // Everything this player has answered, from both places it can come from. Only used for the
+  // ranking at the end, where the question is no longer "have I done this one" but "have I done
+  // them all" — and a count is exactly the right shape for that question, which is why
+  // `answered_orders` is a list and this is where it earns that.
+  const answeredOrders = useMemo(
+    () => new Set([...(bank?.answered_orders ?? []), ...Object.keys(answered).map(Number)]),
+    [bank, answered],
+  )
+
+  // The reveal. `revealed` is the server's own `now >= deadline` and is the ONLY thing that makes
+  // the key and the explanation public, so both are read through it and neither is cached.
+  const revealed = quiz?.revealed === true && typeof quiz.correct === 'number'
+  const key = revealed && quiz ? quiz.correct : null
+  const explanation = revealed && quiz ? quiz.explanation : null
+  const right = key !== null && picked !== null && picked === key
+
+  // The ranking, and when it is allowed to arrive. Answering the eighth question is not the end of
+  // it: the reveal for that eighth question has not happened yet, and a leaderboard appearing
+  // thirteen seconds early is a scroll the player did not ask for in the middle of the suspense the
+  // whole phase is built on. So it waits for the reveal, and then it is there for as long as the
+  // host takes to comment — which is the only moment a player is actually looking for it.
+  const finished =
+    total > 0 && answeredOrders.size >= total && (revealed || question === null)
+
+  // The lock is the same comparison as the clock and the reveal, so the three can never disagree:
+  // either this browser has answered, or the server would refuse the answer now.
+  const locked = sent || !open || busy
+
+  // One sentence, and it is the screen's only live region. A pure function of the question's
+  // state is what keeps it from being noise: a live region announces on CHANGE, so this string
+  // changes on five events per question — the question, the lock, the answer, the window closing,
+  // the reveal — and never on the countdown. Which is why the visible notice below is NOT a live
+  // region of its own: two regions carrying the same four transitions is a screen that says
+  // everything twice to the one reader who cannot see either copy.
+  const voice = revealed
+    ? picked === null
+      ? 'La bonne réponse est affichée.'
+      : right
+        ? 'Tu as juste.'
+        : 'Pas celle-là.'
+    : lockedBefore
+      ? `Tu avais déjà répondu à la question ${index + 1}. Elle reste verrouillée.`
+      : refused
+        ? 'Tu avais déjà répondu à celle-ci. La bonne réponse arrive à la fin du chrono.'
+        : sent && open
+          ? 'Réponse envoyée. La bonne réponse arrive à la fin du chrono.'
+          : !open && quiz !== null
+            ? `Temps écoulé pour la question ${index + 1}.`
+            : `Question ${index + 1} sur ${total}.`
 
   async function answer(choice: number) {
-    if (answered || busy) return
+    if (locked || !question) return
     setBusy(true)
     setErr('')
     try {
-      const res = await post<QuizAnswered>(
-        `/api/rooms/${code}/quiz`,
-        { token: getToken(code), question: at, choice },
-      )
-      setPicked(choice)
-      setWhy(res)
-      setScore(res.score)
+      await post<QuizAnswered>(`/api/rooms/${code}/quiz`, {
+        token: getToken(code),
+        question: order,
+        choice,
+      })
+      // Typed, and then deliberately not read. This response carries the key — `correct_index`
+      // and the explanation — and reading it here is exactly the bug this phase exists to avoid:
+      // a player who chooses and is told "juste" in the same second has learned nothing and has
+      // fifteen seconds of screen left to stare at. What the POST buys is the right to stop
+      // tapping. What to draw is decided by `state.quiz.revealed`, which the server sets at the
+      // deadline and not one millisecond before.
+      setAnswered((a) => ({ ...a, [order]: choice }))
     } catch (e) {
-      // A 409 here is the server saying this player already has an attempt on THIS question,
-      // which after a reload is the whole bug: the screen thinks it is on an unanswered
-      // question, the database says otherwise, and only one of the two can move. It has to be
-      // the screen.
-      //
-      // Matched on the status AND the reason rather than on the status alone. `already answered`
-      // is also what the same route returns when the didacticiel has closed under the player, and
-      // jumping the cursor forward in that case would walk them off the end of the bank and
-      // strand them somewhere worse than where they started. Any other 409 keeps the ordinary
-      // error line, and `quiz not open` is already translated in `api.ts` for exactly this phase.
+      // A 409 here means the server knows an attempt on this question and we did not, which is
+      // the reload race the bank fetch cannot cover: the bank was read before the answer landed,
+      // or the phone came back after it. There is no cursor to move any more, so there is nothing
+      // to skip to — the honest repair is to record the lock and let the reveal say what it says.
+      // Matched on the reason as well as the status, because `already answered` is also what the
+      // same route returns when the didacticiel has closed under the player, and that one wants
+      // the ordinary error line, already translated in `api.ts` for this phase.
       if (e instanceof ApiError && e.status === 409 && e.message === 'already answered') {
-        skip()
+        setAnswered((a) => ({ ...a, [order]: null }))
         return
       }
       setErr(describe(e))
@@ -179,28 +215,36 @@ export default function Quiz({
     }
   }
 
-  // Forward one question, saying why. Shared by the resume and by the 409 so the two can never
-  // disagree about where "the next question" is, and clamped at `total` rather than at the last
-  // question: a 409 on the eighth means this player has already answered the eighth, and the
-  // only place left to send them is the ranking, which is exactly where the spec puts a player
-  // who has finished. Clamping one earlier would leave them tapping a button that 409s forever.
-  function skip() {
-    setAt((a) => Math.min(a + 1, total))
-    setPicked(null)
-    setWhy(null)
-    setErr('')
-    setResumed('Tu avais déjà répondu à celle-là. On continue à la suivante.')
-  }
+  // The explanation is the point of the screen, and the verdict above it is the point of the
+  // explanation. A keyboard or screen-reader user has just watched four buttons go dead and a
+  // panel appear above them: a change nothing announces. Focus is what says "you have been handed
+  // something now", and `block: 'nearest'` is the smallest scroll that will do it, so a short phone
+  // is not yanked past the answer it just earned.
+  useEffect(() => {
+    if (!revealed) return
+    const el = revealRef.current
+    if (!el) return
+    el.scrollIntoView({ block: 'nearest' })
+    el.focus()
+  }, [revealed])
 
-  function next() {
-    setAt((a) => a + 1)
-    setPicked(null)
-    setWhy(null)
-    setErr('')
-    // Said once, then cleared: it describes the question the player was on when they arrived,
-    // and carrying it onto the eighth would be a note about a question that is now off screen.
-    setResumed('')
-  }
+  // One notice, and it is NOT a live region. Every sentence here is also said by the region
+  // above — which is what a screen reader hears — and a second live region carrying the same
+  // transitions is a screen that says everything twice. This copy is for the reader looking at
+  // the phone: it is in the calm cool colour the console uses for facts about people rather than
+  // about faults, and it sits above the question so the first thing a player reads is why they
+  // are not being offered four answers.
+  const notice = lockedBefore
+    ? 'Tu avais déjà répondu à cette question : elle est verrouillée pour toi.'
+    : refused
+      ? 'Tu avais déjà répondu à celle-ci. La bonne réponse arrive à la fin du chrono.'
+      : sent && open
+        ? 'Réponse envoyée. La bonne réponse arrive à la fin du chrono.'
+        : !open && !revealed && quiz !== null
+          ? 'Temps écoulé. La bonne réponse arrive.'
+          : ''
+
+  const secs = countdown(left)
 
   // The class ranking, sorted on the didacticiel's own score. Sorted here rather than asked of
   // the snapshot: `Player.quiz_score` is per player already, and the server sorts the game
@@ -208,6 +252,7 @@ export default function Quiz({
   // that arrives. A stable sort leaves equal scores in join order, and a tie is a tie — no
   // player is handed a place they did not take.
   const myName = getName(code)
+  const me = state.players.find((p) => p.name === myName)
   const rows = [...state.players].sort((a, b) => (b.quiz_score ?? 0) - (a.quiz_score ?? 0))
   const waiting = state.players.filter((p) => !p.quiz_done)
 
@@ -217,49 +262,54 @@ export default function Quiz({
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--narrow" id="main" tabIndex={-1}>
         {/* The one heading on this screen, and the target the phase change moves focus to. It
-            says what the screen is rather than which question it is on, because the panel
-            label below already says that and would be heard twice otherwise. */}
+            says what the screen is rather than which question it is on, because the clock label
+            and the panel below already say that and would be heard twice otherwise. */}
         <h1 className="visually-hidden" tabIndex={-1}>
           Didacticiel du prompt engineering
         </h1>
 
         {/* One live region for the whole screen, mounted from the first frame because a region
             that appears at the same moment as its first message is not reliably announced. It
-            carries the progress when nothing has been answered yet and the verdict once there
-            is one — the reveal is the part of this screen that happens to the player rather
-            than to the room, so it is the part worth a voice. */}
+            carries the question, the answer, the closing of the window and the verdict — never
+            the seconds, which change four times a second and would talk over everything else. */}
         <p className="visually-hidden" aria-live="polite">
-        {why
-          ? why.correct_index === picked
-            ? 'Bonne réponse.'
-            : 'Réponse incorrecte.'
-          : question
-            ? `Question ${at + 1} sur ${total}.`
-            : ''}
+          {voice}
         </p>
 
         {!questions && !err && <p className="prose prose--dim">Lecture des questions…</p>}
 
-        {/* One line, in the calm colour the console uses for facts about people rather than
-            faults, because that is what this is: a statement about where the player is, not a
-            complaint. It is `role="status"` rather than `role="alert"` for the same reason — an
-            alert interrupts, and being told you have resumed is not an interruption. It sits
-            above the question, where the first thing a player reads is an explanation of why
-            they are not on question 1. Rendered even with no question on screen, because the
-            case that most needs saying is the one where the cursor has just run off the end. */}
-        {resumed && (
-          <p className="notice" role="status">
-            {resumed}
-          </p>
-        )}
+        {notice && <p className="notice">{notice}</p>}
 
-        {question && (
+        {question && quiz && (
           <>
             {/* Eight questions are a sequence before they are eight screens, so they get the
-                round's own track: the ticks say "third of eight" and the panel label says it
-                in words, which is the same contract `RoundTrack` already has. */}
-            <RoundTrack current={at + 1} total={total} />
-            <Readout label={`Question ${at + 1} sur ${total}`} value={question.prompt} />
+                round's own track: the ticks say "third of eight" and the panel label says it in
+                words, which is the same contract `RoundTrack` already has. The index is passed
+                raw, 0-based, because `RoundTrack` compares it against its own 0-based ticks —
+                handing it `index + 1` lit the second tick while the panel said "Question 1". */}
+            <RoundTrack current={index} total={total} />
+
+            {/* The shared clock. Read off `deadline_ms` against the server's own clock, so a
+                phone that opens this page ten seconds late shows five seconds rather than fifteen
+                and a phone whose time is two minutes out locks on the same side of the question
+                as everybody else. When the window is shut the number is replaced by the word,
+                because "0" running down into minus one is not a state the room is ever in. */}
+            <p className="qclock" data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
+              {open ? (
+                <>
+                  <span className="qclock__n num">{secs}</span>
+                  <span className="qclock__t">
+                    {secs > 1 ? 'secondes pour répondre' : 'seconde pour répondre'}
+                  </span>
+                </>
+              ) : (
+                <span className="qclock__t qclock__t--closed">
+                  {revealed ? 'Fenêtre fermée' : 'Révélation…'}
+                </span>
+              )}
+            </p>
+
+            <Readout label={`Question ${index + 1} sur ${total}`} value={question.prompt} />
           </>
         )}
 
@@ -272,43 +322,105 @@ export default function Quiz({
         {question && (
           <>
             {/* Four full-width buttons, never two columns and never a dropdown: this is played
-                standing up, one-handed, in a room, ten times in a row. `disabled` rather than
-                removed once answered, so the list a player just chose from stays on screen
-                where their thumb is, and the verdict lands on it rather than replacing it. */}
+                standing up, one-handed, in a room, eight times in a row. `disabled` rather than
+                removed once answered, so the list a player just chose from stays on screen where
+                their thumb is, and the verdict lands on it rather than replacing it. */}
             <div className="choices">
               {question.choices.map((text, i) => {
-                const right = why !== null && i === why.correct_index
-                const yours = why !== null && i === picked
-                const missed = yours && !right
+                const isKey = key !== null && i === key
+                const isYours = i === picked
+                // The missed row is drawn only once there is a verdict to miss: before the reveal
+                // the player's own row is marked by nothing at all, which is the entire feature.
+                const missed = isYours && key !== null && !isKey
                 return (
                   <button
                     key={text}
                     type="button"
-                    className={`btn choice${right ? ' choice--right' : ''}${missed ? ' choice--miss' : ''}${yours && right ? ' choice--yours' : ''}`}
-                    disabled={answered || busy}
+                    className={`btn choice${isKey ? ' choice--right' : ''}${missed ? ' choice--miss' : ''}${isYours && key !== null ? ' choice--yours' : ''}`}
+                    disabled={locked}
                     onClick={() => void answer(i)}
                   >
                     <span className="choice__k" aria-hidden="true">
                       {LETTERS[i] ?? ''}
                     </span>
                     <span className="choice__t">{text}</span>
-                    {/* Said in words, not by colour: sodium for the right answer and the fault
-                        red for the missed one is a pair a player who cannot separate those two
-                        hues would otherwise have to guess at. The label is the whole signal and
-                        the colour is only reinforcement. */}
-                    {right && <span className="choice__tag">Bonne réponse</span>}
-                    {missed && <span className="choice__tag">Ta réponse</span>}
-                    {yours && right && <span className="choice__tag">Ta réponse</span>}
+                    {/* Said three ways, and none of them is the colour: the mark is a shape, the
+                        word is a sentence, and the tag above them is where the console puts what
+                        it wants read across a room. `--good` and `--fault` are reinforcement for
+                        the reader who has both of them, which is not everyone in a bright
+                        classroom on a phone held at arm's length. */}
+                    {isKey && (
+                      <span className="choice__tag">
+                        <span className="choice__mark" aria-hidden="true">
+                          ✓
+                        </span>
+                        Bonne réponse
+                      </span>
+                    )}
+                    {missed && (
+                      <span className="choice__tag">
+                        <span className="choice__mark" aria-hidden="true">
+                          ✗
+                        </span>
+                        Ta réponse
+                      </span>
+                    )}
+                    {/* At most one tag per row, and never the same word twice. On the row the
+                        player got right there is nothing left to say beyond "Bonne réponse":
+                        there is only one green row on the screen, so it IS their row, and the
+                        verdict below says so in words. Squeezing a second tag in there instead
+                        cost the answer itself three wrapped lines on a 390px phone. */}
                   </button>
                 )
               })}
             </div>
 
-            {why && (
-              <div className="explain" ref={revealRef} tabIndex={-1}>
-                <p className="label">Pourquoi</p>
-                <p className="prose">{why.explanation}</p>
-              </div>
+            {revealed && (
+              <>
+                {/* The verdict, in words, before the reason. Three sentences because there are
+                    three truths: the player was right, the player was wrong, or the server had an
+                    attempt this screen did not know about. The middle one names both letters, so
+                    the sentence is complete without reading a single colour on the page — and the
+                    third takes no colour at all, because nothing about it is right or wrong. */}
+                <div
+                  className={`revealnote${
+                    right ? ' revealnote--good' : picked === null ? '' : ' revealnote--miss'
+                  }`}
+                  ref={revealRef}
+                  tabIndex={-1}
+                >
+                  {picked === null ? (
+                    <>
+                      <span className="revealnote__t">Tu avais déjà répondu à celle-ci</span>
+                      <span className="revealnote__s">
+                        La bonne réponse était {key !== null ? LETTERS[key] : ''}.
+                      </span>
+                    </>
+                  ) : right ? (
+                    <>
+                      <span className="revealnote__t">Tu as juste</span>
+                      <span className="revealnote__s">
+                        C’est bien la réponse {LETTERS[picked]} que tu avais choisie.
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="revealnote__t">Pas celle-là</span>
+                      <span className="revealnote__s">
+                        Tu avais choisi la {LETTERS[picked]}, la bonne réponse était la{' '}
+                        {key !== null ? LETTERS[key] : ''}.
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                {explanation && (
+                  <div className="explain">
+                    <p className="label">Pourquoi</p>
+                    <p className="prose">{explanation}</p>
+                  </div>
+                )}
+              </>
             )}
 
             {err && (
@@ -316,26 +428,25 @@ export default function Quiz({
                 {err}
               </p>
             )}
-
-            {answered && (
-              <button type="button" className="btn btn--signal btn--wide" onClick={next}>
-                {at + 1 >= total ? 'Voir le classement' : 'Question suivante'}
-              </button>
-            )}
           </>
         )}
 
         {/* The eight-question ranking, and only the didacticiel's. It is here rather than on a
             separate screen because the player has just been told what they got right and the
             question they actually have is "was that good". It is deliberately not the game's
-            leaderboard and not `Board`: the didacticiel score never enters the final ranking,
-            so drawing it with the instrument that draws the standings would be drawing the same
-            object twice in two places with two different meanings. */}
+            leaderboard and not `Board`: the didacticiel score never enters the final ranking, so
+            drawing it with the instrument that draws the standings would be drawing the same
+            object twice in two places with two different meanings.
+            *
+            It appears UNDER the question rather than replacing it, which the local cursor used to
+            do. There is no cursor now, and the room does not stop talking about the eighth answer
+            because a player has finished the eighth question — the explanation they just earned
+            is still the thing they are reading. */}
         {finished && (
           <>
             <div className="qboard">
               <p className="qboard__mine">
-                <span className="qboard__score num">{score ?? state.quiz?.score ?? 0}</span>
+                <span className="qboard__score num">{fr(me?.quiz_score ?? null)}</span>
                 <span className="qboard__den">bonnes réponses sur {total}</span>
               </p>
               <p className="prose prose--sm prose--dim">
@@ -353,7 +464,7 @@ export default function Quiz({
                       {p.name}
                       {p.name === myName && <span className="board__tag">toi</span>}
                     </span>
-                    <span className="qboard__pts num">{p.quiz_score ?? 0}</span>
+                    <span className="qboard__pts num">{fr(p.quiz_score)}</span>
                     <span className="qboard__of num">/ {total}</span>
                   </div>
                 ))}
@@ -366,7 +477,7 @@ export default function Quiz({
                 the game is. */}
             <p className="prose prose--sm prose--cool">
               {waiting.length === 0
-                ? 'Tout le monde a terminé. La partie démarre…'
+                ? 'Tout le monde a terminé. L’animateur ouvre la partie.'
                 : `En attente de ${waiting.length} ${waiting.length > 1 ? 'joueurs' : 'joueur'}.`}
             </p>
           </>

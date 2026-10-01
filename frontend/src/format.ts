@@ -30,3 +30,16 @@
 const FR = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 })
 
 export const fr = (n: number | null): string => (n === null ? '—' : FR.format(n))
+
+// The shared countdown, in whole seconds.
+//
+// Rounded UP, and that is the only decision in it. `Math.floor` would show 0 for the last whole
+// second of a fifteen-second window and then sit on 0 for another second, so the room reads "0"
+// while the server is still accepting answers — a clock that lies about the deadline on the one
+// question where the deadline is the whole point. Ceil gives 1 until the last millisecond is gone
+// and then stops, because `open` is false by then and nothing draws the number at all.
+//
+// Never negative either: it is a figure for a phone in front of a class, and "-3" is not a state
+// any of them is in. The negative side of the comparison belongs to `useQuizWindow`, which owns
+// the clock; this only formats what is left to spend.
+export const countdown = (ms: number): number => Math.max(0, Math.ceil(ms / 1000))

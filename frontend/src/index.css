@@ -140,6 +140,47 @@
   --fault-wash: rgba(229, 97, 74, 0.09);
   --fault-tint: rgba(229, 97, 74, 0.12);
 
+  /* Green: the right answer. The one hue this console had no word for, and the didacticiel's
+   * whole reveal hung on borrowing sodium for it — an answer lit in the same colour as a score
+   * of 7/10, on the argument that a reader who cannot separate the hues can read the word beside
+   * it. That is a real argument, but it is an argument for a SECOND colour, not against one:
+   * the QCM already carries a red for "not this one", and painting both of its outcomes in one
+   * hue is what forced the word to do all the work.
+   *
+   * Hue 144 — a green pulled toward blue, not toward yellow. That is the whole decision, and it
+   * was made against two neighbours rather than on contrast alone:
+   *
+   *   --signal at hue 36 is the accent. Under deuteranopia a yellow-green collapses onto it: the
+   *   lime #a3e635 sits 60 away from sodium once simulated, where this console's OWN
+   *   sodium/fault pair sits 74. So lime was rejected on the metric the palette already
+   *   established, before its pleasantness counted for anything. At 144 this green is 138 from
+   *   sodium under the same simulation — nearly twice the separation the palette's existing
+   *   right/wrong pair manages, which is the bar that mattered, since the two colours are
+   *   neighbours on the same screen at the same moment.
+   *
+   *   --cool-lit is the "other people, or waiting" lamp. A green pushed much past 150 starts
+   *   reading as a brighter --cool, and 164 (#2dd4a7) was rejected for exactly that: 110 away
+   *   from --cool against 67 here, on a hue that is a member of the same family. Cool and good
+   *   are never adjacent — one is a roster lamp, the other is a verdict — so the closer pair was
+   *   the right trade, and the further one would have spent a second meaning on a hue that
+   *   already has one.
+   *
+   * Contrast, measured on all three surfaces a coloured element in this console lands on:
+   * 9.15:1 on --panel, 10.10:1 on --deck, 10.40:1 on --well. That clears 1.4.11's 3:1 for the
+   * border and rule it is mostly drawn as, clears AA at every size it is ever set at, and comes
+   * out slightly AHEAD of --signal's own 8.14:1 on --panel — the thing it replaces was the
+   * brighter of the two. That ordering is deliberate: the reveal has to survive a phone in a
+   * bright classroom, and a success colour that is merely legible in a dark room is not one.
+   *
+   * --good-wash is the same kind of fill as --fault-wash, at --fault-tint's 12%: --good on it is
+   * 7.39:1 over --panel and --ink on it is 10.24:1, so the wash costs the text nothing.
+   *
+   * And it is never a fill behind --ink (1.39:1 between the two): a solid block of this green
+   * with body text on it would be a paragraph nobody can read, so the reveal uses the wash and
+   * a rule, like every other state in this palette. */
+  --good: #74d99c;
+  --good-wash: rgba(116, 217, 156, 0.12);
+
   /* Light catching an edge. A one-pixel inset, never a blurred drop shadow. Each tint is the
    * specular of the surface it sits on: cool on a cool lamp, warm on a sodium one, and a
    * plain darkening where a surface is sunk rather than lit. */
@@ -500,13 +541,17 @@ figure {
   flex: 1;
   overflow-wrap: anywhere;
 }
-/* Right and wrong are sodium and the fault red — a pair that already exists in this palette,
- * and no third hue was added for a green "correct". The reason is in the palette's own terms:
- * --fault exists precisely because an error painted in the same sodium as a score of 7/10 would
- * tell a red-green colourblind player the opposite of the truth, so green here would hand back
- * the ambiguity the token was introduced to remove. Sodium means "live and lit" everywhere else
- * in this console and the correct answer is the lit one; --fault keeps meaning "not right", and
- * the word beside the answer says which is which for anyone who cannot see either.
+/* Right and wrong are --good and --fault, a pair the palette now has words for. Green is here
+ * for the right answer rather than sodium for it, and that is the correction: sodium is the "live
+ * and lit" accent — the target, the primary action, your own score — so spending it on a correct
+ * answer made the most expensive colour in the console carry the least consequential news. It
+ * also left right and wrong sharing one hue and differing by a word, which is a signal that
+ * depends entirely on the reader separating sodium from fault red.
+ *
+ * Three signals now, and not one of them is the colour. The rule and the letter chip are green or
+ * red, the tag spells it out, and the tag carries a MARK, because a shape is the one channel a
+ * colourblind reader and a monochrome print both still have. `prefers-reduced-motion` is honoured
+ * in this console, so nothing here may be carried by a fade.
  *
  * A rule and not a fill: the choice is still a row of text to read, and four rows that turn
  * into four colour blocks would be four paragraphs to read again.
@@ -518,15 +563,15 @@ figure {
  * written at the weight it has to beat. */
 .btn.choice--right,
 .btn.choice--right:disabled {
-  border-color: var(--signal);
+  border-color: var(--good);
   background: var(--panel);
-  box-shadow: inset 3px 0 0 var(--signal);
+  box-shadow: inset 3px 0 0 var(--good);
   color: var(--ink);
 }
 .btn.choice--right .choice__k,
 .btn.choice--right:disabled .choice__k {
-  border-color: var(--signal);
-  color: var(--signal);
+  border-color: var(--good);
+  color: var(--good);
 }
 .btn.choice--miss,
 .btn.choice--miss:disabled {
@@ -543,11 +588,14 @@ figure {
 /* The chosen-and-right row is already the right one; the inset says so and the tag says who
  * picked it. */
 .btn.choice--yours:disabled {
-  box-shadow: inset 3px 0 0 var(--signal), inset 0 0 0 1px var(--glow);
+  box-shadow: inset 3px 0 0 var(--good), inset 0 0 0 1px var(--good-wash);
 }
 .choice__tag {
   flex: none;
   align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   padding: 0.05rem 0.35rem;
   border: 1px solid currentColor;
   border-radius: var(--radius);
@@ -556,13 +604,65 @@ figure {
   font-weight: 600;
   white-space: nowrap;
 }
+/* The mark inside the tag. `aria-hidden` because the word beside it is the sentence a screen
+ * reader should say — "check mark, bonne réponse" is a worse label than "bonne réponse" — and the
+ * mark is there for the reader looking at the row, who gets nothing else from a hue. */
+.choice__mark {
+  font-size: 0.8125rem;
+  line-height: 1;
+}
 .choice--right .choice__tag,
 .btn.choice--right:disabled .choice__tag {
-  color: var(--signal);
+  color: var(--good);
 }
 .btn.choice--miss .choice__tag,
 .btn.choice--miss:disabled .choice__tag {
   color: var(--fault);
+}
+
+/* What the reveal says about YOU, in a row of its own above the explanation.
+ *
+ * This is the line that has to work when nothing else does. A green row and a red row say
+ * something, but they say it to part of the class, and this room is played on phones held in
+ * bright light by people who will read the outcome once. So the verdict is set in the display
+ * face at the largest size the screen allows, and the sentence under it names the LETTERS, which
+ * is the one fact about this question that is unambiguous to a reader with no colour at all.
+ *
+ * The wash is what makes it a block rather than a caption, and it is 12% of the same green the
+ * rule is, over the same surface: --good on it is 7.39:1 and --ink on it 10.24:1, so nothing
+ * inside is traded away to get the fill. Never a solid green behind --ink, which would be 1.39:1
+ * — a paragraph nobody can read, which is why this is a wash and a rule like every other state
+ * in this palette.
+ *
+ * The unmodified rule is the THIRD case, and it is the only one that is neither right nor wrong:
+ * the server has an attempt on this question and the screen was not told what it was, which is a
+ * fact about the rules of the room rather than about the answer. So it takes --cool, the colour
+ * this console already gives to "that is how this works", and no wash at all — which also keeps it
+ * distinct from the sodium-ruled explanation panel directly underneath it. */
+.revealnote {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.7rem var(--pad) 0.8rem;
+  border-left: 3px solid var(--cool);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.revealnote--good {
+  border-left-color: var(--good);
+  background: var(--good-wash);
+}
+.revealnote--miss {
+  border-left-color: var(--fault);
+  background: var(--fault-wash);
+}
+.revealnote__t {
+  color: var(--ink);
+  font: 800 1.375rem/1.1 var(--font-display);
+  letter-spacing: 0.01em;
+}
+.revealnote__s {
+  color: var(--ink);
+  font-size: 0.9375rem;
+  line-height: 1.4;
 }
 
 /* The two flags a room is created with. Native checkboxes with the accent rather than buttons
