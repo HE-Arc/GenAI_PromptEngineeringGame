@@ -1,6 +1,8 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Sum
 from django.db.utils import IntegrityError
+from django.db import models
 from django.test import TestCase
 
 from game.models import (
@@ -252,6 +254,77 @@ class RatingTests(TestCase):
         Rating.objects.create(answer=answer, rater=raters[0], score=1)
         Rating.objects.create(answer=answer, rater=raters[1], score=10)
         self.assertEqual(answer.ratings.count(), 2)
+
+
+class SettlementColumnTests(TestCase):
+    """The four columns `settle_round` writes, and the one property the whole write-not-compute
+    shape rests on: an unsettled round is INVISIBLE to a sum."""
+
+    def test_a_fresh_answer_has_no_settled_score(self) -> None:
+        # Four nulls, not four zeros. A default of 0 would make an answer that was never rated look
+        # like a round scored 0, and the ranking would count a round nobody played.
+        answer, _raters = _rating_fixture()
+        self.assertEqual(
+            (
+                answer.quality_llm,
+                answer.quality_peers,
+                answer.quality,
+                answer.round_score,
+            ),
+            (None, None, None, None),
+        )
+
+    def test_the_four_columns_are_nullable_and_named(self) -> None:
+        # The names are a contract with `views.settle_round`, `room_state`'s summary block and the
+        # final ranking's SUM, and `null=True` is what lets an in-progress round exist at all:
+        # these columns were added to a table that already had rows.
+        for name in ("quality_llm", "quality_peers", "quality", "round_score"):
+            with self.subTest(field=name):
+                field = Answer._meta.get_field(name)
+                self.assertTrue(field.null, f"{name} must be nullable")
+                self.assertIsInstance(field, models.IntegerField)
+
+    def test_an_unsettled_round_is_ignored_by_a_sum(self) -> None:
+        # THE PROPERTY THE WRITES EXIST FOR. The final ranking is a `Sum("round_score")`, and `Sum`
+        # skips NULL — so a player with one settled round and one open reads the settled total
+        # rather than a zero for the round being played. A `null=False` column with a default of 0
+        # would pass every test above and turn this into a silent under-count for the whole
+        # duration of the round in progress.
+        answer, _raters = _rating_fixture()
+        # A second round, because one answer per player per round is the table's own rule and the
+        # two rows below have to belong to different rounds to be legal at all.
+        second = Round.objects.create(room=answer.round.room, order=1, target="t2")
+        Answer.objects.filter(pk=answer.pk).update(round_score=6)
+        Answer.objects.create(
+            round=second, player=answer.player, prompt="c", output="d", score=4
+        )
+        self.assertEqual(
+            answer.player.answers.aggregate(total=Sum("round_score"))["total"],
+            6,
+        )
+        # And the open row is still readable on its own, so a null neighbour does not hide it.
+        self.assertEqual(answer.player.answers.get(round=answer.round).round_score, 6)
+        self.assertIsNone(answer.player.answers.get(round=second).round_score)
+
+    def test_the_settlement_is_a_plain_update_and_leaves_the_rest_of_the_row_alone(self) -> None:
+        # `settle_round` writes with `update_fields`, so the proximity score, the prompt and the
+        # judge's comment are not part of its write and cannot be clobbered by it. Pinned because a
+        # bare `answer.save()` would rewrite every column from a possibly stale instance, and the
+        # prompt is the one thing a player must find byte-identical in the summary.
+        answer, raters = _rating_fixture()
+        answer.quality_llm = 6
+        answer.quality_peers = 7
+        answer.quality = 7
+        answer.round_score = 6
+        answer.save(update_fields=["quality_llm", "quality_peers", "quality", "round_score"])
+        answer.refresh_from_db()
+        self.assertEqual(
+            (answer.prompt, answer.output, answer.score, answer.comment),
+            ("a", "b", 5, ""),
+        )
+        # The ratings are still the ones the settlement read, and the whole graph is still there.
+        self.assertEqual(answer.ratings.count(), 0)
+        self.assertEqual(len(raters), 3)
 
 
 class TargetsTest(TestCase):

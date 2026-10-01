@@ -124,8 +124,43 @@ class Answer(models.Model):
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="answers")
     prompt = models.TextField()
     output = models.TextField()
+    # The judge's proximity to the target, 0-10. The first of the round's two dimensions.
     score = models.IntegerField()
     comment = models.TextField(blank=True)
+
+    # The round's settlement: WRITTEN ONCE, NEVER RECOMPUTED. `views.settle_round` runs when the
+    # round's rating closes and fills these in, and every later snapshot is a `SUM` over
+    # `round_score` — the same shape the ranking already had.
+    #
+    # WHY A WRITE AND NOT A COMPUTATION AT READ TIME: in a class of twenty over ten rounds a
+    # snapshot would have to sum two hundred answers and nearly four thousand peer ratings, twice
+    # a second, for each of twenty-one streams (twenty phones and the admin). That is ~168 000
+    # reads a second against a threaded `runserver` on a phone browser, on a classroom LAN. And
+    # recomputing would be wrong in a second, worse way: a final ranking that moves while nobody
+    # is playing is a score nobody can trust, and a peer note that landed late would rewrite the
+    # nine rounds before it.
+    #
+    # All four are NULL until the round is settled, and that is what makes an in-progress round
+    # invisible to the ranking: `Sum` skips NULL, so a player with one settled round and one open
+    # reads the settled total rather than a zero for the round being played.
+    #
+    # `quality_llm` is the ONE exception to "written at settlement", and it has to be: it is
+    # `llm.grade_prompt` on the prompt alone, and the critic runs at ANSWER time rather than at
+    # settlement time. `settle_round` is called by the last player's rating tap, and making N
+    # billed calls from there is one HTTP request blocking for the better part of a minute, on
+    # the one phase nobody is watching a list for. Every player pays for their own call in
+    # parallel instead.
+    quality_llm = models.IntegerField(null=True, blank=True)  # the critic, on the prompt alone
+    # The peers' raw mean, BEFORE the band. Kept next to the bounded number so the summary can
+    # show the bound at work rather than an unexplained verdict, and kept raw because a stored
+    # 7 that used to be a 10 is the whole pedagogy of the feature.
+    quality_peers = models.IntegerField(null=True, blank=True)
+    # `prompts.quality(quality_llm, peers)`: the peers' mean held inside ±QUALITY_BAND of the
+    # critic. What the ranking actually uses.
+    quality = models.IntegerField(null=True, blank=True)
+    # `(score + quality) // 2` — the round's note out of ten, floor because the scale and the
+    # payload are integers and a float in here would be a float in the JSON on every tick.
+    round_score = models.IntegerField(null=True, blank=True)
 
     class Meta:
         unique_together = [("round", "player")]

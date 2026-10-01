@@ -11,6 +11,9 @@ urlpatterns = [
     path("api/rooms/<str:code>/join", views.join),
     path("api/rooms/<str:code>/events", views.events),
     path("api/rooms/<str:code>/answer", views.answer),
+    # One pattern and not a `<int:answer_id>`: the rating endpoint's whole security property is
+    # that the client never names what it is rating. See `views.rate`.
+    path("api/rooms/<str:code>/rate", views.rate),
     # GET reads the bank, POST answers one question: two methods on ONE pattern, because the
     # resolver returns the first pattern that matches the path and never looks at the method.
     path("api/rooms/<str:code>/quiz", views.quiz),

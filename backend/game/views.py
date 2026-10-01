@@ -11,8 +11,8 @@ from django.http import Http404, HttpRequest, JsonResponse, StreamingHttpRespons
 from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from game import llm
-from game.models import Player, QuizAttempt, QuizQuestion, Room, Round
+from game import llm, prompts
+from game.models import Player, QuizAttempt, QuizQuestion, Rating, Room, Round
 # Named `pick_questions`, not `pick`, and imported as a name rather than as the `game.quiz`
 # module: the didacticiel's draw is a PERMUTATION of a bank exactly one quiz long, and a reader
 # who sees two things called `pick` in this header has to go and check which bank each is on.
@@ -203,6 +203,54 @@ def admin_start(request: HttpRequest, code: str) -> JsonResponse:
     return JsonResponse({"ok": True, "total": ROUNDS_PER_GAME, "phase": room.phase})
 
 
+def settle_round(room: Room) -> None:
+    """Write the round's scores once, when its rating closes. Never recomputed.
+
+    One write per answer, then every later snapshot is a SUM over a nullable integer column —
+    the same shape the ranking already has. Recomputing instead would be correct and would melt
+    the server, because `room_state` is evaluated twice a second per connected stream and the
+    peers' mean needs every rating of the round. See the four columns on `Answer` for the
+    arithmetic.
+
+    Called from two places, and both of them are "the rating of this round is over":
+    `maybe_advance_phase` when the last online rater rated the last prompt, and
+    `_advance_reveal_and_settle` when the ADMIN skips the remaining prompts. A round the players
+    abandoned has to be settled by the admin's button too, or its summary screen would show a
+    column of nulls.
+
+    Idempotent by construction — it writes the same numbers from the same rows — so the two paths
+    converging on one round cannot disagree, and an admin who advances twice over a stuck round
+    rewrites the settlement with its own value rather than doubling it.
+
+    A player who wrote no prompt has no row, so no round is counted for them and there is nothing
+    to settle: they keep the rounds they played and nothing else. A player who wrote one and
+    drew no ratings at all (a one-player room, or everyone else was asleep) gets `quality_peers`
+    left NULL rather than a mean of nothing — which is why the division is behind `if scores`.
+    """
+    rnd = room.current_round()
+    if rnd is None:
+        return
+    for a in rnd.answers.order_by("id"):
+        scores = list(a.ratings.values_list("score", flat=True))
+        a.quality_peers = round(sum(scores) / len(scores)) if scores else None
+        a.quality = prompts.quality(a.quality_llm, scores)
+        a.round_score = (a.score + a.quality) // 2
+        a.save(update_fields=["quality_peers", "quality", "round_score"])
+
+
+def _advance_reveal_and_settle(room: Room) -> None:
+    """The admin's "next prompt" during the rating: `_advance_reveal`, plus a settle when that
+    closed the round.
+
+    The admin can push through prompts nobody got round to, and the summary they land on has to
+    carry the settlement like any other — an un-settled summary is a screen of nulls and the
+    admin has no way to tell it apart from a bug.
+    """
+    room._advance_reveal()
+    if room.phase == Room.Phase.SUMMARY:
+        settle_round(room)
+
+
 # What the admin's single "advance" button means in each phase. A phase absent from this table has
 # no advance: 409. Written as data so the six cases are readable at a glance, and so adding a phase
 # forces a decision here instead of defaulting to something arbitrary — `waiting` has nothing to
@@ -211,11 +259,13 @@ def admin_start(request: HttpRequest, code: str) -> JsonResponse:
 #
 # The room's own methods do the moving, not lambdas that write fields: a transition that has to
 # touch the round's reveal cursor as well as the phase cannot be one line, and hiding that behind
-# a table entry would make it look like it could.
+# a table entry would make it look like it could. The rating row is the one entry that is not a
+# one-liner, because the phase change is not the whole transition there: the round is settled on
+# the way out.
 _PHASE_ADVANCE = {
     Room.Phase.QUIZ: lambda room: room._go(Room.Phase.PLAYING),
     Room.Phase.PLAYING: lambda room: room._open_rating(),
-    Room.Phase.RATING: lambda room: room._advance_reveal(),
+    Room.Phase.RATING: _advance_reveal_and_settle,
     Room.Phase.SUMMARY: lambda room: room.next_round(),
 }
 
@@ -310,27 +360,124 @@ def _quiz_state(room: Room, online: set[int]) -> dict:
     }
 
 
+def _roster_labels(room: Room) -> dict[int, str]:
+    """Each player's pseudonym: their real name, or `Joueur N` where N is their place in the room.
+
+    Under anonymity the number is their PLACE IN THE ROOM, counted by `(created_at, id)` — arrival,
+    not the alphabet — and therefore FIXED FOR THE WHOLE GAME. That stability is the feature: a
+    pseudonym that changed between two prompts of the same game would let a player recognise their
+    own writing in a second costume, which defeats the anonymity twice over, once for the revealed
+    prompt and once for the ranking underneath it. It is derived from nothing but who arrived
+    first, so it does not move when a phone sleeps, when a prompt is revealed, or when a late
+    joiner appears at the end of the roster.
+
+    An `id` is the tiebreak behind `created_at` because two players can join inside the same
+    timestamp's resolution, and a sort that left them in an arbitrary order would number them
+    differently from one snapshot to the next.
+
+    Built for the whole room and not per snapshot caller, because a label computed from whatever
+    the current snapshot happened to be holding is exactly how a handle starts moving.
+    """
+    return {
+        p.id: (f"Joueur {i}" if room.anonymous else p.name)
+        for i, p in enumerate(room.players.order_by("created_at", "id"), start=1)
+    }
+
+
+def _reveal_state(room: Room, rnd, labels: dict[int, str]) -> dict | None:
+    """The one prompt on screen: which one, who wrote it, and how many have rated it so far.
+
+    None when the cursor has nothing behind it, which is a rating phase on a round nobody answered
+    — a room that reached the reveal with no prompt in it. There is no slide to describe, and an
+    empty `prompt` string would be a screen that renders a blank card rather than a phase with
+    nothing in it.
+
+    `rated` counts the raters of the CURRENT prompt, not the notes given so far this round: it is
+    the numerator of the "3 notés" the player is waiting on, and summing every rating of the round
+    would show a number that jumps from 2 to 7 as the reveal walks the prompts.
+    """
+    answers = list(rnd.answers.order_by("id"))
+    if rnd.revealed >= len(answers):
+        return None
+    target = answers[rnd.revealed]
+    return {
+        "index": rnd.revealed,
+        "count": len(answers),
+        "prompt": target.prompt,
+        # `author` is the real name, or null under anonymity. `author_label` is ALWAYS a string to
+        # draw: a screen must never branch on anonymity to decide whether it has a label, so the
+        # pseudonym travels beside the name rather than replacing it.
+        "author": None if room.anonymous else target.player.name,
+        "author_label": labels[target.player_id],
+        "rated": target.ratings.count(),
+    }
+
+
+def _summary_state(room: Room, rnd) -> dict:
+    """The round's synthesis, once anonymity is lifted: one row per prompt, with all four numbers
+    that produced its score.
+
+    The order is the round's answers by id — the same order the reveal walked — so the summary is
+    the transcript of what the players just saw, in sequence. The four numbers are NOT the final
+    contract's `SummaryRow` being a summary; they are the pedagogy: proximity and the two halves
+    of the quality bound, so a player can see their prompt was CLOSE but badly BUILT, which is the
+    lesson the two dimensions exist to teach.
+
+    It carries whatever is stored rather than a default: `settle_round` always writes all three
+    numbers together, so a null in here means the round was never settled at all — which the
+    admin's next button fixes, and which a silent 0 would have hidden as a real score.
+    """
+    return {
+        "round": rnd.order,
+        "rows": [
+            {
+                "author": a.player.name,
+                "prompt": a.prompt,
+                "output": a.output,
+                "proximity": a.score,
+                "quality_llm": a.quality_llm,
+                "quality_peers": a.quality_peers,
+                "quality": a.quality,
+                "round_score": a.round_score,
+            }
+            for a in rnd.answers.order_by("id")
+        ],
+    }
+
+
 def room_state(code: str) -> dict:
     room = get_object_or_404(Room, code=code)
     rnd = room.rounds.filter(order=room.current).first()
     by_player = {a.player_id: a for a in (rnd.answers.all() if rnd else [])}
     online = online_player_ids(room.code)
+    # The rating phase blanks the score and the prompt of every player, and the sort below reads
+    # the same value — so the two can never disagree about which players are hidden.
+    hiding = room.phase == Room.Phase.RATING
     players = []
     for p in room.players.all():
         a = by_player.get(p.id)
         total = p.answers.aggregate(total=Sum("score"))["total"] or 0
+        shown = None if hiding else total
         players.append(
             (
-                total,
+                shown,
                 p.created_at,
                 {
                     "name": p.name,
-                    "score": total,
+                    "score": shown,
                     "answered": a is not None,
-                    "prompt": a.prompt if a else None,
-                    "output": a.output if a else None,
-                    "comment": a.comment if a else None,
-                    "round_score": a.score if a else None,
+                    # Blank, and not "the prompt is elsewhere in the payload": a player who reads
+                    # their own round score at answer time, sees it missing from the column, and
+                    # works out WHICH revealed line is theirs has defeated the anonymity the whole
+                    # feature exists to provide. The output and the comment go with it for the
+                    # same reason — a player recognises their own text — and so does
+                    # `round_score`, which is the same proximity under a second name.
+                    "prompt": None if hiding or a is None else a.prompt,
+                    "output": None if hiding or a is None else a.output,
+                    "comment": None if hiding or a is None else a.comment,
+                    "round_score": None if hiding else (a.score if a else None),
+                    # The NAME stays. The roster is not a leak: knowing who is in the room says
+                    # nothing about who wrote which prompt. It is the scores that cross-reference.
                     "online": p.id in online,
                 },
             )
@@ -338,7 +485,13 @@ def room_state(code: str) -> dict:
     # Join order breaks ties: it is stable across rounds, unlike a name sort where the Python
     # ordering puts "Zoe" before "alice". Sorting on a tuple rather than on the dict keeps
     # `created_at`, a datetime, out of the JSON payload this snapshot is serialised into.
-    players.sort(key=lambda t: (-t[0], t[1]))
+    #
+    # The leading key must survive a None score, and it does not for free: `-None` is a
+    # TypeError, which would kill the whole snapshot the moment the rating phase blanks every
+    # score — and with it the SSE stream, so the rating phase would never even start. Falling
+    # back to 0 keeps the sort total; the join-order tiebreak below is what actually orders the
+    # board while every score is hidden, and it was already the tiebreak for equal scores.
+    players.sort(key=lambda t: (-(t[0] or 0), t[1]))
     state = {
         "code": room.code,
         "phase": room.phase,
@@ -358,6 +511,10 @@ def room_state(code: str) -> dict:
     # files. The gate is the whole point of the block, so it ships where it is true.
     if room.phase == Room.Phase.QUIZ:
         state["quiz"] = _quiz_state(room, online)
+    if room.phase == Room.Phase.RATING and rnd is not None:
+        state["reveal"] = _reveal_state(room, rnd, _roster_labels(room))
+    if room.phase == Room.Phase.SUMMARY and rnd is not None:
+        state["summary"] = _summary_state(room, rnd)
     return state
 
 
@@ -383,20 +540,58 @@ def _maybe_open_playing(room: Room, online: set[int]) -> None:
         room._go(Room.Phase.PLAYING)
 
 
-def maybe_advance(room: Room) -> None:
+def _maybe_advance_reveal(room: Room, rnd, online: set[int]) -> None:
+    """Walk the reveal when everyone who is here and may rate this prompt has rated it.
+
+    THE AUTHOR IS NOT A RATER. They are forbidden to rate their own prompt, so counting them
+    would make the condition unreachable — the round would wait forever for a note the game
+    refuses to accept. So the bar is the online players MINUS the author of the prompt on screen.
+
+    And when that set is EMPTY — the author is the only person connected, so there is nobody the
+    game is waiting for — the phase must NOT advance. `all([])` is `True`, and that is the same
+    vacuous truth this file already refuses twice: a room whose every phone dropped must not run
+    itself, and neither must a room whose only awake player is the one who cannot vote.
+
+    The last prompt settles the round on the way to the summary, so the summary a player lands on
+    already carries the four numbers. `SUMMARY` then stays put: the round gets commented on, and
+    that is the admin's button, not a race between twenty phones.
+    """
+    answers = list(rnd.answers.order_by("id"))
+    if rnd.revealed >= len(answers):
+        return  # nothing to reveal: the admin's button decides, not a rating nobody can give
+    target = answers[rnd.revealed]
+    raters = online - {target.player_id}
+    if not raters:
+        return
+    voted = set(target.ratings.filter(rater_id__in=raters).values_list("rater_id", flat=True))
+    if voted != raters:
+        return
+    if rnd.revealed + 1 < len(answers):
+        rnd.revealed += 1
+        rnd.save(update_fields=["revealed"])
+    else:
+        room._go(Room.Phase.SUMMARY)
+        settle_round(room)
+
+
+def maybe_advance_phase(room: Room) -> None:
     """Move the game on if the players who are there have done what the phase is waiting for.
 
-    Two phases advance on their own: the didacticiel, once everybody online has answered the
-    eight questions, and the round, once everybody online has written a prompt. The others wait
-    for the admin — a round gets commented on, and nothing should move the game while it is.
+    Three phases advance on their own: the didacticiel, once everybody online has answered the
+    eight questions; the round, once everybody online has written a prompt; and the rating, one
+    prompt at a time. The others wait for the admin — a round gets commented on, and nothing
+    should move the game while it is.
 
     The bar is the online players, not `room.players`: a phone that slept or lost wifi is still a
     row in that table forever, so the old comparison waited on someone who was never coming back and
     the whole party sat on a round it could not leave. A player who reconnects mid-round is back in
     the count on their next beat, and `answer` does not require presence, so a late arrival can
     still answer the round that is open when they get back.
+
+    Renamed from `maybe_advance` because it is no longer "maybe the round": it dispatches on the
+    phase now, and there are three things it can advance.
     """
-    if room.phase not in (Room.Phase.QUIZ, Room.Phase.PLAYING):
+    if room.phase not in (Room.Phase.QUIZ, Room.Phase.PLAYING, Room.Phase.RATING):
         return
     online = online_player_ids(room.code)
     if not online:
@@ -411,8 +606,17 @@ def maybe_advance(room: Room) -> None:
     rnd = room.rounds.filter(order=room.current).first()
     if not rnd:
         return
+    if room.phase == Room.Phase.RATING:
+        _maybe_advance_reveal(room, rnd, online)
+        return
     if rnd.answers.filter(player_id__in=online).count() == len(online):
         room.next_round()
+
+
+# The name this function had before the phase machine, kept because `tests/test_quiz.py` imports
+# it and that file belongs to another task. An alias rather than a second definition: two functions
+# that both dispatch on the phase would be two places for the quiz gate to live.
+maybe_advance = maybe_advance_phase
 
 
 @require_POST
@@ -493,6 +697,26 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
     try:
         output = llm.answer(prompt)
         verdict = llm.score(prompt, output, rnd.target)
+        # THE CRITIC'S CALL BELONGS HERE, NOT IN `settle_round`. It is the third billed call of the
+        # submit the player is already waiting on: each player's own request pays for their own
+        # critic, and `runserver` is threaded, so twenty phones are graded concurrently. In
+        # `settle_round` it would be twenty back-to-back calls inside ONE request, fired by the
+        # last player's rating tap — a single HTTP call blocking for the better part of a minute,
+        # on the phase where every phone is waiting for a snapshot that will not come. Same total
+        # spend, a fraction of the latency, and settlement stays arithmetic: free and instant.
+        #
+        # The critic's COMMENT IS DISCARDED, and that is a decision rather than an oversight. The
+        # frozen `SummaryRow` has no room for it, and a finished UI is already coded against that
+        # type: adding a field now would change a contract the frontend reads. The summary tells
+        # the story with the four numbers it already carries — the critic's score, the peers'
+        # mean, the bounded quality and the round's note — which is what a player can act on. The
+        # comment was the only piece of prose about method that is not on screen, and the didacticiel
+        # is where method is taught.
+        #
+        # The target travels with the prompt so the critic knows what the prompt is FOR, and the
+        # rubric is what forbids it from comparing anything: it never sees the answer it produced,
+        # nor a single peer rating, so it cannot be pulled by either.
+        critique = llm.grade_prompt(prompt, rnd.target)
         # The durable backstop, for the case the process-local claim cannot see: another
         # process won unique_together. `transaction.atomic()` is defensive here — with
         # ATOMIC_REQUESTS unset, autocommit already rolls back the single failed statement, so
@@ -501,13 +725,82 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
         # request. Losing the race is the same 409 the player already got, not a 500.
         try:
             with transaction.atomic():
-                rnd.answers.create(player=player, prompt=prompt, output=output, score=verdict.score, comment=verdict.comment)
+                rnd.answers.create(
+                    player=player,
+                    prompt=prompt,
+                    output=output,
+                    score=verdict.score,
+                    comment=verdict.comment,
+                    quality_llm=critique.score,
+                )
         except IntegrityError:
             return json_error("already answered", 409)
     finally:
         _inflight.discard(claim)
-    maybe_advance(room)
+    maybe_advance_phase(room)
     return JsonResponse({"score": verdict.score, "comment": verdict.comment, "output": output})
+
+
+@require_POST
+def rate(request: HttpRequest, code: str) -> JsonResponse:
+    """Give the prompt currently on screen a score out of ten.
+
+    THE BODY CARRIES A TOKEN AND A SCORE, AND NOTHING ELSE. The target is derived here, from
+    `room.current_round()` at the round's `revealed` cursor — so the client never names what it is
+    rating, and that is the security property the whole feature rests on. A body carrying an answer
+    id would have to be checked against three forgeries: voting on your own prompt, skipping ahead
+    to a prompt you like better, and rating the same prompt twice by lying about the index.
+    Deriving the target makes all three unrepresentable rather than merely rejected, which is why
+    `Rating.save()`'s self-rating guard is a backstop here and not the enforcement.
+
+    The score is NOT returned with the progress it produced. The rating screen reads its "3 notés"
+    from the `reveal` block of the next SSE frame, which is the same source every other progress
+    indicator in the game comes from; answering with the count as well would give the client two
+    truths about one number and a way to disagree with the snapshot. `{"ok": true}` is the whole
+    contract, and it is enough: the next frame is at most half a second away.
+    """
+    room = get_object_or_404(Room, code=code)
+    if room.phase != Room.Phase.RATING:
+        return json_error("not rating", 409)
+    data = body(request)
+    try:
+        # Scoped to the room as well as the token, like `answer`: a token from another room must
+        # not vote in this one.
+        player = Player.objects.get(room=room, token=data.get("token", ""))
+    except Player.DoesNotExist:
+        return json_error("bad token", 403)
+    rnd = room.current_round()
+    answers = list(rnd.answers.order_by("id")) if rnd is not None else []
+    # Nothing behind the cursor — no round at all, or a round nobody answered — is the same answer:
+    # there is no prompt on screen, so there is nothing to send a score about. 409 rather than an
+    # IndexError, which would be a 500 on the one phone that is still awake.
+    if not answers or rnd.revealed >= len(answers):
+        return json_error("not rating", 409)
+    target = answers[rnd.revealed]
+    if target.player_id == player.pk:
+        return json_error("your own prompt", 409)
+    score = data.get("score")
+    # `isinstance(True, int)` is True, so a JSON `true` is an int that would pass the type check
+    # and then fail the `Rating` check constraint as a 500 instead of a 400. Same guard as the
+    # quiz's `choice`, and the same reason: a boolean is not a score of 1.
+    if (
+        not isinstance(score, int)
+        or isinstance(score, bool)
+        or not prompts.SCALE_MIN <= score <= prompts.SCALE_MAX
+    ):
+        return json_error("score 1-10", 400)
+    # Checked here and in the database. The view's check is the one a player waits on; the
+    # constraint is the one that survives a race between two taps on a phone that answered twice
+    # before either request came back.
+    if Rating.objects.filter(answer=target, rater=player).exists():
+        return json_error("already rated", 409)
+    try:
+        with transaction.atomic():
+            Rating.objects.create(answer=target, rater=player, score=score)
+    except IntegrityError:
+        return json_error("already rated", 409)
+    maybe_advance_phase(room)
+    return JsonResponse({"ok": True})
 
 
 @require_http_methods(["GET", "POST"])
@@ -600,7 +893,7 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
             QuizAttempt.objects.create(player=player, question=question, choice=choice, correct=correct)
     except IntegrityError:
         return json_error("already answered", 409)
-    maybe_advance(room)
+    maybe_advance_phase(room)
     return JsonResponse(
         {
             "correct": correct,

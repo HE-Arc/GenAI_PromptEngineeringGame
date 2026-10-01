@@ -12,7 +12,7 @@ from game.views import (
     _inflight,
     _presence,
     _presence_lock,
-    maybe_advance,
+    maybe_advance_phase,
     online_player_ids,
     room_state,
 )
@@ -169,7 +169,7 @@ class PresenceTest(TestCase):
         self._player("bob")
         for name in ("ana", "bob"):
             _beat("ABCD", Player.objects.get(room=self.room, name=name).pk)
-        maybe_advance(self.room)
+        maybe_advance_phase(self.room)
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
 
@@ -180,7 +180,7 @@ class PresenceTest(TestCase):
         ana = self._player("ana")
         rnd = Round.objects.get(room=self.room, order=0)
         rnd.answers.create(player=ana, prompt="a", output="42", score=8)
-        maybe_advance(self.room)
+        maybe_advance_phase(self.room)
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
 
@@ -191,7 +191,7 @@ class PresenceTest(TestCase):
         # Bob's phone sleeps: no more beats, so he ages out on the TTL alone.
         self._age("bob", PRESENCE_TTL + 0.1)
         Round.objects.get(room=self.room, order=0).answers.create(player=ana, prompt="a", output="42", score=8)
-        maybe_advance(self.room)
+        maybe_advance_phase(self.room)
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
 
@@ -258,7 +258,7 @@ class PresenceTest(TestCase):
         #    round 1, so it stays open rather than closing over bob's head a second time.
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
-        maybe_advance(self.room)
+        maybe_advance_phase(self.room)
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
         self._answer(ana, "ville du monde")
@@ -283,7 +283,7 @@ class PresenceTest(TestCase):
         self.assertEqual(st["players"][0]["answered"], False)
         self.assertEqual(st["online_count"], 1)
         # And the round he never answered is still open, with him in it.
-        maybe_advance(self.room)
+        maybe_advance_phase(self.room)
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
 
