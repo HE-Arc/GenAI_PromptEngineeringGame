@@ -21,7 +21,7 @@ from game.views import (
 class PresenceTest(TestCase):
     def setUp(self) -> None:
         self.c = Client()
-        self.room = Room.objects.create(code="ABCD", status=Room.Status.PLAYING)
+        self.room = Room.objects.create(code="ABCD", phase=Room.Phase.PLAYING)
         Round.objects.create(room=self.room, order=0, target="42")
         Round.objects.create(room=self.room, order=1, target="Nantes")
         # Process-local, so a DB rollback does not clear it. Without this, a heartbeat from an
@@ -85,7 +85,7 @@ class PresenceTest(TestCase):
         # The lookup filters on `room` as well as `token`. Dropping `room=room` lets a player
         # who is not in this room hold the round open, and show in the roster as online.
         self._player("ana")
-        other = Room.objects.create(code="WXYZ", status=Room.Status.PLAYING)
+        other = Room.objects.create(code="WXYZ", phase=Room.Phase.PLAYING)
         stranger = Player.objects.create(room=other, name="zoe")
         self._stream(stranger.token)
         self.assertEqual(online_player_ids("ABCD"), set())
@@ -138,7 +138,7 @@ class PresenceTest(TestCase):
     def test_presence_in_one_room_does_not_leak_into_another(self) -> None:
         self._player("ana")
         self._stream(Player.objects.get(name="ana").token)
-        Room.objects.create(code="WXYZ", status=Room.Status.WAITING)
+        Room.objects.create(code="WXYZ", phase=Room.Phase.WAITING)
         self.assertEqual(room_state("WXYZ")["online_count"], 0)
         self.assertEqual(online_player_ids("WXYZ"), set())
 
@@ -160,7 +160,7 @@ class PresenceTest(TestCase):
         )
         self.assertEqual(r.status_code, 200)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (1, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
 
     def test_round_stays_open_while_an_online_player_has_not_answered(self) -> None:
         # The flip side: presence must not make the round close early on the players who ARE
@@ -171,7 +171,7 @@ class PresenceTest(TestCase):
             _beat("ABCD", Player.objects.get(room=self.room, name=name).pk)
         maybe_advance(self.room)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (0, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
 
     def test_round_does_not_advance_when_nobody_is_online(self) -> None:
         # `0 == 0` is true: with every phone dropped, "all online players have answered" holds
@@ -182,7 +182,7 @@ class PresenceTest(TestCase):
         rnd.answers.create(player=ana, prompt="a", output="42", score=8)
         maybe_advance(self.room)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (0, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
 
     def test_a_player_going_offline_stops_holding_the_round(self) -> None:
         ana, bob = self._player("ana"), self._player("bob")
@@ -193,7 +193,7 @@ class PresenceTest(TestCase):
         Round.objects.get(room=self.room, order=0).answers.create(player=ana, prompt="a", output="42", score=8)
         maybe_advance(self.room)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (1, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
 
     # --- the round trip: offline, then back, in a ten-round game ----------------------------
 
@@ -221,7 +221,7 @@ class PresenceTest(TestCase):
         r = self._answer(ana, "repete 42")
         self.assertEqual(r.status_code, 200)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (1, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
 
         # 3. No retroactive "already answered" for a round bob never submitted to. The only
         #    durable record of an answer is the Answer row, and the `answered` flag in the payload
@@ -257,13 +257,13 @@ class PresenceTest(TestCase):
         #    live in both directions. Ana is the only other player online and she has not answered
         #    round 1, so it stays open rather than closing over bob's head a second time.
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (1, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
         maybe_advance(self.room)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (1, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
         self._answer(ana, "ville du monde")
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (2, "playing"))  # back in the game
+        self.assertEqual((self.room.current, self.room.phase), (2, "playing"))  # back in the game
         self.assertEqual(room_state("ABCD")["online_count"], 2)
 
     @patch("game.llm.score", return_value=Verdict(5, "moyen"))
@@ -285,7 +285,7 @@ class PresenceTest(TestCase):
         # And the round he never answered is still open, with him in it.
         maybe_advance(self.room)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (0, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
 
     @patch("game.llm.score", side_effect=RuntimeError("model call failed"))
     @patch("game.llm.answer", return_value="42")

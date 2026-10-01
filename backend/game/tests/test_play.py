@@ -12,7 +12,7 @@ from game.views import _beat, _inflight, _presence, room_state
 class PlayTest(TestCase):
     def setUp(self) -> None:
         self.c = Client()
-        self.room = Room.objects.create(code="ABCD", status=Room.Status.WAITING)
+        self.room = Room.objects.create(code="ABCD", phase=Room.Phase.WAITING)
         Round.objects.create(room=self.room, order=0, target="42")
         Round.objects.create(room=self.room, order=1, target="Nantes")
         # The presence registry is process-local, so a rollback of the test transaction does NOT
@@ -21,7 +21,7 @@ class PlayTest(TestCase):
         _presence.clear()
 
     def _play(self) -> None:
-        self.room.status = Room.Status.PLAYING
+        self.room.phase = Room.Phase.PLAYING
         self.room.save()
 
     def _join(self, name: str) -> tuple[HttpResponse, str | None]:
@@ -97,11 +97,11 @@ class PlayTest(TestCase):
         r = self._answer(ta, "repete 42")
         self.assertEqual(json.loads(r.content), {"score": 8, "comment": "tres proche", "output": "quarante-deux"})
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (0, "playing"))  # bob still pending
+        self.assertEqual((self.room.current, self.room.phase), (0, "playing"))  # bob still pending
 
         self._answer(tb, "Nantes")
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (1, "playing"))
+        self.assertEqual((self.room.current, self.room.phase), (1, "playing"))
 
     @patch("game.llm.score", return_value=Verdict(5, "moyen"))
     @patch("game.llm.answer", return_value="x")
@@ -132,7 +132,7 @@ class PlayTest(TestCase):
         # The lookup filters on `room` as well as `token`; dropping `room=room` lets a room-A
         # player submit into room B under a token the other room's state never shows.
         _, t = self._join("ana")
-        other = Room.objects.create(code="WXYZ", status=Room.Status.PLAYING)
+        other = Room.objects.create(code="WXYZ", phase=Room.Phase.PLAYING)
         Round.objects.create(room=other, order=0, target="42")
         r = self.c.post(
             "/api/rooms/WXYZ/answer",
@@ -200,7 +200,7 @@ class PlayTest(TestCase):
         self.assertEqual(Answer.objects.count(), 1)  # the winner's row, not ours
         self.assertEqual(Answer.objects.get().score, 3)
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.status), (0, "playing"))  # not advanced
+        self.assertEqual((self.room.current, self.room.phase), (0, "playing"))  # not advanced
         self.assertEqual(m_answer.call_count, 1)
 
     def test_state_shape_and_totals(self) -> None:
@@ -210,7 +210,7 @@ class PlayTest(TestCase):
         with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(10, "parfait")):
             self._answer(t, "repete 42")
         st = room_state("ABCD")
-        self.assertEqual(set(st), {"code", "status", "current", "total", "target", "players", "online_count"})
+        self.assertEqual(set(st), {"code", "phase", "current", "total", "target", "players", "online_count"})
         self.assertEqual((st["code"], st["current"], st["total"], st["target"]), ("ABCD", 1, 2, "Nantes"))
         p = st["players"][0]
         self.assertEqual(
@@ -296,13 +296,13 @@ class PlayTest(TestCase):
         self.assertTrue(frame.endswith(b"\n\n"), frame)
         payload = json.loads(frame[len(b"data: ") : -2])
         self.assertEqual(
-            set(payload), {"code", "status", "current", "total", "target", "players", "online_count"}
+            set(payload), {"code", "phase", "current", "total", "target", "players", "online_count"}
         )
         self.assertEqual(
             payload,
             {
                 "code": "ABCD",
-                "status": "playing",
+                "phase": "playing",
                 "current": 0,
                 "total": 2,
                 "target": "42",

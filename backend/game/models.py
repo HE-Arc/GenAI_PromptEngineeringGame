@@ -37,6 +37,39 @@ class Room(models.Model):
         `waiting` there are no rounds yet, and every caller has to survive that."""
         return self.rounds.filter(order=self.current).first()
 
+    def _go(self, phase: Phase) -> None:
+        """Move the game to `phase`. The single write every transition goes through, so no two
+        paths can disagree about what else has to move with the phase — a phase change that needs
+        a round reset says so in the method that owns the transition, not here."""
+        self.phase = phase
+        self.save(update_fields=["phase"])
+
+    def _open_rating(self) -> None:
+        """Close the writing phase and put the first prompt of the round on screen.
+
+        `revealed` is reset HERE rather than in `next_round`, because opening the rating is the
+        only thing that decides which prompt is first; and it is per round, so a relaunched game
+        cannot open on prompt 7 of a round it just deleted.
+        """
+        rnd = self.current_round()
+        rnd.revealed = 0
+        rnd.save(update_fields=["revealed"])
+        self._go(self.Phase.RATING)
+
+    def _advance_reveal(self) -> None:
+        """Next prompt, or the summary once the last one is behind us.
+
+        The cursor is an index into the round's answers ordered by id, so the count is the same
+        ordering the reveal reads in: a round where nobody answered has no prompt to reveal, and
+        the first advance lands on the summary rather than on an empty slide.
+        """
+        rnd = self.current_round()
+        if rnd.revealed + 1 < rnd.answers.count():
+            rnd.revealed += 1
+            rnd.save(update_fields=["revealed"])
+        else:
+            self._go(self.Phase.SUMMARY)
+
     def next_round(self) -> None:
         """Advance one round, or finish the game. No-op at the last round."""
         if self.current + 1 < self.rounds.count():

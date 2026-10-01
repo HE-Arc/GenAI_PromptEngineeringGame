@@ -5,7 +5,7 @@ from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
 
 from game.llm import Verdict
-from game.models import Answer, Player, Room, Round
+from game.models import Answer, Player, QuizAttempt, QuizQuestion, Rating, Room, Round
 from game.views import room_state
 
 
@@ -16,9 +16,72 @@ class AdminTest(TestCase):
     # chain. If every test here 500s, check that middleware before anything else.
     def setUp(self) -> None:
         self.c = Client()
+        self._login()
 
     def _login(self, pwd: str = "s3cret") -> HttpResponse:
         return self.c.post("/api/admin/login", data=json.dumps({"password": pwd}), content_type="application/json")
+
+    def _post(self, url: str, data: dict | None = None) -> HttpResponse:
+        """A POST with a JSON body, or with none at all — the admin views read no body, and
+        `body()` turns an empty one into `{}` rather than a parse error."""
+        return self.c.post(url, data=json.dumps(data or {}), content_type="application/json")
+
+    # --- fixtures for the phase machine -----------------------------------------------------
+    #
+    # Built through the ORM on purpose wherever a test is about "one advance from THIS phase":
+    # a fixture that walked there through `start` + `next` would test the transitions twice and
+    # fail for reasons that have nothing to do with the assertion in front of it.
+
+    def _room(self, code: str = "ABCD", tutorial: bool = True, anonymous: bool = True) -> Room:
+        return Room.objects.create(code=code, tutorial=tutorial, anonymous=anonymous)
+
+    def _started(self, code: str = "ABCD", tutorial: bool = False) -> Room:
+        """A room the admin has committed to: ten rounds, and whatever phase `start` opens for the
+        given tutorial flag."""
+        room = self._room(code, tutorial=tutorial)
+        self._post(f"/api/admin/rooms/{code}/start")
+        room.refresh_from_db()
+        return room
+
+    def _in_phase(
+        self,
+        phase: Room.Phase,
+        answers: int = 0,
+        *,
+        revealed: int = 0,
+        rounds: int = 2,
+        code: str = "ABCD",
+        tutorial: bool = False,
+        anonymous: bool = True,
+    ) -> Room:
+        """A room parked in `phase`, on round 0, with `answers` answers already on it.
+
+        `revealed` is the round's reveal cursor, passed explicitly because "the last prompt of
+        three" and "the first prompt of three" are different starting points and neither is more
+        canonical than the other. Two rounds by default, so `next_round()` has somewhere to go:
+        with a single round it goes straight to `done` and every summary test would be testing
+        the end of the game instead of the summary.
+        """
+        room = self._room(code, tutorial=tutorial, anonymous=anonymous)
+        for order in range(rounds):
+            rnd = Round.objects.create(room=room, order=order, target=f"cible {order}")
+        rnd = room.rounds.get(order=0)
+        rnd.revealed = revealed
+        rnd.save(update_fields=["revealed"])
+        for i in range(answers):
+            rnd.answers.create(
+                player=Player.objects.create(room=room, name=f"p{i}"),
+                prompt=f"prompt {i}",
+                output=f"reponse {i}",
+                score=5,
+            )
+        room.current = 0
+        room.phase = phase
+        room.save(update_fields=["current", "phase"])
+        return room
+
+    def _next(self, room: Room) -> HttpResponse:
+        return self._post(f"/api/admin/rooms/{room.code}/next")
 
     def test_login_rejects_bad_password(self) -> None:
         self.assertEqual(self._login("nope").status_code, 403)
@@ -33,10 +96,10 @@ class AdminTest(TestCase):
         self.assertIn("sessionid", self.c.cookies)
 
     def test_create_room_requires_login(self) -> None:
+        self.c = Client()
         self.assertEqual(self.c.post("/api/admin/rooms", content_type="application/json").status_code, 403)
 
     def test_create_room_returns_unique_code(self) -> None:
-        self._login()
         a = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)
         b = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)
         self.assertNotEqual(a["code"], b["code"])
@@ -46,16 +109,15 @@ class AdminTest(TestCase):
         # Both halves of the auth spine, in one test: `require_admin` on `admin_start` and on
         # `admin_next`. Dropping either leaves every other test here green.
         Room.objects.create(code="WXYZ")
-        self.assertEqual(self.c.post("/api/admin/rooms/WXYZ/start", content_type="application/json").status_code, 403)
+        c = Client()
+        self.assertEqual(c.post("/api/admin/rooms/WXYZ/start", content_type="application/json").status_code, 403)
         self.assertEqual(Round.objects.count(), 0)
-        self.assertEqual(self.c.post("/api/admin/rooms/WXYZ/next", content_type="application/json").status_code, 403)
-        Room.objects.get(code="WXYZ").refresh_from_db()
-        self.assertEqual(Room.objects.get(code="WXYZ").status, "waiting")
+        self.assertEqual(c.post("/api/admin/rooms/WXYZ/next", content_type="application/json").status_code, 403)
+        self.assertEqual(Room.objects.get(code="WXYZ").phase, "waiting")
 
     def test_start_creates_ten_rounds(self) -> None:
-        self._login()
         code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
-        r = self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        r = self._post(f"/api/admin/rooms/{code}/start")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(json.loads(r.content)["total"], 10)
         self.assertEqual(Round.objects.filter(room__code=code).count(), 10)
@@ -70,7 +132,6 @@ class AdminTest(TestCase):
         # validation rule rather than a database constraint. An over-long target used to be
         # stored silently. So the assertion here is on the exact string, not on the length
         # being "reasonable" — a truncation is what this is guarding.
-        self._login()
         code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
         long_target = "la recette " + "et encore un detail " * 40 + "de fin"
         # Patched where it is USED, not where it is defined: `views` does
@@ -78,69 +139,220 @@ class AdminTest(TestCase):
         # `admin_start` calls. Patching `game.targets.pick` would leave the real bank in play
         # and this test would silently assert against whichever target got drawn first.
         with patch("game.views.pick", return_value=[long_target] * 10):
-            r = self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+            r = self._post(f"/api/admin/rooms/{code}/start")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(Round.objects.get(room__code=code, order=0).target, long_target)
         self.assertEqual(room_state(code)["target"], long_target)
 
     def test_start_is_idempotent_refuses_second_call(self) -> None:
-        self._login()
         code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
-        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
-        self.assertEqual(self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json").status_code, 409)
+        self._post(f"/api/admin/rooms/{code}/start")
+        self.assertEqual(self._post(f"/api/admin/rooms/{code}/start").status_code, 409)
 
-    def test_next_advances_then_finishes(self) -> None:
-        self._login()
-        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
-        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
-        url = f"/api/admin/rooms/{code}/next"
-        seen = [json.loads(self.c.post(url, content_type="application/json").content)["status"] for _ in range(10)]
-        self.assertEqual(seen, ["playing"] * 9 + ["done"])
-        self.assertEqual(self.c.post(url, content_type="application/json").status_code, 409)
+    # --- start chooses the opening phase ----------------------------------------------------
+
+    def test_start_with_tutorial_opens_the_quiz(self) -> None:
+        room = self._room()
+        self._post(f"/api/admin/rooms/{room.code}/start")
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.QUIZ)
+
+    def test_start_without_tutorial_goes_straight_to_playing(self) -> None:
+        room = self._room(tutorial=False)
+        self._post(f"/api/admin/rooms/{room.code}/start")
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+
+    def test_rounds_are_created_at_start_even_with_the_quiz_open(self) -> None:
+        # The ten targets are drawn once, at start, whoever is looking. Drawing them when the
+        # quiz closes would make the quiz wait on a second event for no benefit.
+        room = self._room()
+        self._post(f"/api/admin/rooms/{room.code}/start")
+        self.assertEqual(room.rounds.count(), 10)
+
+    def test_the_two_flags_are_read_when_the_room_is_created(self) -> None:
+        # Not an admin-transition test, but this is the only way the flag becomes reachable over
+        # HTTP, and `admin_start`'s whole branch on `room.tutorial` is dead code without it: a
+        # party could never be launched without the didacticiel, and a closed gate is unplayable.
+        code = json.loads(self._post("/api/admin/rooms", {"tutorial": False, "anonymous": False}).content)["code"]
+        room = Room.objects.get(code=code)
+        self.assertEqual((room.tutorial, room.anonymous), (False, False))
+        # Absent means the model defaults, which is the safe direction: gate on, names hidden.
+        code2 = json.loads(self._post("/api/admin/rooms").content)["code"]
+        room2 = Room.objects.get(code=code2)
+        self.assertEqual((room2.tutorial, room2.anonymous), (True, True))
+
+    # --- one advance, dispatched per phase --------------------------------------------------
+
+    def test_next_from_quiz_starts_the_game(self) -> None:
+        room = self._started(tutorial=True)
+        self.assertEqual(room.phase, Room.Phase.QUIZ)
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+
+    def test_next_from_playing_opens_the_rating(self) -> None:
+        room = self._started(tutorial=False)
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.RATING)
+        self.assertEqual(room.rounds.get(order=0).revealed, 0)
+
+    def test_opening_the_rating_resets_a_stale_reveal_cursor(self) -> None:
+        # `revealed` is per round, and a round that was rated once would otherwise open the
+        # second rating on prompt 7 of a turn with three prompts.
+        room = self._in_phase(Room.Phase.PLAYING, answers=3, revealed=2)
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.RATING)
+        self.assertEqual(room.rounds.get(order=0).revealed, 0)
+
+    def test_next_from_rating_reveals_the_next_prompt(self) -> None:
+        room = self._in_phase(Room.Phase.RATING, answers=2)
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.RATING)
+        self.assertEqual(room.rounds.get(order=0).revealed, 1)
+
+    def test_next_from_rating_on_the_last_prompt_opens_the_summary(self) -> None:
+        room = self._in_phase(Room.Phase.RATING, answers=3, revealed=2)
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.SUMMARY)
+        self.assertEqual(room.rounds.get(order=0).revealed, 2)  # the cursor does not run past the end
+
+    def test_next_from_rating_with_no_answers_opens_the_summary(self) -> None:
+        # Nobody wrote a prompt, so there is nothing to reveal: the round must not sit on an
+        # empty slide waiting for an advance that could never be right.
+        room = self._in_phase(Room.Phase.RATING)
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.SUMMARY)
+
+    def test_next_from_summary_starts_the_next_round(self) -> None:
+        room = self._in_phase(Room.Phase.SUMMARY)
+        self._next(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+        self.assertEqual(room.current, 1)
+
+    def test_next_from_waiting_is_refused(self) -> None:
+        room = self._room()
+        self.assertEqual(self._next(room).status_code, 409)
+
+    def test_next_from_done_is_refused(self) -> None:
+        # The eleventh advance must be a 409, not an eleventh round: the game ends, it does not
+        # roll over.
+        room = self._in_phase(Room.Phase.DONE)
+        self.assertEqual(self._next(room).status_code, 409)
+
+    def test_next_answers_with_the_phase_it_landed_on(self) -> None:
+        # The admin screen polls `room_state` and posts `next`; it must not have to guess which
+        # of the six it just triggered.
+        room = self._started(tutorial=False)
+        self.assertEqual(json.loads(self._next(room).content), {"ok": True, "phase": "rating"})
+
+    def test_twelve_rounds_walk_to_done(self) -> None:
+        # A round is now several admin actions, not one. Ten rounds must still end at `done`,
+        # and the eleventh advance must be a 409 rather than an eleventh round.
+        room = self._started(tutorial=False)
+        for _ in range(40):
+            if room.phase == Room.Phase.DONE:
+                break
+            self._next(room)
+            room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.DONE)
+        self.assertEqual(self._next(room).status_code, 409)
+
+    def test_a_tutorial_game_still_walks_to_done(self) -> None:
+        # Same walk, one phase longer: the didacticiel is one advance on top of the ten rounds,
+        # so it must not be the thing that pushes the game past `done`.
+        room = self._started(tutorial=True)
+        for _ in range(40):
+            if room.phase == Room.Phase.DONE:
+                break
+            self._next(room)
+            room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.DONE)
+        self.assertEqual(room.current, 9)
+        self.assertEqual(self._next(room).status_code, 409)
+
+    # --- restart ---------------------------------------------------------------------------
 
     def test_restart_requires_login(self) -> None:
-        Room.objects.create(code="WXYZ", status=Room.Status.PLAYING)
-        self.assertEqual(self.c.post("/api/admin/rooms/WXYZ/restart", content_type="application/json").status_code, 403)
+        Room.objects.create(code="WXYZ", phase=Room.Phase.PLAYING)
+        c = Client()
+        self.assertEqual(c.post("/api/admin/rooms/WXYZ/restart", content_type="application/json").status_code, 403)
         room = Room.objects.get(code="WXYZ")
-        self.assertEqual(room.status, "playing")  # nothing was touched
+        self.assertEqual(room.phase, "playing")  # nothing was touched
 
     def test_restart_from_playing_returns_to_lobby_and_keeps_players(self) -> None:
-        self._login()
-        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        code = json.loads(self._post("/api/admin/rooms", {"tutorial": False}).content)["code"]
         self._join(code, "ana")
-        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
-        r = self.c.post(f"/api/admin/rooms/{code}/restart", content_type="application/json")
+        self._post(f"/api/admin/rooms/{code}/start")
+        r = self._post(f"/api/admin/rooms/{code}/restart")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(json.loads(r.content), {"ok": True, "status": "waiting"})
+        self.assertEqual(json.loads(r.content), {"ok": True, "phase": "waiting"})
         room = Room.objects.get(code=code)
-        self.assertEqual((room.status, room.current), ("waiting", 0))
+        self.assertEqual((room.phase, room.current), ("waiting", 0))
         self.assertEqual(Round.objects.filter(room=room).count(), 0)
         self.assertEqual([p.name for p in room.players.all()], ["ana"])
 
     def test_restart_from_done_returns_to_lobby(self) -> None:
-        self._login()
-        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        code = json.loads(self._post("/api/admin/rooms", {"tutorial": False}).content)["code"]
         self._join(code, "ana")
-        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        self._post(f"/api/admin/rooms/{code}/start")
         url = f"/api/admin/rooms/{code}/next"
-        for _ in range(10):
-            self.c.post(url, content_type="application/json")
-        self.assertEqual(Room.objects.get(code=code).status, "done")
-        r = self.c.post(f"/api/admin/rooms/{code}/restart", content_type="application/json")
+        for _ in range(40):
+            if self._post(url).status_code == 409:
+                break
+        self.assertEqual(Room.objects.get(code=code).phase, Room.Phase.DONE)
+        r = self._post(f"/api/admin/rooms/{code}/restart")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(json.loads(r.content), {"ok": True, "status": "waiting"})
+        self.assertEqual(json.loads(r.content), {"ok": True, "phase": "waiting"})
         room = Room.objects.get(code=code)
-        self.assertEqual((room.status, room.current), ("waiting", 0))
+        self.assertEqual((room.phase, room.current), ("waiting", 0))
         self.assertEqual(Round.objects.filter(room=room).count(), 0)
         self.assertEqual(room.players.count(), 1)
+
+    def test_restart_keeps_the_tutorial_and_anonymity_flags(self) -> None:
+        # A checkbox that silently unticks itself on restart is a flag nobody can trust: the
+        # second game would open its gate and name its authors without anybody deciding to.
+        room = self._in_phase(Room.Phase.SUMMARY, tutorial=False, anonymous=False)
+        self._post(f"/api/admin/rooms/{room.code}/restart")
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.WAITING)
+        self.assertFalse(room.tutorial)
+        self.assertFalse(room.anonymous)
+
+    def test_restart_erases_quiz_attempts_and_ratings(self) -> None:
+        # Neither cascades off the rounds: a rating hangs off the answer, which the round delete
+        # does take, but a quiz attempt hangs off the player and the question, and both survive.
+        # Left behind, a returning player is told they already answered a question in a game that
+        # no longer exists.
+        room = self._in_phase(Room.Phase.SUMMARY, answers=2)
+        authors = list(room.players.all())
+        rater = Player.objects.create(room=room, name="zoe")
+        question = QuizQuestion.objects.create(
+            order=0, prompt="q", choices=["a", "b", "c", "d"], correct=0, explanation="parce que"
+        )
+        QuizAttempt.objects.create(player=authors[0], question=question, choice=0, correct=True)
+        Rating.objects.create(answer=authors[0].answers.first(), rater=rater, score=7)
+        self.assertEqual((QuizAttempt.objects.count(), Rating.objects.count()), (1, 1))
+
+        self._post(f"/api/admin/rooms/{room.code}/restart")
+        self.assertEqual(QuizAttempt.objects.count(), 0)
+        self.assertEqual(Rating.objects.count(), 0)
+        # The bank is not the game's: it survives the reset, and so do the players.
+        self.assertEqual(QuizQuestion.objects.count(), 1)
+        self.assertEqual(room.players.count(), 3)
 
     def test_restart_erases_answers_and_keeps_tokens_usable(self) -> None:
         # The whole point of the feature: nobody rejoins. `ana`'s token from the first game is
         # what she submits with in the second, so this fails if the players were recreated.
-        self._login()
-        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        code = json.loads(self._post("/api/admin/rooms", {"tutorial": False}).content)["code"]
         token = self._join(code, "ana")
-        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        self._post(f"/api/admin/rooms/{code}/start")
         with patch("game.llm.answer", return_value="42"), patch(
             "game.llm.score", return_value=Verdict(7, "pas mal")
         ):
@@ -151,14 +363,12 @@ class AdminTest(TestCase):
             )
         self.assertEqual(Answer.objects.count(), 1)
 
-        self.c.post(f"/api/admin/rooms/{code}/restart", content_type="application/json")
+        self._post(f"/api/admin/rooms/{code}/restart")
         self.assertEqual(Answer.objects.count(), 0)  # cascade through the deleted rounds
         self.assertEqual(Player.objects.get(room_id=code, name="ana").token, token)
 
         # Second game, same player, same token, no rejoin.
-        self.assertEqual(
-            self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json").status_code, 200
-        )
+        self.assertEqual(self._post(f"/api/admin/rooms/{code}/start").status_code, 200)
         with patch("game.llm.answer", return_value="42"), patch(
             "game.llm.score", return_value=Verdict(9, "nickel")
         ):
@@ -176,22 +386,18 @@ class AdminTest(TestCase):
     def test_second_restart_is_a_noop(self) -> None:
         # Double-clicking the admin button must not lock the admin out of their own room, so
         # this is 200 and not the 409 `admin_start` returns for its own second call.
-        self._login()
-        code = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)["code"]
+        code = json.loads(self._post("/api/admin/rooms", {"tutorial": False}).content)["code"]
         self._join(code, "ana")
-        self.c.post(f"/api/admin/rooms/{code}/start", content_type="application/json")
+        self._post(f"/api/admin/rooms/{code}/start")
         url = f"/api/admin/rooms/{code}/restart"
-        self.assertEqual(json.loads(self.c.post(url, content_type="application/json").content)["status"], "waiting")
-        again = self.c.post(url, content_type="application/json")
+        self.assertEqual(json.loads(self._post(url).content)["phase"], "waiting")
+        again = self._post(url)
         self.assertEqual(again.status_code, 200)
-        self.assertEqual(json.loads(again.content), {"ok": True, "status": "waiting"})
+        self.assertEqual(json.loads(again.content), {"ok": True, "phase": "waiting"})
         self.assertEqual(Room.objects.get(code=code).players.count(), 1)
 
     def test_restart_on_unknown_room_is_404(self) -> None:
-        self._login()
-        self.assertEqual(
-            self.c.post("/api/admin/rooms/NOPE/restart", content_type="application/json").status_code, 404
-        )
+        self.assertEqual(self._post("/api/admin/rooms/NOPE/restart").status_code, 404)
 
     def _join(self, code: str, name: str) -> str:
         r = self.c.post(

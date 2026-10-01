@@ -12,7 +12,7 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET, require_POST
 
 from game import llm
-from game.models import Player, Room, Round
+from game.models import Player, QuizAttempt, Room, Round
 from game.targets import ROUNDS_PER_GAME, pick
 
 _ALPHABET = string.ascii_uppercase.replace("O", "").replace("I", "")
@@ -129,7 +129,16 @@ def admin_create_room(request: HttpRequest) -> JsonResponse:
     if (err := require_admin(request)):
         return err
     code = _new_code()
-    Room.objects.create(code=code)
+    # `tutorial` and `anonymous` are read here, at creation, and never again: they are per-game
+    # settings, and a game that could turn its own gate on halfway through would tell every
+    # player in the room which screen they are supposed to be on. Absent from the body means the
+    # model defaults, which is the safe direction — a gate on and names hidden.
+    data = body(request)
+    Room.objects.create(
+        code=code,
+        tutorial=bool(data.get("tutorial", True)),
+        anonymous=bool(data.get("anonymous", True)),
+    )
     return JsonResponse({"code": code})
 
 
@@ -141,20 +150,43 @@ def admin_start(request: HttpRequest, code: str) -> JsonResponse:
     if room.rounds.exists():
         return json_error("already started", 409)
     Round.objects.bulk_create([Round(room=room, order=i, target=t) for i, t in enumerate(pick(ROUNDS_PER_GAME))])
-    room.status = Room.Status.PLAYING
-    room.save(update_fields=["status"])
-    return JsonResponse({"ok": True, "total": ROUNDS_PER_GAME})
+    # The ten targets are drawn HERE and not when the didacticiel closes. Drawing them at the
+    # moment the admin commits is the one instant nobody is waiting on anything, and it makes the
+    # target set fixed for the whole game — which is what "same ten rounds for everybody" has to
+    # mean. With a tutorial, the rounds sit behind the quiz until the admin advances out of it.
+    room._go(Room.Phase.QUIZ if room.tutorial else Room.Phase.PLAYING)
+    return JsonResponse({"ok": True, "total": ROUNDS_PER_GAME, "phase": room.phase})
+
+
+# What the admin's single "advance" button means in each phase. A phase absent from this table has
+# no advance: 409. Written as data so the six cases are readable at a glance, and so adding a phase
+# forces a decision here instead of defaulting to something arbitrary — `waiting` has nothing to
+# advance into and `done` has nothing left, and both would otherwise be whatever the last `else`
+# happened to be.
+#
+# The room's own methods do the moving, not lambdas that write fields: a transition that has to
+# touch the round's reveal cursor as well as the phase cannot be one line, and hiding that behind
+# a table entry would make it look like it could.
+_PHASE_ADVANCE = {
+    Room.Phase.QUIZ: lambda room: room._go(Room.Phase.PLAYING),
+    Room.Phase.PLAYING: lambda room: room._open_rating(),
+    Room.Phase.RATING: lambda room: room._advance_reveal(),
+    Room.Phase.SUMMARY: lambda room: room.next_round(),
+}
 
 
 @require_POST
 def admin_next(request: HttpRequest, code: str) -> JsonResponse:
+    """The one and only "move the game on" button. Its meaning depends on where the room is,
+    which is why it is a table and not a chain of `if`s."""
     if (err := require_admin(request)):
         return err
     room = get_object_or_404(Room, code=code)
-    if room.status != Room.Status.PLAYING:
-        return json_error("not playing", 409)
-    room.next_round()
-    return JsonResponse({"ok": True, "status": room.status})
+    advance = _PHASE_ADVANCE.get(room.phase)
+    if advance is None:
+        return json_error(f"no advance from {room.phase}", 409)
+    advance(room)
+    return JsonResponse({"ok": True, "phase": room.phase})
 
 
 @require_POST
@@ -165,20 +197,31 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
     on the admin button cannot lock the admin out of their own room.
 
     Atomic because `events` polls `room_state` every 0.5s and broadcasts the whole snapshot.
-    In autocommit the delete of the rounds commits before the status save, so a poller can
-    catch the room mid-reset (rounds gone, status still `playing`, `total` 0) and push that
+    In autocommit the delete of the rounds commits before the phase save, so a poller can
+    catch the room mid-reset (rounds gone, phase still `playing`, `total` 0) and push that
     snapshot to every phone. One transaction means the poller only ever reads the before-state
     or the after-state.
+
+    `tutorial` and `anonymous` deliberately survive, and so do the players and their tokens: they
+    describe the game the admin is about to relaunch, not the one that just ended. A checkbox that
+    silently unticks itself on restart is a flag nobody can trust, and a lobby everybody has to
+    rejoin is the thing this endpoint exists to avoid.
+
+    The quiz attempts are deleted explicitly, and this is not redundant with the cascade: they
+    hang off `Player` and `QuizQuestion`, both of which survive this reset, so leaving them
+    behind would tell a returning player they had already answered a question in a game that no
+    longer exists.
     """
     if (err := require_admin(request)):
         return err
     room = get_object_or_404(Room, code=code)
     with transaction.atomic():
-        room.rounds.all().delete()  # answers cascade via the round FK
+        room.rounds.all().delete()  # answers cascade via the round FK, ratings via Answer
+        QuizAttempt.objects.filter(player__room=room).delete()
         room.current = 0
-        room.status = Room.Status.WAITING
-        room.save(update_fields=["current", "status"])
-    return JsonResponse({"ok": True, "status": room.status})
+        room.phase = Room.Phase.WAITING
+        room.save(update_fields=["current", "phase"])
+    return JsonResponse({"ok": True, "phase": room.phase})
 
 
 def room_state(code: str) -> dict:
@@ -212,7 +255,7 @@ def room_state(code: str) -> dict:
     players.sort(key=lambda t: (-t[0], t[1]))
     return {
         "code": room.code,
-        "status": room.status,
+        "phase": room.phase,
         "current": room.current,
         "total": room.rounds.count(),
         "target": rnd.target if rnd else None,
@@ -232,7 +275,7 @@ def maybe_advance(room: Room) -> None:
     the count on their next beat, and `answer` does not require presence, so a late arrival can
     still answer the round that is open when they get back.
     """
-    if room.status != Room.Status.PLAYING:
+    if room.phase != Room.Phase.PLAYING:
         return
     rnd = room.rounds.filter(order=room.current).first()
     if not rnd:
@@ -254,7 +297,7 @@ def join(request: HttpRequest, code: str) -> JsonResponse:
     name = str(body(request).get("name", "")).strip()[:32]
     if not name:
         return json_error("name required")
-    if room.status != Room.Status.WAITING:
+    if room.phase != Room.Phase.WAITING:
         return json_error("game already started", 409)
     if room.players.filter(name=name).exists():
         return json_error("name taken", 409)
@@ -301,7 +344,7 @@ def events(request: HttpRequest, code: str) -> StreamingHttpResponse:
 @require_POST
 def answer(request: HttpRequest, code: str) -> JsonResponse:
     room = get_object_or_404(Room, code=code)
-    if room.status != Room.Status.PLAYING:
+    if room.phase != Room.Phase.PLAYING:
         return json_error("not playing", 409)
     data = body(request)
     try:
