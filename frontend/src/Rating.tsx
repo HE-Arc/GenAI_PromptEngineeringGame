@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, ConsoleBar, RoundTrack, ScoreScale } from './ui'
-import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
+import { AnswerMeter, ConsoleBar, ReadyBar, RoundTrack, ScoreScale } from './ui'
+import { ApiError, describe, getName, getToken, post, postReady, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
 
 /* The cross-rating screen. The most constrained surface in the console, and the constraints are
@@ -245,6 +245,29 @@ export default function Rating({
             </p>
           </form>
         )}
+
+        {/* The end of the discussion about THIS prompt, under the scale that scored it and
+            outside the form that sent the note. Outside, and not as a second submit inside:
+            `Ctrl/⌘ + Entrée` is bound to the rating form, and a vote reachable by the same
+            chord would be a vote a player could cast while believing they were noting — and the
+            note is not undoable from here.
+            It sits under the scale rather than beside it because the order is the argument:
+            the note is this player's job and finishes first, then the room talks about it and
+            says so. */}
+        <ReadyBar
+          ready={state.ready}
+          onReady={async () => {
+            try {
+              await postReady(code, getToken(code) ?? '')
+            } catch (e) {
+              // `describe`, not a fixed sentence: the refusals are two different facts with two
+              // different repairs, and « the vote failed » is neither of them. A vote the server
+              // already had, and a phone that woke up on the next prompt, both arrive here as a
+              // 409 with a reason attached.
+              setErr(describe(e))
+            }
+          }}
+        />
 
         {/* The one instrument on this screen, and the same one the players and the host are
             looking at: it says how far the room has got on this prompt. Reused rather than

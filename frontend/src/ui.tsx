@@ -1,7 +1,7 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { fr, noun, nounOf } from './format'
 import { linkWord, type Link } from './useRoom'
-import { SCALE_MAX, type Player } from './api'
+import { SCALE_MAX, type Player, type ReadyState } from './api'
 
 /* The instrument panel. Every screen is built from these, which is what makes six screens
  * read as one device: the same lamp, the same track, the same meter, the same board. */
@@ -449,6 +449,77 @@ export function DangerButton(props: DangerProps) {
           {confirming ? armedLabel : label}
         </button>
       )}
+    </div>
+  )
+}
+
+// The class's own bar on a discussion: one wide button, the count under it. ONE component for
+// the three screens that discuss, and the reason is not tidiness — the rule, the wording and the
+// two disabled states are the same in all three, and three copies are three places for « Prêt »
+// and the sentence under it to drift apart while the server keeps one rule.
+//
+// It renders itself away when there is no discussion rather than being handed a flag: `ready` is
+// null outside a step, so the screen that mounts this never has to know the phase it is in.
+export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady: () => void }) {
+  // The POST is the authority on its own outcome and the stream is half a second behind a thumb,
+  // so this flag is the window the server's `already ready` lives in: without it, a thumb that
+  // taps twice sends two votes, and the second one paints a failure under a vote the server
+  // recorded — on a screen that a class is looking at.
+  //
+  // It is set before the await and cleared in a `finally`, which is the same shape as the three
+  // screens' own `busy`, and it is deliberately NOT an optimistic « I have voted » flag: that one
+  // has to be undone if the POST is refused, and this component cannot know — `onReady` reports a
+  // failure by writing to the screen's own error line and resolving. A flag that could strand a
+  // player on a button they cannot retry is worse than the tap it prevents. `ready.mine` is the
+  // durable lock, and it arrives with the next frame.
+  //
+  // Local to this control on purpose: the screens' `busy` also disables the four answers, the
+  // Noter button and Envoyer, and a vote in flight must not do that.
+  const [busy, setBusy] = useState(false)
+  if (!ready) return null
+  const there = ready.count >= ready.needed
+  // What the label and the colour say, and it is BROADER than `mine` on purpose. Once the class
+  // has crossed the bar this player's own tap is refused too, so a button still reading « Je suis
+  // prêt » would be inviting a tap the server turns down. `settled` is the situation; the counter
+  // underneath says which of the two produced it.
+  const settled = ready.mine || there
+  return (
+    <div className="ready">
+      {/* Disabled on all three, and none of them is a mistake: a player who has voted does not
+          vote again, a player whose own vote carried the class is not handed a second one to
+          press, and a vote still travelling is not sent twice. Ghost is the console's own
+          treatment for an action already taken, so it is borrowed here rather than invented.
+          The label says the state and never the rule — « the connected phones, halved and rounded
+          up » is the server's arithmetic, and a student should not have to do it to know whether
+          to wait. */}
+      <button
+        type="button"
+        className={`btn${settled ? ' btn--ghost' : ' btn--signal'} btn--wide`}
+        onClick={async () => {
+          setBusy(true)
+          try {
+            await onReady()
+          } finally {
+            setBusy(false)
+          }
+        }}
+        disabled={settled || busy}
+      >
+        {settled ? 'Prêt' : 'Je suis prêt'}
+      </button>
+      {/* Live, because this is the only thing on the bar that moves without the player doing
+          anything: other phones pressing, which a player cannot otherwise perceive at all until
+          the room jumps. `polite`, so it never talks over the screen's own live region — and it
+          carries the sentence AND the fraction, so the change it announces is the whole of what
+          the row above it draws.
+          The noun goes through `nounOf` like every other count in the console: « 1 sur 2 prêts »
+          is wrong French on a phone a teacher is reading from the front of the room, and the
+          rule that fixes it already exists in `format.ts`. */}
+      <p className="prose prose--sm" aria-live="polite">
+        {there
+          ? 'La classe passe à la suite.'
+          : `${ready.count} sur ${ready.needed} ${nounOf(ready.count, 'prêt', 'prêts')}.`}
+      </p>
     </div>
   )
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, PlayerName, Readout, ScoreScale, Section, Step } from './ui'
+import { AnswerMeter, Board, ConsoleBar, PlayerName, Readout, ReadyBar, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
-import { absent, describe, getName, getToken, post, present, type Player, type State } from './api'
+import { absent, describe, getName, getToken, post, postReady, present, type Player, type State } from './api'
 import type { Link } from './useRoom'
 
 type Result = { score: number; comment: string; output: string; round: number }
@@ -306,6 +306,29 @@ export default function Game({
             </p>
           </section>
         )}
+
+        {/* The end of the round's discussion, directly under the table it is about. Directly,
+            because the numbers are what the room is arguing about and the bar says whether the
+            room is finished arguing — it is the summary's own conclusion, not a control parked at
+            the bottom of the screen.
+            It only ever appears on a summary: `state.ready` is null while a round is open, so the
+            playing phase below keeps its composer and never grows a second submit — and the
+            failure is reported through this screen's own `setErr`, the same line the composer
+            uses. */}
+        <ReadyBar
+          ready={state.ready}
+          onReady={async () => {
+            try {
+              await postReady(code, getToken(code) ?? '')
+            } catch (e) {
+              // `describe`, not a fixed sentence: the refusals are two different facts with two
+              // different repairs, and « the vote failed » is neither of them. A vote the server
+              // already had, and a phone that woke up on the next round, both arrive here as a
+              // 409 with a reason attached.
+              setErr(describe(e))
+            }
+          }}
+        />
 
         {/* The target and the field it is written against, kept as one block: on a phone
             turned sideways they sit side by side, on a phone held upright they are the first

@@ -69,6 +69,18 @@ export interface SummaryRow {
   round_score: number
 }
 
+// The class's own bar on the current step. `needed` rather than `quorum` because the server
+// sends it under that name: it is a number of players, not a score, and this payload has no
+// other float.
+export type ReadyState = {
+  // Which discussion this is: `quiz:3`, `rating:2:0`, `summary:2`. Shown nowhere — it is here so
+  // a screen can tell « my vote was for the step on screen » from « my vote is stale ».
+  step: string
+  count: number
+  needed: number
+  mine: boolean
+}
+
 // One question of the didacticiel, as the GET endpoint returns it: no `correct`, no
 // `explanation`. Those two travel in the POST response that reveals the answer, so a player
 // with devtools open cannot read the key off the bank.
@@ -165,6 +177,11 @@ export type State = {
   quiz: QuizState | null
   reveal: RevealState | null
   summary: { round: number; rows: SummaryRow[] } | null
+  // The class's own bar on the step the room is discussing, and `null` everywhere else — four of
+  // the six phases, plus a phase that has no step behind it. Unconditional, for the reason the
+  // three blocks above are: a client that tests for a key's existence has to know the phase to do
+  // it, and this is the block that lets a screen say nothing about phases at all.
+  ready: ReadyState | null
 }
 
 // The cross-rating scale, declared here because this file is where the room-state contract
@@ -212,6 +229,16 @@ export async function post<T>(path: string, body?: unknown): Promise<T> {
   return data as T
 }
 
+// « On peut passer. » One player's vote on the step the room is already in.
+//
+// The client never names the step: a payload that could name it is a payload that could vote on a
+// discussion that has not started, and the count would then hold a vote the room never asked for.
+// So the body is the token and nothing else, and what to draw comes back from the next snapshot —
+// the POST only has to say whether it was written, which is why this returns nothing.
+export async function postReady(code: string, token: string): Promise<void> {
+  await post(`/api/rooms/${code}/ready`, { token })
+}
+
 // The server answers in English, the room speaks French, and the two must not be allowed to
 // meet. These are every message backend/game/views.py can return, translated into something a
 // first-time player can act on rather than a status code. Kept in one place so the six
@@ -232,6 +259,15 @@ const REASONS: Record<string, string> = {
   'quiz not open': 'Le didacticiel est fermé. L’animateur fait avancer la partie.',
   'not rating': 'La notation est fermée. L’animateur fait avancer la partie.',
   'your own prompt': 'Ce prompt est le tien : tu ne peux pas le noter.',
+  // The three refusals of the ready bar, and the first two are the reason the generic line below
+  // is wrong here rather than merely blunt. `already ready` comes back to a player whose vote WAS
+  // recorded — the second tap of a thumb — and `nothing to discuss` to a phone that woke up on the
+  // next step; both are told « Réessaie dans un instant » by the fallback, which is advice for a
+  // request that failed, not for one the server has already had. The third is the author of the
+  // prompt on screen, who is not a player of this bar at all and needs to be told why.
+  'already ready': 'Tu as déjà dit que tu étais prêt.',
+  'nothing to discuss': 'La classe est déjà passée à la suite : il n’y a plus rien à discuter.',
+  'you wrote this one': 'Ce prompt, c’est toi qui l’as écrit : personne ne note le sien.',
   'score 1-10': 'Choisis une note entre 1 et 10.',
   'prompt required': 'Écris un prompt avant de l’envoyer.',
   'bad token': 'Cette partie a peut-être été relancée. Reprends le code depuis l’accueil.',

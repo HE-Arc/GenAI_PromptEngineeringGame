@@ -388,6 +388,27 @@ figure {
   width: 100%;
 }
 
+/* The class's own bar on a discussion. One component, three screens, so it is one block: a
+ * full-width button with the count under it, because on a phone held in one hand the button is
+ * the target and the count is what the teacher standing in front of the room reads off the
+ * students' phones.
+ *
+ * No `min-height` here: `.btn` already carries the 3rem floor, and a second declaration of the
+ * same number in a descendant selector is a rule that can disagree with the one it copies.
+ *
+ * The count is centred because the button it belongs to is. The two are one object read in that
+ * order — target, then state — and a centred sentence under a centred button with a left edge
+ * hanging off it reads as two things that happen to be stacked. */
+.ready {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+
+.ready .prose {
+  text-align: center;
+}
+
 /* 1rem and never smaller. iOS Safari zooms the whole page in on focus below 16px and does
  * not zoom back out, which would leave the player navigating a magnified console after a
  * single tap on a field they were told to read.
