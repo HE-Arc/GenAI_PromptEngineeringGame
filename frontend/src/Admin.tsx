@@ -367,7 +367,7 @@ export default function Admin() {
             : `${noun(countdown(quizWindow.left), 'seconde', 'secondes')} pour répondre`,
           figures: `${noun(q.done, 'joueur a répondu', 'joueurs ont répondu')} sur ${noun(q.online_count, 'joueur connecté', 'joueurs connectés')}.`,
           hint: quizClosed
-            ? 'Passe à la question suivante quand tu veux.'
+            ? 'La classe passe à la suite quand la majorité est prête. Tu peux forcer.'
             : 'Tu peux refermer la question avant la fin si la classe a compris.',
         }
       }

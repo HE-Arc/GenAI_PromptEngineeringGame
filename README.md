@@ -66,11 +66,15 @@ d'admin, et une session forgée ne peut pas être révoquée.
 
 ```
 lobby ──▶ didacticiel ──▶ ┌─ tour 1 ─┐
-         (8/10 questions)   │          │
+         (8 questions)      │          │
                           ▼          │
                    rédaction ──▶ notation ──▶ résumé ──▶ tour suivant
-                                                         └──▶ classement final
+                                                          └──▶ classement final
 ```
+
+Entre chaque étape, la classe **discute à voix haute**, puis appuie sur « prêt ». Quand la
+majorité l'a fait, le jeu passe à la suite tout seul. L'admin crée la partie, la lance, et
+n'a plus de bouton à presser pendant la séance.
 
 **Didacticiel.** Huit questions à quatre choix, tirées dans un ordre propre à la partie et
 identiques pour tous les joueurs. Chaque réponse est révélée avec son explication. Le
@@ -105,10 +109,18 @@ la note du critique, la moyenne des pairs, la qualité retenue et la note du tou
   pour sa seule proximité, de façon provisoire ; au résumé il est corrigé. Cette correction
   peut être une baisse, et c'est le moment pédagogique : on y voit le prix d'un prompt faible.
 - **Classement final** : la somme des dix tours, sur 100.
-- **Avance de phase** : elle ne compte que les joueurs **connectés**, et seulement s'il y en a
-  au moins un, sinon `0 == 0` ferait avancer la partie toute seule. Un téléphone qui dort ne
-  bloque donc pas la classe. L'admin avance quand il le décide, à n'importe quelle phase ; le
-  résumé ne bouge jamais tout seul, parce qu'un tour se commente.
+- **Discussion et avance** : chaque moment de discussion — après une question du didacticiel
+  révélée, après un prompt noté, après le résumé d'un tour — se termine quand la **majorité**
+  des joueurs **connectés** a appuyé sur « prêt ». La moitié arrondie au supérieur : 11 sur 20,
+  2 sur 3, et 2 sur 2 quand il n'y a que deux joueurs. La classe fait avancer le jeu toute
+  seule ; le bouton de l'admin reste, pour le cas où un téléphone est mort.
+- **Le décompte ne compte que les joueurs connectés**, et seulement s'il y en a au moins un,
+  sinon `0 == 0` ferait avancer une partie vide. Un téléphone qui dort ne bloque donc personne.
+  L'auteur du prompt à l'écran ne vote pas : personne ne note le sien, donc il ne fait pas
+  partie du décompte.
+- **La discussion est orale.** Aucun champ de texte, aucun commentaire écrit : sur un
+  téléphone, un élève qui écrit ne parle plus à sa classe. Le didacticiel garde sa fenêtre de
+  trente secondes, et elle se ferme dès que tous les joueurs connectés ont répondu.
 - **Un joueur hors ligne** qui revient est retrouvé par son jeton, sans rien ressaisir. Il peut
   noter, et il participe au tour suivant. En revanche il ne peut plus écrire pour le tour
   qu'il a manqué.
@@ -129,7 +141,7 @@ dans le même ordre.
 cd backend && uv run python manage.py test game
 ```
 
-277 tests. Aucun n'ouvre de connexion réseau, et tous passent sans `OPENAI_API_KEY`, donc avec
+308 tests. Aucun n'ouvre de connexion réseau, et tous passent sans `OPENAI_API_KEY`, donc avec
 les doublures locales. Ils ne mockent pas tous au même niveau : `test_play.py` et
 `test_rating.py` mockent `game.llm.answer`, `game.llm.score` et `game.llm.grade_prompt`, tandis
 que `test_llm.py` mocke `llm.OpenAI` lui-même pour que le vrai `_chat` s'exécute.
