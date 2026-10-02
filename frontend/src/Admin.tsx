@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, DangerButton, Readout, Roster, RosterList, Step } from './ui'
 import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
-import { absent, describe, post, present, type Phase, type QuizState } from './api'
+import { absent, ApiError, describe, listRooms, post, present, type Phase, type QuizState, type RoomSummary } from './api'
 import { useRoom } from './useRoom'
 
 // The admin's own room code, kept so a reload does not orphan a running game. Nothing on this
@@ -11,6 +11,22 @@ import { useRoom } from './useRoom'
 // It is written only after the room has answered us (see the effect below), so it is always a
 // code that exists.
 const roomKey = 'jeu-genai:admin-room'
+
+// How often the list of rooms is re-read while the console has no room open.
+//
+// Five seconds, and not the console's own half second: that stream carries the game a host is
+// standing in front of a class about, and a number that moves has to move with it. This list is
+// read between rooms — an admin glances at it to decide which code to go back into — and what it
+// carries moves on human timescales: someone joins, someone leaves, a phase advances because a
+// human pressed a button. One second would be twelve times the requests for a difference no eye
+// can act on; five is short enough that a row is never the reason a tap went to the wrong room,
+// and it is one request every five seconds on a screen nobody is even looking at.
+//
+// A timer rather than a fetch on every render, because every render would be a request per
+// render, and this screen re-renders on each keystroke in the password field. And a timer that
+// lives in an effect keyed on nothing, so it is torn down the moment the component leaves the
+// screen: a console with a room open must not be polling for rooms it is not showing.
+const ROOMS_EVERY_MS = 5_000
 
 // What the phase is CALLED, in the room's own French. Six phases, and the name is the first thing
 // on the run-of-show block because it is the answer to the only question a host standing in front
@@ -129,6 +145,167 @@ function RelaunchButtons({
   )
 }
 
+// The rooms this console can go back into, and the only place in the console that is not the
+// console.
+//
+// One component and not inline in the screen below it, for the same reason the run-of-show is a
+// component: it owns a timer, and a timer owned by a screen's body is a timer whose cleanup is
+// one forgotten branch away from a console that polls for rooms while an audience is watching.
+//
+// FOUR states, and the first one is not an error. `GET /api/admin/rooms` is behind the same
+// `require_admin` as everything else on this console, so it answers 403 until a password has been
+// submitted — which is the state the very first paint of this screen is in, for an admin who has
+// not yet been asked to do anything. Printing a fault there would be a broken screen telling
+// someone they have a problem, before they have been given anything to press. So a 403 is read as
+// what it is — « nobody has signed in here yet » — and the list renders nothing at all: not the
+// rows, not a heading, not a message. The password field below already says everything there is
+// to say about it.
+//
+// This GET is therefore the session check, and that is deliberate rather than a shortcut: the
+// list appearing IS the evidence the session is alive. The obvious-looking alternative is to
+// open the endpoint and let the list paint, then gate it — and that would publish every room's
+// code, to every phase of every game, to anyone who typed /admin. There is nothing to unpublish
+// afterwards, so the session is the precondition and not a decoration on top.
+//
+// The other three states are about the list itself: still loading, empty, or failed. None of
+// them hides the create form underneath. A list that failed to load is the one that could: an
+// admin whose request timed out still has to be able to open a game, and a screen that shows
+// only an error tells them the console is broken when the only thing that failed is the
+// convenience on top of it. So the error is a line under the list and the password field stays
+// exactly where it was.
+//
+// The phase shown is the one from `PHASE_NAME` and not a wording written here: the list and the
+// console call a phase by one name, and a second table is a second place for the six phases and
+// their French to drift apart.
+function RoomsList({ onOpen }: { onOpen: (code: string) => void }) {
+  const [rooms, setRooms] = useState<RoomSummary[] | null>(null)
+  const [err, setErr] = useState('')
+  // Set by the 403 and cleared by any other answer, so it is a statement about the LAST reply and
+  // not a latch: a session that dies mid-session has to be able to come back, and the next tick
+  // is what says whether it did.
+  const [signedOut, setSignedOut] = useState(false)
+
+  useEffect(() => {
+    // `gone` rather than a cancel token because there is nothing to do with a response that
+    // arrives after the screen does: the unmounted list throws it away, and the one request
+    // still in flight at teardown is at most one list of rooms nobody is looking at.
+    let gone = false
+    const read = async () => {
+      try {
+        const next = await listRooms()
+        if (gone) return
+        setRooms(next)
+        setErr('')
+        setSignedOut(false)
+      } catch (e) {
+        if (gone) return
+        // The status is already on the thrown `ApiError` and is read there rather than by
+        // asking again: a second probe to find out whether this was a 403 would be a request
+        // whose only purpose is to classify another request, and the endpoint that answers it
+        // is the same one that just said no.
+        if (e instanceof ApiError && e.status === 403) {
+          setSignedOut(true)
+          setErr('')
+          return
+        }
+        setSignedOut(false)
+        // Not `describe(e)`: that is the player's phrasing of a failure they can act on — «
+        // Réessaie dans un instant », « Cette partie n’existe pas » — and neither is true of a
+        // list an admin did not ask for by name. The screen says what is true here and stops
+        // there.
+        setErr('La liste des parties ne répond pas.')
+      }
+    }
+    void read()
+    // Kept running across the 403 rather than stopped on it. It costs one refused request per
+    // five seconds on a screen nobody can act on, and it is what lets the list appear by
+    // itself if the session is re-established in another tab while this one sits on the
+    // password field — which is the only way that can happen, since this screen's own submit
+    // signs in and creates a room in one press, which unmounts the list entirely.
+    const beat = setInterval(() => void read(), ROOMS_EVERY_MS)
+    return () => {
+      gone = true
+      clearInterval(beat)
+    }
+  }, [])
+
+  // Nothing at all, including the heading: a « Parties ouvertes » with no parties under it is a
+  // promise the screen is not making yet, and a gap where the list will be is a better thing to
+  // leave the password form than a sentence saying there is nothing.
+  if (signedOut) return null
+
+  return (
+    <section className="roomslist">
+      <h2 className="label">Parties ouvertes</h2>
+
+      {rooms === null && !err && (
+        <p className="prose prose--sm prose--dim">Lecture des parties en cours…</p>
+      )}
+
+      {/* The only two shapes the list can be in when it has never arrived, and they are told
+          apart by whether we have anything to show. `rooms === null` alone would also cover
+          "the last poll failed over a list we already had", and blanking four good rows to
+          print one line of trouble is a worse answer than keeping them and saying they may be
+          behind. */}
+      {rooms === null && err && <p className="notice">{err}</p>}
+
+      {rooms !== null && rooms.length === 0 && (
+        <p className="notice">
+          Aucune partie ouverte. La création d’une partie est juste en dessous.
+        </p>
+      )}
+
+      {rooms !== null && rooms.length > 0 && (
+        <ul className="roomslist__rows">
+          {rooms.map((r) => (
+            <li key={r.code}>
+              {/* A button and not a row with a handler on it: this is the only control on the
+                  screen that chooses which game an admin is about to run in front of a class,
+                  and a div would cost it the keyboard, the focus ring and the announced role
+                  for nothing in return. `enter` is the same path a created room takes, so a
+                  room that was opened from here and a room that was just made arrive
+                  identically — including the "persist the code once the room has answered"
+                  effect, which is the only thing that writes the key back. */}
+              <button type="button" className="btn btn--wide roomslist__row" onClick={() => onOpen(r.code)}>
+                <span className="roomslist__code">{r.code}</span>
+                <span className="roomslist__where">
+                  <span className="roomslist__phase">{PHASE_NAME[r.phase]}</span>
+                  {/* `current` is 0-based on the wire and this counts from one, like every
+                      other round number in the console — and says so only when there is a
+                      round, because "manche 1 sur 0" is a number about nothing. */}
+                  {r.total > 0 && (
+                    <span className="roomslist__round">
+                      Manche {r.current + 1} sur {r.total}
+                    </span>
+                  )}
+                </span>
+                {/* Both counts, and they are two questions. How many phones have joined the
+                    room is what an admin expects to see; how many are connected right now is
+                    what tells them the class has gone home, and one number cannot answer the
+                    second without hiding the first. Dimmed, not hidden, when they disagree —
+                    a room of nine with one phone left is still a room of nine. */}
+                <span className="roomslist__figs">
+                  {noun(r.players, 'joueur', 'joueurs')}
+                  <span className="roomslist__now">
+                    {noun(r.online_count, 'joueur connecté', 'joueurs connectés')}
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Under the rows and never over them, so a poll that fails while a list is on screen
+          reads as what it is: the list you are looking at may be a few seconds behind, not
+          gone. */}
+      {rooms !== null && rooms.length > 0 && err && (
+        <p className="prose prose--sm prose--dim">{err}</p>
+      )}
+    </section>
+  )
+}
+
 export default function Admin() {
   const [password, setPassword] = useState('')
   const [code, setCode] = useState<string | null>(() => localStorage.getItem(roomKey))
@@ -147,7 +324,13 @@ export default function Admin() {
   // other one. Keying it on the room's current identity means a round advancing under a
   // disarmed button cannot leave a live "Confirmer" waiting for a second tap, and a restart
   // that fails keeps the confirm up so the admin can try again deliberately.
-  const [armed, setArmed] = useState<{ key: string; action: 'abandon' | 'restart' } | null>(null)
+  //
+  // One action left, so the state is the key and not a `{key, action}` pair: the arm was
+  // carrying which control was armed so that two arms could not be confused for one another,
+  // and with the relaunch as the only control left to arm there is nothing to confuse. The key
+  // is the part that survives a phase moving underneath it, which is why this is now a bare
+  // string rather than `null`.
+  const [armed, setArmed] = useState<string | null>(null)
   const { state, link, retry } = useRoom(code)
   // The same clock the players are watching, on the same terms: the server's deadline against the
   // server's clock, so the host's "12 secondes" and the class's twelve seconds are the same
@@ -202,6 +385,14 @@ export default function Admin() {
             Une partie se crée ici. Le code sera affiché à l’écran pour que tu le donnes au
             groupe.
           </p>
+
+          {/* Above the flags and above the form, not below them. A host arriving at a console
+              with four games already on the server is looking for the one they left an hour
+              ago, and everything on this screen below this line creates rather than reopens —
+              putting the list at the bottom would make the common case a scroll past a password
+              field they do not need. The create form is not demoted by being second: it is
+              still one screen, one scroll, no navigation between the two. */}
+          <RoomsList onOpen={enter} />
           {/* Two flags, above the password and above the button that creates the party they
               configure, and outside the form: they are not part of signing in, and a control
               inside the form would create the room the moment it was touched. Position matters
@@ -327,8 +518,8 @@ export default function Admin() {
   // The phase is part of the arm key as well as the round: an advance moves the phase, and a
   // confirm must never survive it.
   const roomKeyNow = `${code}:${phase}:${state?.current ?? 0}`
-  const arm = (action: 'abandon' | 'restart') => setArmed({ key: roomKeyNow, action })
-  const armedNow = armed?.key === roomKeyNow ? armed.action : null
+  const arm = () => setArmed(roomKeyNow)
+  const armedNow = armed === roomKeyNow
 
   // The window's state, on the host's screen as well as the players'. `revealed` is the server's
   // own word and it only turns on the next frame; the comparison turns at the deadline itself, so
@@ -442,7 +633,7 @@ export default function Admin() {
       await post(`/api/admin/rooms/${code}/restart`, { tutorial: withTutorial })
     })
 
-  // Throwing the room away. No navigation: the admin is already on /admin, and the component's
+// Throwing the room away. No navigation: the admin is already on /admin, and the component's
   // own state is the only thing actually holding the room, so resetting it is the whole of
   // abandoning. `go('/admin')` would look like the obvious move and is quietly wrong — the path
   // does not change, React keeps this component mounted at the same position, `code` never
@@ -452,10 +643,19 @@ export default function Admin() {
   //
   // `setCode(null)` is the branch that renders the password form, and it is also what tears the
   // stream down: the hook's effect deps change, React runs the previous cleanup (which clears
-  // the watchdog and closes the EventSource) before the new body early-returns. `state` falls
+  // the watchdog and closes the EventSource) before the new body early-runs. `state` falls
   // to null with it, because the hook only hands back a snapshot whose code still matches — so
   // the "persist a code once the room has answered" effect cannot re-write the key it was just
   // asked to forget.
+  //
+  // Added after the room list, and it corrects the first line: this does NOT throw the room
+  // away. Nothing in this function leaves the browser — no delete endpoint exists in this API —
+  // so the room stays in the database and comes back in the list, with its players and its
+  // rounds intact. What it throws away is this tab's claim to it: the stored code, the stream,
+  // and the console's own state. A button labelled « Abandonner cette partie » was therefore
+  // promising a destruction that does not happen, and the confirm in front of it was asking a
+  // host to agree to a lie before they were allowed to look at another room. The one caller
+  // now says « Retour à la liste », which is the whole of what happens.
   const abandon = () => {
     localStorage.removeItem(roomKey)
     // Reset with the rest, so re-entering a new room is not judged by a flag left over from
@@ -636,32 +836,50 @@ export default function Admin() {
                   <DangerButton
                     label="Relancer avec les mêmes joueurs"
                     armedLabel="Confirmer : effacer la partie en cours"
-                    confirming={armedNow === 'restart'}
+                    confirming={armedNow}
                     disabled={busy}
                     choices={<RelaunchButtons busy={busy} primary={false} onRestart={restart} />}
-                    onArm={() => arm('restart')}
+                    onArm={arm}
                   />
                 )
               )}
 
-              {/* A room created by mistake, with nobody in it, used to be a dead end: the only
-                  control was the one that starts the game, and starting it put an empty room in
-                  front of it. This is the way back out. It makes nothing — it just forgets the
-                  code, so the next visit to /admin asks for the password again. */}
-              {(phase === 'waiting' || phase === 'done') && (
-                <DangerButton
-                  label={phase === 'waiting' ? 'Abandonner cette partie' : 'Nouvelle partie'}
-                  armedLabel={
-                    phase === 'waiting'
-                      ? `Confirmer : abandonner la partie ${code}`
-                      : 'Confirmer : quitter cette partie'
-                  }
-                  confirming={armedNow === 'abandon'}
-                  disabled={busy}
-                  onArm={() => arm('abandon')}
-                  onConfirm={abandon}
-                />
-              )}
+              {/* The one way out, and the only control in this console that merely leaves.
+                  Until the room list existed the console held exactly one room — the one in
+                  this tab's localStorage — so the only way back to the lobby was a control
+                  labelled « Abandonner cette partie », behind a confirm that said it would
+                  abandon the partie.
+
+                  It never did, and that is the whole reason the control is gone rather than
+                  relabelled. `abandon()` is four lines of local state — removeItem, a ref, a
+                  `setCode`, a cleared error — and no request leaves the browser: there is no
+                  delete endpoint in this API at all, and the one destructive call that does
+                  exist (`restart`) wipes the rounds and keeps the room. So a confirm reading
+                  « Confirmer : abandonner la partie ABCD » was guarding a move that could
+                  lose nothing, and it was asking a host who merely wanted to look at another
+                  room to type the word "abandon" first. Worse, the room it claimed to abandon
+                  survived, and came back in the list.
+
+                  What replaces it is the same function with a label that says what it does:
+                  the room keeps running, its players keep their scores, the code is forgotten
+                  in this tab, and the list is on the other side. Nothing is confirmed because
+                  nothing is at stake — and the relaunch above stays armed precisely because
+                  that one really does throw eight rounds of answers away. A console where the
+                  only confirm is the one that matters is a console where a confirm means
+                  something.
+
+                  In the lobby this is also the control the old one was for. The room it was
+                  written against — created by mistake, nobody in it — is still here, still one
+                  press, and the thing it was really offering (a way out of a room you did not
+                  want) is what this button is. What is no longer offered is the fiction that
+                  the room will be gone afterwards.
+
+                  A ghost button rather than `btn--signal`: sodium is the console's "armed and
+                  live" colour and it is spent on the one action that moves the game forward.
+                  Going back is not that. */}
+              <button type="button" className="btn btn--ghost btn--wide" onClick={abandon}>
+                Retour à la liste
+              </button>
             </div>
 
             {/* Beside the controls rather than pinned to the top of <main>. It used to be at

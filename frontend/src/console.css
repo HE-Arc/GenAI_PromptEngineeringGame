@@ -939,6 +939,96 @@
   }
 }
 
+/* ---- the room list: the console's way back into a room ---------------------------------- */
+
+/* The one block here that is not an instrument. Everything else in this file is a readout the
+ * class is looking at; this is a list of choices the admin is making, and it borrows the
+ * console's vocabulary rather than inventing a screen's worth of its own: `.btn` for the row
+ * because a row IS a button and re-drawing it would cost the 48px floor, the focus ring and
+ * the keyboard for nothing. So the only new rules here are the grid that puts the code, the
+ * phase and the counts on one line each, and the two type sizes. */
+.roomslist {
+  display: grid;
+  gap: 0.6rem;
+}
+.roomslist__rows {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* Left-aligned against the deck rather than centred like every other `.btn`: this row holds
+ * four values that have to line up in a column so the eye can run down the codes, and centred
+ * text of variable length turns that column into a staircase. `min-height` is not restated —
+ * `.btn` already holds the 3rem floor and a second copy of the same number here is a rule that
+ * can disagree with the one it copied. */
+.roomslist__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+  text-align: left;
+}
+/* The code, in the display face and in the panel's own ink rather than sodium. Sodium is the
+ * "live and lit" accent and it means the primary action everywhere else in this console; if
+ * every row carried it, the colour would stop being a way of telling the one button to press
+ * from the four rows of context above it. What makes the code readable instead is size: it is
+ * the widest thing in the row and the only thing set in the face the illuminated panel uses,
+ * so an admin matching it against the join form on a student's phone is comparing like with
+ * like. */
+.roomslist__code {
+  color: var(--ink);
+  font: 800 1.25rem/1 var(--font-display);
+  letter-spacing: 0.06em;
+  overflow-wrap: anywhere;
+}
+.roomslist__where {
+  display: grid;
+  justify-items: end;
+  gap: 0.1rem;
+  text-align: right;
+}
+/* The phase, in the same name the run-of-show block above it uses for the same phase — one
+ * wording, read off one table, so the row an admin chose from and the screen they landed on
+ * cannot call the same moment two different things. */
+.roomslist__phase {
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The round, one tier under the phase and in --ink-faint: the phase is the question the row is
+ * answering, the round is the refinement of it. */
+.roomslist__round {
+  color: var(--ink-faint);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The counts, on their own line under both columns: the phase is what decides and the counts
+ * are what confirms, and the second is read after the first rather than beside it.
+ * `--ink-dim` rather than `--ink` because this is not what the row is for — the row opens a
+ * room, and the counts only tell an admin which one. */
+.roomslist__figs {
+  grid-column: 1 / -1;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* The connected count, indented under the one it refines rather than run together with it in
+ * "12 joueurs, 3" — the second number is not another count of players, it is a count of how many
+ * of that twelve are on the stream, and the word saying so is the same pair the run-of-show
+ * already uses for it. Cool, because it is a fact about other people and about a connection
+ * rather than about the room, which is what `--cool-lit` means everywhere else in this console. */
+.roomslist__now {
+  margin-left: 0.4rem;
+  color: var(--cool-lit);
+  font-weight: 600;
+}
+
 /* ---- the two moments that earn motion -------------------------------------------------- */
 
 @media (prefers-reduced-motion: no-preference) {

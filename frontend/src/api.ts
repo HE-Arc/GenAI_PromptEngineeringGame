@@ -218,15 +218,65 @@ export const setToken = (code: string, t: string) => localStorage.setItem(tokenK
 export const nameKey = (code: string) => `jeu-genai:${code}:name`
 export const getName = (code: string) => localStorage.getItem(nameKey(code)) ?? ''
 
-export async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body ?? {}),
-  })
+// One room as the console's room list returns it: what an admin chooses between, and nothing
+// else — no players, no quiz window, no standings, because a row that carried the whole snapshot
+// would be a console opened thirty times over.
+//
+// `phase` is the same raw string `State.phase` is, not a French label, so the list and the
+// console call a phase by one name and the row and the run-of-show cannot disagree. `current`
+// is 0-based for the same reason: it is the number `State` already uses, and a row that counted
+// from one would be the one place on the screen where the round is numbered differently.
+//
+// `players` is a COUNT here and a list in `State`, under the same name the server sends it. The
+// two are not interchangeable and neither is derivable from the other: `online_count` is how many
+// of those phones are on the stream right now, and a room whose players have all gone is exactly
+// the one an admin needs to notice from across a room.
+export interface RoomSummary {
+  code: string
+  phase: Phase
+  current: number
+  total: number
+  online_count: number
+  players: number
+  tutorial: boolean
+  anonymous: boolean
+}
+
+// An HTTP response becomes a value or an ApiError, in one place, because the two verbs below it
+// must raise the same error for the same status: a caller cannot tell a GET apart from a POST by
+// how it fails, and one that could is one that eventually handles them differently.
+async function unwrap<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error ?? `HTTP ${res.status}`)
   return data as T
+}
+
+export async function post<T>(path: string, body?: unknown): Promise<T> {
+  return unwrap<T>(
+    await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    }),
+  )
+}
+
+// GET is POST without the body, and it does not take one: a request that had to send `{}` to ask
+// a question is a request whose shape says the answer is optional. Not exported — the only
+// caller is the function below it, and a general verb on this file is a verb nobody has to keep
+// honest until the second caller arrives.
+async function get<T>(path: string): Promise<T> {
+  return unwrap<T>(await fetch(path, { headers: { Accept: 'application/json' } }))
+}
+
+// Every room the console can go back to. No code, no token, no argument: this is the one request
+// on the admin side that is answered before the password has been typed, because the screen that
+// asks for the password is also the screen that draws the list — a list behind a password the
+// admin does not have typed yet is a list they cannot see while they type it, and the admin who
+// is reopening a game they ran this morning knows the password already.
+export async function listRooms(): Promise<RoomSummary[]> {
+  const data = await get<{ rooms: RoomSummary[] }>('/api/admin/rooms')
+  return data.rooms
 }
 
 // « On peut passer. » One player's vote on the step the room is already in.
