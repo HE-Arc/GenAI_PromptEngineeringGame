@@ -82,3 +82,25 @@ def quality(llm: int | None, peers: list[int]) -> int:
     # Clamp the MEAN to the band, never the critic: symmetric by construction, and the result
     # cannot leave the band after `half_up` because the band's own ends are integers.
     return half_up(max(llm - QUALITY_BAND, min(mean, llm + QUALITY_BAND)))
+
+
+# A ready vote is a majority of the players who are CONNECTED, and this is the one place the
+# rule is written. Not unanimity: a class of twenty with one phone in a bag would otherwise sit
+# through nineteen waiting screens, and the teacher would be back to pressing the button — which
+# is the thing this rule exists to remove. Not a fixed number either: « 3 votes » is a deadlock
+# in a class of two and a stampede in a class of twenty.
+VOTE_MAJORITY = True
+
+
+def majority(n: int) -> int:
+    """How many connected players must be ready before the room moves on.
+
+    ZERO FOR AN EMPTY ROOM, and that is the whole reason this is a function rather than an
+    arithmetic expression at the call site: `0 // 2 + 1` is 1, so a caller that computed the
+    threshold from an empty room would get a bar of one, and comparing "one player is ready"
+    against a room with no players is `0 == 0` wearing a hat. The callers already refuse an
+    empty online set; this makes the degenerate value unrepresentable too.
+    """
+    if n <= 0:
+        return 0
+    return n // 2 + 1
