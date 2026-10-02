@@ -379,3 +379,28 @@ class Rating(models.Model):
         if self.answer_id and self.rater_id and self.answer.player_id == self.rater_id:
             raise ValidationError("a player cannot rate their own prompt")
         super().save(*args, **kwargs)
+
+
+class Ready(models.Model):
+    """One player saying « on peut passer » at one step of the game.
+
+    A ROW PER VOTE, not a boolean on the player: the step has to be part of the key, because
+    "this player is ready" is meaningless on its own. It is ready FOR question 3, and question 4
+    is a different question with a different discussion. A boolean would have to be cleared on
+    every transition, and a missed clear is a room that skips a step nobody saw.
+
+    `step` is a string the callers build, not an enum: the steps are pairs of phase state
+    (`quiz_index`, `round.order` + `revealed`, `round.order`), and they multiply as the game
+    grows. `quiz:3`, `rating:2:0`, `summary:2` say what they mean in a log line.
+
+    NO CASCADE SURPRISES: `room` cascades because deleting a room deletes its votes with it, and
+    `player` cascades for the same reason. A player leaving mid-game takes their vote away, which
+    is right — they are not there to be counted.
+    """
+
+    room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name="ready_votes")
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="ready_votes")
+    step = models.CharField(max_length=40)
+
+    class Meta:
+        unique_together = [("room", "step", "player")]

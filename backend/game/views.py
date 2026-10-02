@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from game import llm, prompts
-from game.models import Player, QuizAttempt, QuizQuestion, Rating, Room, Round
+from game.models import Player, QuizAttempt, QuizQuestion, Rating, Ready, Room, Round
 # Named `pick_questions`, not `pick`, and imported as a name rather than as the `game.quiz`
 # module: the didacticiel's draw is a PERMUTATION of a bank exactly one quiz long, and a reader
 # who sees two things called `pick` in this header has to go and check which bank each is on.
@@ -411,6 +411,13 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
     with transaction.atomic():
         room.rounds.all().delete()  # answers cascade via the round FK, ratings via Answer
         QuizAttempt.objects.filter(player__room=room).delete()
+        # THE READY VOTES GO WITH THEM, and this is the ONLY place a wipe is needed. Everywhere
+        # else the votes survive the room moving on, because `step` is part of their key: a vote
+        # on `quiz:0` cannot match the count for `quiz:1`. A restart is the one transition that
+        # brings a step name BACK — it replays `quiz:0` — so it is the one place where a stale
+        # vote would come round and count. Same argument as the quiz attempts above, same
+        # transaction: a poller must not see a wiped room still holding a majority.
+        Ready.objects.filter(room=room).delete()
         # In the same block as the deletes it describes: a poller that caught the room between the
         # wipe and this write would see a room whose ten targets are gone and whose gate is still
         # the old one, and `start` reads that flag to decide between the quiz and the writing.
@@ -831,6 +838,30 @@ def _maybe_close_quiz_window(room: Room) -> None:
     if answered != online:
         return
     room._close_quiz()
+
+
+def current_step(room: Room) -> str | None:
+    """The discussion the room is in, named, or None when it is not discussing anything.
+
+    THREE STEPS, one per place the class talks: after a didacticiel question is revealed, after
+    a prompt has been rated, and after a round is summarised. `playing` is not one of them —
+    that phase closes on the answers themselves, and adding a button there would ask twenty
+    students to press something that says nothing they have not already said with a prompt.
+
+    `None` IS THE ANSWER for four phases, and it is why this returns an option rather than a
+    default: `waiting`, `playing`, `done` and a `summary` with no round behind it have no
+    discussion, and a client that renders a ready bar for a step that does not exist shows a
+    button that goes nowhere.
+    """
+    if room.phase == Room.Phase.QUIZ:
+        return f"quiz:{room.quiz_index}"
+    if room.phase == Room.Phase.RATING:
+        rnd = room.current_round()
+        return None if rnd is None else f"rating:{rnd.order}:{rnd.revealed}"
+    if room.phase == Room.Phase.SUMMARY:
+        rnd = room.current_round()
+        return None if rnd is None else f"summary:{rnd.order}"
+    return None
 
 
 def maybe_advance_phase(room: Room) -> None:
