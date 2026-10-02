@@ -460,29 +460,57 @@ export function DangerButton(props: DangerProps) {
 //
 // It renders itself away when there is no discussion rather than being handed a flag: `ready` is
 // null outside a step, so the screen that mounts this never has to know the phase it is in.
-export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady: () => void }) {
+export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady: () => Promise<boolean> }) {
   // The POST is the authority on its own outcome and the stream is half a second behind a thumb,
   // so this flag is the window the server's `already ready` lives in: without it, a thumb that
   // taps twice sends two votes, and the second one paints a failure under a vote the server
   // recorded — on a screen that a class is looking at.
   //
-  // It is set before the await and cleared in a `finally`, which is the same shape as the three
-  // screens' own `busy`, and it is deliberately NOT an optimistic « I have voted » flag: that one
-  // has to be undone if the POST is refused, and this component cannot know — `onReady` reports a
-  // failure by writing to the screen's own error line and resolving. A flag that could strand a
-  // player on a button they cannot retry is worse than the tap it prevents. `ready.mine` is the
-  // durable lock, and it arrives with the next frame.
+  // It IS an optimistic « I have voted » flag now, and the only reason it can be is the contract:
+  // it is set before the await, kept when the promise answers true and cleared when it answers
+  // false. Under the old `void` callback this was impossible — the three screens report a
+  // refusal by writing to their own error line and RESOLVING, so this component could not tell a
+  // success from a refusal and so had no way to undo the flag it had set. `ready.mine` is still
+  // the durable lock and still arrives with the next frame; this only covers the gap.
+  //
+  // What it must not become is the defect the designer refused earlier: a vote that only ever
+  // clears on a refusal strands a player. `mine` is late by design, but it is not guaranteed —
+  // if the stream dies after the vote it may never arrive at all, and a flag keyed to nothing
+  // would leave « Prêt » permanently disabled on a button whose only repair is a tap. So the flag
+  // holds the STEP it was cast for and is read only against `ready.step`: the first render after
+  // the room moves on already sees a flag that does not apply — no frame anywhere paints a stale
+  // « Prêt » — and the comparison below drops it, so it cannot answer for a step the room later
+  // returns to. `ready.step` going null, which is every phase with no discussion, drops it on the
+  // same argument. And the vote itself is not what strands the player there: `useRoom`'s watchdog
+  // reopens the stream within seconds and the room pushes the whole snapshot on connect, which
+  // carries `mine: true` for the very vote this flag is standing in for.
+  //
+  // No timer expires it. A vote that succeeded stays voted, and un-setting the flag on a delay
+  // would resurrect the exact confusion it exists to close — a live « Je suis prêt » over a vote
+  // the server already holds.
   //
   // Local to this control on purpose: the screens' `busy` also disables the four answers, the
   // Noter button and Envoyer, and a vote in flight must not do that.
+  const [optimistic, setOptimistic] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Dropped by a comparison during render rather than by an effect: React re-runs this component
+  // the moment `ready` moves and never paints the stale value, so no frame exists in which the
+  // flag is read for a discussion this phone has left — while an effect would put one there. It
+  // is above the early return because the flag has to be dropped on the way out of a step as
+  // well as on the way into the next one, and `ready` is null outside every discussion.
+  const step = ready?.step ?? null
+  if (optimistic !== null && optimistic !== step) setOptimistic(null)
   if (!ready) return null
   const there = ready.count >= ready.needed
   // What the label and the colour say, and it is BROADER than `mine` on purpose. Once the class
   // has crossed the bar this player's own tap is refused too, so a button still reading « Je suis
   // prêt » would be inviting a tap the server turns down. `settled` is the situation; the counter
   // underneath says which of the two produced it.
-  const settled = ready.mine || there
+  //
+  // Three inputs rather than two, and the third is the flag above — a vote in flight and a vote
+  // the stream has not caught up with are the same fact to the player looking at the phone, and
+  // the label, the ghost class and `disabled` all read this one line, so all three stay together.
+  const settled = ready.mine || there || optimistic === ready.step
   return (
     <div className="ready">
       {/* Disabled on all three, and none of them is a mistake: a player who has voted does not
@@ -497,8 +525,12 @@ export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady
         className={`btn${settled ? ' btn--ghost' : ' btn--signal'} btn--wide`}
         onClick={async () => {
           setBusy(true)
+          setOptimistic(ready.step)
           try {
-            await onReady()
+            // A rejection is a refusal too. The contract says the three screens answer false
+            // rather than throw, but a flag that outlives a thrown vote is the strand this whole
+            // mechanism exists to prevent, so the two are treated as one thing.
+            if (!(await onReady().catch(() => false))) setOptimistic(null)
           } finally {
             setBusy(false)
           }

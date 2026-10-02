@@ -60,6 +60,15 @@ export default function Quiz({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const revealRef = useRef<HTMLDivElement>(null)
+  // How many times the bank has been asked for. A counter and not a fetch function, because the
+  // bank IS an effect: the endpoint is not in the snapshot, and re-running an effect is what a
+  // dependency is for. The effect's own `gone` guard already throws away a reply from an
+  // attempt the player has superseded.
+  //
+  // This counter exists because a failed bank leaves the room WAITING on this phone for ever:
+  // the whole block below is gated on a question this fetch never produced, so there is nothing
+  // to discuss and « Prêt » is nowhere to be pressed. The repair has to put the question back.
+  const [bankAttempt, setBankAttempt] = useState(0)
 
   const quiz = state.quiz
   // The only clock on this screen, and it is the server's. See `serverClock.ts`: the skew is
@@ -78,9 +87,20 @@ export default function Quiz({
   //
   // `correct` and `explanation` never arrive with a question; they are in the snapshot after the
   // deadline, or in the POST response, and this screen reads neither before `revealed` is true.
+  //
+  // Re-run on `bankAttempt` as well as on the room. That is the whole cost of letting a player
+  // whose bank never arrived try again: one counter in the dependency list, and a second GET of
+  // the same eight questions by a phone that is already on the room's stream. It is kept out of
+  // the room's own key, so a frame arriving every 500ms still refetches nothing.
+  //
+  // The error line is cleared only where the error was raised — on a bank that arrived. An error
+  // left behind by a failed attempt would otherwise reappear as the inline fault under a question
+  // the player is now reading, and the honest reading of that screen is "the question is broken",
+  // which by then it is not.
   useEffect(() => {
     let gone = false
     void (async () => {
+      setBusy(true)
       try {
         const res = await fetch(
           `/api/rooms/${code}/quiz?token=${encodeURIComponent(getToken(code) ?? '')}`,
@@ -90,15 +110,18 @@ export default function Quiz({
         const data = (await res.json()) as QuizBank
         if (gone) return
         setBank(data)
+        setErr('')
       } catch (e) {
         if (gone) return
         setErr(describe(e))
+      } finally {
+        if (!gone) setBusy(false)
       }
     })()
     return () => {
       gone = true
     }
-  }, [code])
+  }, [code, bankAttempt])
 
   const questions = bank?.questions ?? null
   const total = questions?.length ?? 0
@@ -316,8 +339,40 @@ export default function Quiz({
         )}
 
         {err && !question && (
-          <p className="err" role="alert">
-            Le didacticiel ne répond pas. Préviens l’animateur.
+          // The fault box, plus the one repair this screen can honestly offer: the bank AGAIN.
+          //
+          // Not the class's bar, and that is the whole arbitration. This screen is blocked on a
+          // question this fetch never produced, so a « Prêt » drawn here would be a vote on a
+          // discussion the player could not hear — and it would move the WHOLE room past a
+          // discussion one member took no part in. A way forward that costs the room its
+          // discussion is worse than a phone that waits. The bank is a request of its own, which
+          // is also why this does not reuse `onRetry`: that one re-reads the ROOM, and the room
+          // answered the first time.
+          //
+          // `role="alert"` is on the sentence and not on the box, for the reason `StatusLamp`
+          // gives: a live region announces its whole subtree when it changes, and a control
+          // inside one gets announced as part of the fault — then re-announced when the box
+          // changes under it, which here is the button disabling itself mid-flight. The box
+          // keeps the grid and the 0.35rem gap it already had; the sentence is a span so the
+          // grid has exactly two items and the text wraps as it always did.
+          <p className="err">
+            <span role="alert">Le didacticiel ne répond pas. Préviens l’animateur.</span>
+            {/* The console's own treatment for the one live action on a dead screen, and the same
+                word the room-wide retry already uses on the admin and the join screen, so a
+                player who has seen « Réessayer » once knows what it does. Disabled while the
+                request travels: the fetch sets the screen's own `busy`, which is the pattern
+                every button on the three player screens already uses, and the error line stays
+                up underneath it rather than being replaced by « Lecture des questions… » — that
+                sentence means a question is coming for the first time, and flashing it here
+                would read as the one they had losing itself. */}
+            <button
+              type="button"
+              className="btn btn--signal btn--wide"
+              disabled={busy}
+              onClick={() => setBankAttempt((a) => a + 1)}
+            >
+              Réessayer
+            </button>
           </p>
         )}
 
@@ -444,12 +499,18 @@ export default function Quiz({
               onReady={async () => {
                 try {
                   await postReady(code, getToken(code) ?? '')
+                  // `true` means the server has the vote. The bar cannot tell a success from a
+                  // refusal on its own — the screens report a refusal by writing to `setErr` and
+                  // RESOLVING — so this answer is what lets it close its own double-tap window
+                  // instead of painting a refusal under a vote the room already holds.
+                  return true
                 } catch (e) {
                   // `describe`, not a fixed sentence: the refusals are two different facts with
                   // two different repairs, and « the vote failed » is neither of them. A vote the
                   // server already had, and a phone that woke up on the next question, both
                   // arrive here as a 409 with a reason attached.
                   setErr(describe(e))
+                  return false
                 }
               }}
             />

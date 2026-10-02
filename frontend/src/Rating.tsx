@@ -259,12 +259,18 @@ export default function Rating({
           onReady={async () => {
             try {
               await postReady(code, getToken(code) ?? '')
+              // `true` means the server has the vote. The bar cannot tell a success from a
+              // refusal on its own — the screens report a refusal by writing to `setErr` and
+              // RESOLVING — so this answer is what lets it close its own double-tap window
+              // instead of painting a refusal under a vote the room already holds.
+              return true
             } catch (e) {
               // `describe`, not a fixed sentence: the refusals are two different facts with two
               // different repairs, and « the vote failed » is neither of them. A vote the server
               // already had, and a phone that woke up on the next prompt, both arrive here as a
               // 409 with a reason attached.
               setErr(describe(e))
+              return false
             }
           }}
         />
