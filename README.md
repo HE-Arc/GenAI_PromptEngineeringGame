@@ -10,8 +10,7 @@ aux règles que le didacticiel vient d'enseigner. Un élève dont les prompts so
 mais dont la sortie chance bien ne sort pas premier.
 
 La spécification complète est dans le [wiki du projet](https://github.com/HE-Arc/GenAI_PromptEngineeringGame/wiki/Cahier-des-charges).
-Ce README couvre l'installation, le déroulé et les commandes. Le plan d'implémentation qui a
-produit ce jeu est suivi dans [`docs/superpowers/plans/`](docs/superpowers/plans/).
+Ce README couvre l'installation, le déroulé et les commandes.
 
 ## Lancer
 
@@ -19,19 +18,28 @@ produit ce jeu est suivi dans [`docs/superpowers/plans/`](docs/superpowers/plans
 ./run.sh
 ```
 
-**Aucune clé n'est nécessaire.** Sans `OPENAI_API_KEY`, les trois appels au modèle tombent sur
-une doublure locale : le modèle est remplacé par un écho du prompt, le jury de proximité note
-par chevauchement de mots, et le critique de prompt compte des marqueurs de structure. La
-partie se joue donc de bout en bout hors ligne, et le commentaire affiché sous chaque note dit
-explicitement qu'il s'agit d'une règle locale et non d'un jury. Jouable, mais pas classable : le
-chevauchement de mots plafonne dès que la cible est longue, donc les notes y sont basses par
-construction. Ce n'est pas la faute du prompt, et le commentaire le dit.
+**La clé d'API décide ce que le jeu mesure, pas s'il démarre.** Sans `OPENAI_API_KEY`, les
+trois appels au modèle tombent sur une doublure locale : le modèle est remplacé par un écho du
+prompt, le jury de proximité note par chevauchement de mots, et le critique de prompt compte
+des marqueurs de structure. La partie se joue de bout en bout hors ligne, et le commentaire
+affiché sous chaque note dit explicitement qu'il s'agit d'une règle locale et non d'un jury.
 
-Pour le vrai modèle, et seulement lui :
+**Ce mode est réservé au développement.** Il fait tourner la mécanique — phases, didacticiel,
+notation croisée, SSE — sans clé et sans réseau, mais **les notes qu'il produit ne mesurent
+rien**. L'écho ne répond pas à la cible, et le chevauchement de mots plafonne dès que la cible
+est longue, donc les proximités y sont basses par construction, ce qui n'est pas la faute du
+prompt. Utilisé en séance, ce mode apprend aux élèves à recopier les mots de la cible, pas à
+écrire des prompts.
+
+Pour une partie réelle, la clé n'est pas optionnelle :
 
 ```bash
 cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD et SECRET_KEY
 ```
+
+`OPENAI_API_KEY` est ce qui fait qu'un classement classe des prompts : sans elle, aucun des
+trois jugements n'est rendu par un modèle. `ADMIN_PASSWORD` et `SECRET_KEY` se changent au même
+moment, pour la raison donnée plus bas.
 
 - Joueur : ouvrir `http://<IP-LAN>:5173` depuis le téléphone, puis code de partie et pseudo
 - Admin : ouvrir `http://<IP-LAN>:5173/admin`, puis mot de passe
@@ -58,7 +66,7 @@ d'admin, et une session forgée ne peut pas être révoquée.
 
 ```
 lobby ──▶ didacticiel ──▶ ┌─ tour 1 ─┐
-         (8 questions)   │          │
+         (8/10 questions)   │          │
                           ▼          │
                    rédaction ──▶ notation ──▶ résumé ──▶ tour suivant
                                                          └──▶ classement final
@@ -121,7 +129,7 @@ dans le même ordre.
 cd backend && uv run python manage.py test game
 ```
 
-238 tests. Aucun n'ouvre de connexion réseau, et tous passent sans `OPENAI_API_KEY`, donc avec
+277 tests. Aucun n'ouvre de connexion réseau, et tous passent sans `OPENAI_API_KEY`, donc avec
 les doublures locales. Ils ne mockent pas tous au même niveau : `test_play.py` et
 `test_rating.py` mockent `game.llm.answer`, `game.llm.score` et `game.llm.grade_prompt`, tandis
 que `test_llm.py` mocke `llm.OpenAI` lui-même pour que le vrai `_chat` s'exécute.
