@@ -31,7 +31,7 @@ est longue, donc les proximités y sont basses par construction, ce qui n'est pa
 prompt. Utilisé en séance, ce mode apprend aux élèves à recopier les mots de la cible, pas à
 écrire des prompts.
 
-Pour une partie réelle, la clé n'est pas optionnelle :
+Pour une partie réelle, la clé doit etre presente dans `.env` :
 
 ```bash
 cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD et SECRET_KEY
