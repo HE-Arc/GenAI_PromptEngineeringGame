@@ -1,14 +1,18 @@
 import json
+import time
 from unittest.mock import patch
 
+from django.db import connection
 from django.http import HttpResponse
 from django.test import Client, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from game.llm import Verdict
 from game.models import Answer, Player, QuizAttempt, QuizQuestion, Rating, Room, Round
 from game.quiz import QUIZ_LENGTH, QUIZ_SECONDS
-from game.views import room_state
+from game.targets import ROUNDS_PER_GAME
+from game.views import PRESENCE_TTL, _beat, _presence, _presence_lock, room_state
 
 
 @override_settings(ADMIN_PASSWORD="s3cret")
@@ -19,6 +23,14 @@ class AdminTest(TestCase):
     def setUp(self) -> None:
         self.c = Client()
         self._login()
+
+    def tearDown(self) -> None:
+        # Presence is PROCESS-LOCAL and outlives the transaction each test rolls back: a beat
+        # written against one test's player would still be inside the TTL in the next test, under
+        # an id the database has already handed out again. The registry's own lock is taken, so a
+        # test clearing it is not doing what the SSE threads are protected from doing.
+        with _presence_lock:
+            _presence.clear()
 
     def _login(self, pwd: str = "s3cret") -> HttpResponse:
         return self.c.post("/api/admin/login", data=json.dumps({"password": pwd}), content_type="application/json")
@@ -34,8 +46,17 @@ class AdminTest(TestCase):
     # a fixture that walked there through `start` + `next` would test the transitions twice and
     # fail for reasons that have nothing to do with the assertion in front of it.
 
-    def _room(self, code: str = "ABCD", tutorial: bool = True, anonymous: bool = True) -> Room:
-        return Room.objects.create(code=code, tutorial=tutorial, anonymous=anonymous)
+    def _room(
+        self,
+        code: str = "ABCD",
+        tutorial: bool = True,
+        anonymous: bool = True,
+        phase: str = Room.Phase.WAITING,
+    ) -> Room:
+        # `phase` is a keyword because it is set on the row rather than moved to by a transition:
+        # the room-list tests need a room parked in `done` and one left in `waiting`, and neither
+        # is somewhere the advance button can be walked to without playing the whole game.
+        return Room.objects.create(code=code, tutorial=tutorial, anonymous=anonymous, phase=phase)
 
     def _started(self, code: str = "ABCD", tutorial: bool = False) -> Room:
         """A room the admin has committed to: ten rounds, and whatever phase `start` opens for the
@@ -138,6 +159,140 @@ class AdminTest(TestCase):
         b = json.loads(self.c.post("/api/admin/rooms", content_type="application/json").content)
         self.assertNotEqual(a["code"], b["code"])
         self.assertEqual(len(a["code"]), 4)
+
+    # --- the list of the rooms that exist ------------------------------------------------------
+    #
+    # The console used to know ONE room — the code in its own localStorage — with no way to see,
+    # choose or return to another one. These tests pin the list that gives it a way back.
+
+    def _rooms(self) -> list[dict]:
+        r = self.c.get("/api/admin/rooms")
+        self.assertEqual(r.status_code, 200, r.content)
+        return json.loads(r.content)["rooms"]
+
+    def _entry(self, code: str) -> dict:
+        """One room's entry, found BY ITS CODE rather than by its position in the list: a test
+        about a value must not also be a test about the order, which is asserted separately."""
+        return next(r for r in self._rooms() if r["code"] == code)
+
+    def _online(self, player: Player) -> None:
+        """`player` as a connected phone, by writing the heartbeat a stream would write."""
+        _beat(player.room_id, player.pk)
+
+    def _age_out(self, player: Player) -> None:
+        """Push a player's last beat into the past, as a sleeping phone does, without sleeping.
+        Copied from `test_quiz` rather than imported: a test module is not a shared fixture."""
+        with _presence_lock:
+            _presence[(player.room_id, player.pk)] = time.monotonic() - PRESENCE_TTL - 1
+
+    def test_the_room_list_is_empty_when_no_room_exists(self) -> None:
+        self.assertEqual(self._rooms(), [])
+
+    def test_the_room_list_shows_every_room_that_exists(self) -> None:
+        # THE REGRESSION THAT MATTERS MOST, and it is two lines. One admin runs several groups in
+        # parallel and every one of them is a row: until the console could list them, a second
+        # room was unreachable — it existed, it was playable by code, and nothing named it.
+        first = self._room("FIRST")
+        second = self._room("SECON")
+        self.assertEqual({r["code"] for r in self._rooms()}, {first.code, second.code})
+
+    def test_a_listed_room_carries_exactly_the_contracted_keys(self) -> None:
+        # ONE WHOLE ENTRY, as the snapshot tests do: a ninth key "because it would be useful" is
+        # the drift this assertion exists to refuse. The client asks for what it renders.
+        self._room("SHAPE")
+        self.assertEqual(
+            self._entry("SHAPE"),
+            {
+                "code": "SHAPE",
+                "phase": "waiting",
+                "current": 0,
+                "total": 0,
+                "online_count": 0,
+                "players": 0,
+                "tutorial": True,
+                "anonymous": True,
+            },
+        )
+
+    def test_the_list_carries_the_raw_phase_string_not_a_label(self) -> None:
+        # The raw string, both phases, because the CLIENT owns the words: « En attente »,
+        # « En cours », whatever the console decides to call them, must not be baked into a
+        # payload the same console would then have to parse back.
+        self._room("IDLE")
+        self._started(code="LIVE", tutorial=False)
+        self.assertEqual(self._entry("IDLE")["phase"], "waiting")
+        self.assertEqual(self._entry("LIVE")["phase"], "playing")
+
+    def test_the_list_counts_joins_and_presence_separately(self) -> None:
+        # Two numbers that are not the same number: `players` is how many phones have EVER joined,
+        # `online_count` is how many are beating right now. They come apart the moment one phone
+        # sleeps, and an admin reading a room full of students needs the second one to be the
+        # truth about the room as it is rather than about the class as it arrived.
+        room = self._room("PRES1")
+        ana = Player.objects.create(room=room, name="ana")
+        bob = Player.objects.create(room=room, name="bob")
+        self._online(ana)
+        self._online(bob)
+        self.assertEqual((self._entry("PRES1")["players"], self._entry("PRES1")["online_count"]), (2, 2))
+        self._age_out(bob)
+        self.assertEqual((self._entry("PRES1")["players"], self._entry("PRES1")["online_count"]), (2, 1))
+
+    def test_a_listed_room_reports_the_round_cursor_and_the_round_count(self) -> None:
+        # `current` / `total` are the two halves of « tour 3 sur 10 », read off the room as
+        # `room_state` reports them: 0-based cursor, and the rounds this room actually has — ten
+        # for a started game, and ZERO for a lobby, not ROUNDS_PER_GAME.
+        self._room("LOBBY1")
+        self.assertEqual((self._entry("LOBBY1")["current"], self._entry("LOBBY1")["total"]), (0, 0))
+        room = self._started(code="GAME1", tutorial=False)
+        room.current = 3
+        room.save(update_fields=["current"])
+        entry = self._entry("GAME1")
+        self.assertEqual((entry["current"], entry["total"]), (3, ROUNDS_PER_GAME))
+
+    def test_a_listed_room_carries_the_flags_it_was_born_with(self) -> None:
+        # Not the defaults, because a default would pass on any room: the flags are read at
+        # creation and this list is how a console tells two rooms apart at a glance.
+        self._room("FLAG1", tutorial=False, anonymous=False)
+        self.assertEqual((self._entry("FLAG1")["tutorial"], self._entry("FLAG1")["anonymous"]), (False, False))
+
+    def test_the_room_list_requires_login(self) -> None:
+        Room.objects.create(code="WXYZ")
+        self.assertEqual(Client().get("/api/admin/rooms").status_code, 403)
+
+    def test_the_room_list_puts_the_rooms_needing_attention_first(self) -> None:
+        # A running game beats a lobby waiting for a host to press start, which beats a finished
+        # one: the list is read to decide where to go next, not to be read.
+        self._room("FINISH", phase=Room.Phase.DONE)
+        self._room("IDLE")
+        self._started(code="LIVE", tutorial=False)
+        self.assertEqual([r["code"] for r in self._rooms()], ["LIVE", "IDLE", "FINISH"])
+
+    def test_the_room_list_order_is_stable_between_two_calls(self) -> None:
+        # `Room` has NO `created_at` — only `Player` does — so the order cannot be newest-first,
+        # and the tie-break on `code` is what makes it hold still: an unstable order reshuffles the
+        # list under the admin's thumb every time the console refreshes it.
+        self._room("ROOMB")
+        self._room("ROOMA")
+        first = [r["code"] for r in self._rooms()]
+        self.assertEqual(first, [r["code"] for r in self._rooms()])
+        self.assertEqual(first, ["ROOMA", "ROOMB"])
+
+    def test_the_room_list_does_not_grow_a_query_per_room(self) -> None:
+        # THE ARBITRATION, MEASURED: the list is a table of codes, so it is counted and not
+        # snapshotted. A `room_state` per room — the obvious reuse, and the thing this test exists
+        # to keep from being introduced later — is not merely slower, it is a different NUMBER of
+        # queries per room, and each of those calls rebuilds two aggregates for every player plus
+        # the bank, the reveal and the summary. Five rooms must cost what one costs.
+        room = self._room("COST1")
+        Player.objects.create(room=room, name="ana")
+        with CaptureQueriesContext(connection) as one:
+            self.assertEqual(len(self._rooms()), 1)
+        for i in range(4):
+            Player.objects.create(room=self._room(f"COST{i + 2}"), name=f"p{i}")
+        with CaptureQueriesContext(connection) as five:
+            self.assertEqual(len(self._rooms()), 5)
+        self.assertEqual(len(five.captured_queries), len(one.captured_queries))
+        self.assertEqual(len(one.captured_queries), 1)
 
     def test_start_requires_login(self) -> None:
         # Both halves of the auth spine, in one test: `require_admin` on `admin_start` and on

@@ -4,7 +4,11 @@ from game import views
 
 urlpatterns = [
     path("api/admin/login", views.admin_login),
-    path("api/admin/rooms", views.admin_create_room),
+    # GET lists the rooms, POST creates one, and both live on this single pattern: the resolver
+    # returns the first pattern that matches the path and never looks at the method, so a second
+    # URL for the listing would either be unreachable or would take the creation with it. See
+    # `views.admin_rooms`.
+    path("api/admin/rooms", views.admin_rooms),
     path("api/admin/rooms/<str:code>/start", views.admin_start),
     path("api/admin/rooms/<str:code>/next", views.admin_next),
     path("api/admin/rooms/<str:code>/restart", views.admin_restart),

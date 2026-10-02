@@ -3,10 +3,11 @@ import secrets
 import string
 import threading
 import time
+from collections import Counter
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Sum
+from django.db.models import Count, Sum
 from django.http import Http404, HttpRequest, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -204,6 +205,106 @@ def admin_create_room(request: HttpRequest) -> JsonResponse:
         ]
     )
     return JsonResponse({"code": code})
+
+
+# What the room list is ordered by, and WHY IT IS NOT NEWEST-FIRST. `Room` has no `created_at` —
+# only `Player` does — and a migration to sort a table of room codes by age is the wrong price to
+# pay for that, so the order is by NEED instead: a room whose game is running is the one an admin
+# is about to press a button on, a lobby is waiting on a host, and a finished game is over. Ties
+# break on `code`, which is the primary key — unique, and stable, which is the part that matters:
+# without it two rooms in the same phase come back in whatever order the database happened to hand
+# them over and the list reshuffles under the admin's thumb on every refresh. A phase absent from
+# the table sorts last, so adding one to `Room.Phase` is a decision here rather than a silent
+# ordering.
+_PHASE_RANK = {
+    Room.Phase.QUIZ: 0,
+    Room.Phase.PLAYING: 0,
+    Room.Phase.RATING: 0,
+    Room.Phase.SUMMARY: 0,
+    Room.Phase.WAITING: 1,
+    Room.Phase.DONE: 2,
+}
+
+
+@require_GET
+def admin_list_rooms(request: HttpRequest) -> JsonResponse:
+    """Every room that exists, one flat entry each: enough for a console to choose one and to come
+    back to it, and nothing else.
+
+    THE LIST IS GLOBAL, and that is a consequence rather than a decision. `require_admin` tests ONE
+    boolean in the session: there is no admin identity in this codebase, no owner column and no
+    `created_by`, so there is nothing to scope the list by. Every admin sees every room and may
+    start or advance any of them — the same authority the per-room admin routes already grant,
+    since they check the same boolean. Inventing an admin model to narrow this would change what
+    the other routes authorise and would be a much larger change than the feature.
+
+    COUNTED, NOT SNAPSHOTTED, and that is the other arbitration. A `room_state` per room would be
+    the tempting reuse — it is right there and it answers the same questions — but each call builds
+    a roster, two aggregates PER PLAYER, the quiz bank, the reveal and the whole summary, so ten
+    rooms means ten full snapshots (scores, rating state, every prompt a class has written) to
+    render a table of codes, on a list the console re-reads as often as it likes. Nothing here
+    asks a question `room_state` is the only place to answer, so the two room columns are counted
+    in ONE query each and the entry is eight scalars.
+
+    `distinct=True` on both counts is not optional: `rounds` and `players` are two multi-valued
+    relations and one join would multiply them together, so a room with 10 rounds and 6 players
+    would report 60 of each. Two queries for the whole list — the rooms, and the online players of
+    every room at once — rather than two per room.
+
+    `online_count` is `online_player_ids`, the same helper and the same TTL as every other view, and
+    it is intersected with the roster rather than counted off the presence dict directly: a beat
+    left behind by a player deleted mid-quiz must not claim a phone in a room that has none. Same
+    reason `room_state` counts `online_count` off its per-player flags.
+
+    The phase is the RAW string, not a label. The words are the client's to choose.
+    """
+    if (err := require_admin(request)):
+        return err
+    rooms = list(
+        Room.objects.annotate(
+            players_count=Count("players", distinct=True), total=Count("rounds", distinct=True)
+        ).values("code", "phase", "current", "tutorial", "anonymous", "players_count", "total")
+    )
+    # One presence read per room, not one query: the registry is a process-local dict of heartbeats,
+    # so this is an in-memory filter rather than the N+1 the room rows above would otherwise be.
+    online = {room["code"]: online_player_ids(room["code"]) for room in rooms}
+    connected = set().union(*online.values())
+    # One query for the whole list, so a room nobody is in costs nothing.
+    present = Counter(Player.objects.filter(pk__in=connected).values_list("room__code", flat=True))
+    rooms.sort(key=lambda r: (_PHASE_RANK.get(r["phase"], len(_PHASE_RANK)), r["code"]))
+    return JsonResponse(
+        {
+            "rooms": [
+                {
+                    "code": room["code"],
+                    "phase": room["phase"],
+                    "current": room["current"],
+                    "total": room["total"],
+                    "online_count": present[room["code"]],
+                    "players": room["players_count"],
+                    "tutorial": room["tutorial"],
+                    "anonymous": room["anonymous"],
+                }
+                for room in rooms
+            ]
+        }
+    )
+
+
+@require_http_methods(["GET", "POST"])
+def admin_rooms(request: HttpRequest) -> JsonResponse:
+    """The one pattern behind `api/admin/rooms`: GET lists the rooms, POST creates one.
+
+    TWO METHODS ON ONE PATTERN, and for the reason `quiz` is two methods on one pattern: the
+    resolver returns the FIRST pattern that matches the path and never looks at the method, so a
+    GET route registered under the same URL as the POST create would either swallow the creation
+    or be unreachable behind it. Both halves delegate to the view that owns their own method, so
+    `admin_create_room` keeps its `@require_POST` and this stays a dispatcher with no logic of its
+    own.
+    """
+    if request.method == "GET":
+        return admin_list_rooms(request)
+    return admin_create_room(request)
 
 
 @require_POST
