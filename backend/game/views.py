@@ -617,7 +617,45 @@ def _summary_state(room: Room, rnd) -> dict:
     }
 
 
-def room_state(code: str) -> dict:
+def _ready_state(room: Room, player, online: set[int]) -> dict | None:
+    """The class's own bar: how many are ready, how many are needed, and whether THIS player is.
+
+    `needed` and not `quorum`: the payload carries no float anywhere else and this file names
+    integers by what they are. `needed` is also the number a phone has to show next to the
+    button, so it is the number that matters to a client, not the rule behind it.
+
+    `None` OUTSIDE A DISCUSSION, INCLUDING DURING THE ANSWERING WINDOW. `current_step` is what
+    decides it, and `current_step` withholds the quiz step until the reveal: a bar during the
+    thirty seconds of answering would let a majority skip a question nobody had been shown the
+    answer to.
+
+    COUNT AND NEEDED ARE MEASURED OVER THE SAME POPULATION, both through `_ready_voters`. The
+    author of the prompt on screen is excluded from both halves, because the endpoint refuses
+    their vote outright — a `mine` of True beside a count that ignores the vote would tell a
+    player their press landed when it was thrown away.
+
+    NO VIEWER IS NOT NO BAR. `room_state` is called with no player by the admin screen and by any
+    spectator, and `None` there means "nobody in particular is asking" rather than "there is
+    nothing to report": the count and the bar are properties of the ROOM and are correct without
+    a viewer, so only `mine` — the one field that cannot exist without one — is False. This is
+    also why `room_state` takes the player as an argument rather than reading a loop variable:
+    `p` inside its roster loop is whichever player happened to be built last, and reporting
+    `mine` for that one would tell every phone in the room whether a stranger had voted.
+    """
+    step = current_step(room)
+    if step is None:
+        return None
+    voters = _ready_voters(room, online)
+    return {
+        "step": step,
+        "count": Ready.objects.filter(room=room, step=step, player_id__in=voters).count(),
+        "needed": prompts.majority(len(voters)),
+        "mine": player is not None
+        and Ready.objects.filter(room=room, step=step, player=player).exists(),
+    }
+
+
+def room_state(code: str, player=None) -> dict:
     """The whole room, one payload, for everybody: the admin screen, every phone, every spectator.
 
     THE CONTRACT IS FIXED KEY FOR KEY, and it is the `Player` / `State` types in
@@ -759,6 +797,7 @@ def room_state(code: str) -> dict:
         "summary": (
             _summary_state(room, rnd) if room.phase == Room.Phase.SUMMARY and rnd is not None else None
         ),
+        "ready": _ready_state(room, player, online),
     }
     return state
 
@@ -840,6 +879,23 @@ def _maybe_close_quiz_window(room: Room) -> None:
     room._close_quiz()
 
 
+def _quiz_is_revealed(room: Room) -> bool:
+    """Whether the question on screen has had its answer shown yet.
+
+    THE REVEAL IS A CLOCK COMPARISON AND NOTHING ELSE — `now >= quiz_deadline` — and this is
+    that comparison, factored out so `current_step` and `_quiz_state` cannot disagree about it.
+    A second copy of the rule here would be a second place for the ready bar and the snapshot's
+    `revealed` flag to say opposite things on the same frame.
+
+    It exists because the ready bar MUST NOT EXIST DURING THE ANSWERING WINDOW, and the reason is
+    a bug this module had: `current_step` named a step for the whole `quiz` phase, so a class
+    could press « prêt » on question 3 while question 3 was still being asked, and the majority
+    would move the room on before anyone had read the answer. Asking and discussing are two
+    different moments and the button belongs to the second one only.
+    """
+    return room.quiz_deadline is not None and timezone.now() >= room.quiz_deadline
+
+
 def current_step(room: Room) -> str | None:
     """The discussion the room is in, named, or None when it is not discussing anything.
 
@@ -848,13 +904,19 @@ def current_step(room: Room) -> str | None:
     that phase closes on the answers themselves, and adding a button there would ask twenty
     students to press something that says nothing they have not already said with a prompt.
 
+    THE QUIZ STEP ONLY EXISTS AFTER THE REVEAL, through `_quiz_is_revealed`. The phase stays
+    `quiz` after the window closes — the phase is where the room IS, not what it is doing — so
+    keying the step off the phase alone offers « prêt » while the question is still open, and a
+    majority pressing it would advance past a question whose answer nobody had seen. Asking and
+    discussing are separate moments; only the second one gets a button.
+
     `None` IS THE ANSWER for four phases, and it is why this returns an option rather than a
-    default: `waiting`, `playing`, `done` and a `summary` with no round behind it have no
-    discussion, and a client that renders a ready bar for a step that does not exist shows a
-    button that goes nowhere.
+    default: `waiting`, `playing`, `done`, an unasked `quiz` question and a `summary` with no
+    round behind it have no discussion, and a client that renders a ready bar for a step that
+    does not exist shows a button that goes nowhere.
     """
     if room.phase == Room.Phase.QUIZ:
-        return f"quiz:{room.quiz_index}"
+        return f"quiz:{room.quiz_index}" if _quiz_is_revealed(room) else None
     if room.phase == Room.Phase.RATING:
         rnd = room.current_round()
         return None if rnd is None else f"rating:{rnd.order}:{rnd.revealed}"
@@ -862,6 +924,72 @@ def current_step(room: Room) -> str | None:
         rnd = room.current_round()
         return None if rnd is None else f"summary:{rnd.order}"
     return None
+
+
+def _ready_voters(room: Room, online: set[int]) -> set[int]:
+    """The players whose ready vote counts on the step the room is in.
+
+    THE ONLINE PLAYERS, MINUS THE AUTHOR OF THE PROMPT ON SCREEN during the rating, because the
+    author is forbidden to rate their own prompt and a bar they can never reach is a step the
+    room cannot end. Same reasoning, same set, as `_maybe_advance_reveal`.
+
+    ONE FUNCTION, because the count and the threshold have to be measured over the SAME
+    population. `_ready_state` once counted over the voters but took `needed` from `len(online)`,
+    which in a two-player room put `count` on one player and `needed` on two: the bar read « 1 sur
+    2 prêts » on every frame and the room never moved. The bar is the population, both halves of
+    it, or it is not a bar.
+    """
+    voters = set(online)
+    if room.phase == Room.Phase.RATING:
+        rnd = room.current_round()
+        if rnd is not None:
+            answers = list(rnd.answers.order_by("id"))
+            if rnd.revealed < len(answers):
+                voters.discard(answers[rnd.revealed].player_id)
+    return voters
+
+
+def maybe_advance_by_votes(room: Room) -> None:
+    """Move the room on when enough of the players who are there have said they are ready.
+
+    THE MAJORITY IS THE POINT, and it is the second half of why this exists. §2 gave the
+    advance to a person, and the consequence was that a teacher who wanted to stop and talk had
+    to keep a hand on the laptop: the discussion the round was built around could not start
+    until they pressed something. A majority of the players who are CONNECTED is enough, so the
+    class ends its own discussion — and a phone in a bag is not a veto, because the bar counts
+    `online_player_ids` and not `room.players`.
+
+    THE THREE WRITERS, REACHED THROUGH THE SAME TABLE THE ADMIN BUTTON USES. The last three
+    lines are `_PHASE_ADVANCE[room.phase](room)` and nothing else: the vote path and the admin's
+    button path must be the same code, because a class that advances itself and a teacher who
+    presses "suivant" are the same transition, and two implementations of it would drift within
+    a week — the vote path settling the round while the button path does not, say, and the bug
+    only appearing when a class finishes itself.
+
+    NOTHING HAPPENS ON AN EMPTY ROOM. `majority(0)` is 0 and the comparison below would be
+    `0 >= 0`, which is the vacuous truth this file refuses in three other places; the early
+    return is what keeps a room whose phones all dropped from running itself unattended.
+    """
+    step = current_step(room)
+    if step is None:
+        return
+    online = online_player_ids(room.code)
+    if not online:
+        return
+    voters = _ready_voters(room, online)
+    # The bar is the voters, not the room: during the rating the author of the prompt on screen
+    # is not one of them, and a threshold counted over players whose votes are excluded is a
+    # step that cannot end in a two-player room. `_ready_state` reads the same pair, so the
+    # number on the phone and the number acted on here are the same number by construction.
+    needed = prompts.majority(len(voters))
+    if needed == 0:
+        return
+    count = Ready.objects.filter(room=room, step=step, player_id__in=voters).count()
+    if count < needed:
+        return
+    advance = _PHASE_ADVANCE.get(room.phase)
+    if advance is not None:
+        advance(room)
 
 
 def maybe_advance_phase(room: Room) -> None:
@@ -951,7 +1079,11 @@ def events(request: HttpRequest, code: str) -> StreamingHttpResponse:
             if player is not None:
                 _beat(code, player.pk)
             try:
-                payload = json.dumps(room_state(code), ensure_ascii=False)
+                # The player goes IN, because `ready.mine` is the one field of the snapshot that
+                # is about the reader rather than the room: without it every phone would be told
+                # the same thing about its own button, and the admin's stream (no token) gets
+                # `mine` False rather than somebody else's.
+                payload = json.dumps(room_state(code, player), ensure_ascii=False)
             except Http404:  # room deleted mid-stream
                 return
             yield f"data: {payload}\n\n" if payload != last else ": ping\n\n"
@@ -1101,6 +1233,49 @@ def rate(request: HttpRequest, code: str) -> JsonResponse:
         return json_error("already rated", 409)
     maybe_advance_phase(room)
     return JsonResponse({"ok": True})
+
+
+@require_POST
+def ready(request: HttpRequest, code: str) -> JsonResponse:
+    """« On peut passer. » One player's vote, on the step the room is in.
+
+    THE CLIENT NEVER NAMES THE STEP. It sends its token and nothing else, for the reason `rate`
+    gives: a payload that could name the step is a payload that could vote on a step that has
+    not started, and the count would then include a vote the room never asked for. The step is
+    read from the room, and `current_step` returns None outside a discussion — including during
+    the thirty seconds a question is still being answered — so there is nothing here that can
+    put a row on a step nobody is discussing.
+
+    THE AUTHOR OF THE PROMPT ON SCREEN IS REFUSED, with a message of their own. They cannot
+    rate their own prompt, so their vote is not in the bar either, and the alternative — a
+    successful vote that the count silently ignores — is the worst of the three outcomes: the
+    button says « Prêt », the number does not move, and nothing on the phone says why. The
+    frontend already surfaces refusals, so the player reads the reason instead of guessing.
+
+    THE BAR IS CROSSED HERE, NOT AT THE NEXT POLL. The room moves on this tap, so a player who
+    pressed last does not spend half a second watching a bar that already says « 2 sur 2 »
+    before the screen changes underneath them.
+    """
+    room = get_object_or_404(Room, code=code)
+    data = body(request)
+    player, refusal = _player_for_token(room, data)
+    if refusal is not None:
+        return refusal
+    step = current_step(room)
+    if step is None:
+        return json_error("nothing to discuss", 409)
+    if room.phase == Room.Phase.RATING:
+        rnd = room.current_round()
+        answers = list(rnd.answers.order_by("id")) if rnd is not None else []
+        if rnd is not None and rnd.revealed < len(answers):
+            if answers[rnd.revealed].player_id == player.pk:
+                return json_error("you wrote this one", 409)
+    if Ready.objects.filter(room=room, step=step, player=player).exists():
+        return json_error("already ready", 409)
+    Ready.objects.create(room=room, step=step, player=player)
+    maybe_advance_by_votes(room)
+    room.refresh_from_db()
+    return JsonResponse({"ok": True, "ready": _ready_state(room, player, online_player_ids(room.code))})
 
 
 @require_http_methods(["GET", "POST"])

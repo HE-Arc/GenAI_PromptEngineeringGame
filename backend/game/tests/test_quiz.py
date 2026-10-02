@@ -918,29 +918,51 @@ class QuizPlayTests(TestCase):
 
     # --- the admin's button ------------------------------------------------------------------
 
-    def test_nothing_opens_the_game_by_itself(self):
-        # THE REMOVAL, pinned. The gate used to open the game when the last online player answered
-        # the eighth question, and there is a test for it in this file's history. Nothing does that
-        # now, and the way to prove a negative is to do the whole quiz and look: two players, both
-        # online, both answering every question, and the room still in `quiz` with the answer to
-        # every one of them stored. §2 hands the advance to a person.
+    def test_the_gate_opens_the_game_when_a_majority_is_ready_for_the_eighth(self):
+        # THE INVERSION, pinned in the other direction. This test used to assert the opposite: that
+        # nothing opens the game by itself, because §2 gave the advance to a person. The class now
+        # ends its own didacticiel, and the reason is the discussion the gate was missing — a
+        # teacher who has to press a button to start talking about question 8 does not get to talk
+        # about question 8.
         #
-        # The two players cannot both answer the SAME question — one question is for the room, and
-        # the second answer to it is the 409 below — so they are walked together, question by
-        # question, and that is the shape of a real class anyway: one question, everybody in it.
+        # The majority is still there, and it is asserted in the same test: two players, one vote,
+        # nothing happens. One phone cannot skip the didacticiel for a class of two.
+        #
+        # WALKED TOGETHER, question by question, as the test it replaces was: one question is for
+        # the room, so the second answer to it is a 409 and the two cannot be sat separately.
+        # `_answer_all` cannot do this — it walks the room forward with the admin's button and
+        # leaves it on the last question, so the second player's pass would restart at question 0
+        # against a cursor sitting at 7.
         room, players = self._joined(two=True)
-        self._online(room, *players)
+        ana, bob = players
+        self._online(room, ana, bob)
         for i in range(QUIZ_LENGTH):
             self._walk_to(room, i)
-            self.assertEqual(self._answer(room, players[0], i, 0).status_code, 200)
-            self.assertEqual(self._answer(room, players[1], i, 0).status_code, 200)
-        self._assert_phase(room, Room.Phase.QUIZ)
-        self.assertEqual(QuizAttempt.objects.count(), QUIZ_LENGTH * 2)
+            self._assert_ok(self._answer(room, ana, i, 0))
+            self._assert_ok(self._answer(room, bob, i, 0))
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.QUIZ)
         self.assertEqual(room.quiz_index, QUIZ_LENGTH - 1)
-        # And there is no code left that could have done it: the phase is not in the tuple the
-        # auto-advance dispatches on, so even a direct call is a no-op.
-        maybe_advance_phase(room)
+
+        # The eighth question's window is open here, and the ready bar is deliberately WITHHELD
+        # until the reveal — asking and discussing are two different moments. So the room has to
+        # be told the window is over before a vote means anything.
+        self._close_window(room)
         self._assert_phase(room, Room.Phase.QUIZ)
+
+        # One of two is not a majority. This is the line the old test would have failed on, and it
+        # is the reason the rule is a majority and not « whoever answers first ».
+        self._post(f"/api/rooms/{room.code}/ready", {"token": ana.token})
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.QUIZ)
+
+        # Two of two is. The eighth question's discussion ends, and the same step opens the writing
+        # phase — which is what `_advance_quiz` has always done for the admin's button.
+        self._post(f"/api/rooms/{room.code}/ready", {"token": bob.token})
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+        # The cursor stays where the eighth question left it, exactly as the button leaves it.
+        self.assertEqual(room.quiz_index, QUIZ_LENGTH - 1)
 
     def test_a_room_nobody_is_connected_to_does_not_open_itself_either(self):
         # The vacuous-truth case the old gate had to be defended against, kept for the same reason

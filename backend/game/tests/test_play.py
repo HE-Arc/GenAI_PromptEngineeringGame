@@ -215,15 +215,16 @@ class PlayTest(TestCase):
         with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(10, "parfait")):
             self._answer(t, "repete 42")
         st = room_state("ABCD")
-        # The FULL top-level key set, all ten. This is the assertion that catches a key appearing
-        # by accident and a key going missing, which is the whole reason it is a set equality
-        # rather than a lookup: the three phase blocks are in every snapshot from here on, and a
-        # subset check would be blind to that either way.
+        # The FULL top-level key set, all eleven. This is the assertion that catches a key
+        # appearing by accident and a key going missing, which is the whole reason it is a set
+        # equality rather than a lookup: the four phase blocks are in every snapshot from here on,
+        # and a subset check would be blind to that either way. `ready` joined them when the class
+        # got its own advance, on the same unconditional-key rule as the three before it.
         self.assertEqual(
             set(st),
             {
                 "code", "phase", "current", "total", "target", "anonymous",
-                "players", "online_count", "quiz", "reveal", "summary",
+                "players", "online_count", "quiz", "reveal", "summary", "ready",
             },
         )
         # Still round 0, on its own target. The last player's answer opened the RATING, it did not
@@ -480,7 +481,7 @@ class PlayTest(TestCase):
             set(payload),
             {
                 "code", "phase", "current", "total", "target", "anonymous",
-                "players", "online_count", "quiz", "reveal", "summary",
+                "players", "online_count", "quiz", "reveal", "summary", "ready",
             },
         )
         self.assertEqual(
@@ -517,10 +518,13 @@ class PlayTest(TestCase):
                     },
                 ],
                 "online_count": 0,
-                # All three present and null, which is the shape every phase carries.
+                # All four present and null, which is the shape every phase carries. `ready` is
+                # null twice over in this one: `playing` is not a discussion, and this stream
+                # carries no token, so there is no viewer whose `mine` it could be.
                 "quiz": None,
                 "reveal": None,
                 "summary": None,
+                "ready": None,
             },
         )
         r.close()

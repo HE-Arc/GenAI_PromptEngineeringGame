@@ -586,7 +586,7 @@ class RatingPlayTests(TestCase):
             frozenset(
                 {
                     "code", "phase", "current", "total", "target", "anonymous",
-                    "players", "online_count", "quiz", "reveal", "summary",
+                    "players", "online_count", "quiz", "reveal", "summary", "ready",
                 }
             ),
         )
