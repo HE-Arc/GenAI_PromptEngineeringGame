@@ -793,6 +793,129 @@ class QuizPlayTests(TestCase):
         self.assertIsNone(quiz["correct"])
         self.assertEqual(quiz["deadline_ms"], 0)
 
+    # --- closing the window early -------------------------------------------------------------
+
+    def test_the_window_closes_the_moment_everyone_online_has_answered(self):
+        # THE EARLY CLOSE. A class of nine phones reads a QCM in four seconds and then spends
+        # twenty-six of them staring at a countdown they have already beaten, which is the whole
+        # reason the window is SHARED rather than per-player: one shared window can be closed as
+        # soon as the last of it is done, and the reveal reaches every phone on the next frame.
+        room, players = self._joined(two=True)
+        ana, bob = players
+        self._online(room, ana, bob)
+        # ONE SHORT IS NOT ENOUGH, and the bar is the room's online players rather than the
+        # number of answers in the table: bob's phone is connected and has not tapped.
+        self._assert_ok(self._answer(room, ana, 0, 0))
+        quiz = room_state(room.code)["quiz"]
+        self.assertEqual((quiz["done"], quiz["online_count"]), (1, 2))
+        self.assertGreater(quiz["deadline_ms"], quiz["server_ms"])
+        # AND THE LAST ONE IS. No sleeping: the deadline is an absolute instant and it is now in
+        # the past, which is the only thing the reveal is a comparison against.
+        self._assert_ok(self._answer(room, bob, 0, 0))
+        room.refresh_from_db()
+        self.assertLess(room.quiz_deadline, timezone.now())
+        quiz = room_state(room.code)["quiz"]
+        self.assertTrue(quiz["revealed"])
+        self.assertLessEqual(quiz["deadline_ms"], quiz["server_ms"])
+        # So every phone in the room is looking at the key and the reason, without waiting out
+        # the thirty seconds nobody needed.
+        key = self._bank(room)[0]
+        self.assertEqual((quiz["correct"], quiz["explanation"]), (key.correct, key.explanation))
+
+    def test_closing_the_window_early_moves_nothing(self):
+        # CLOSING A WINDOW IS NOT ADVANCING. The write is a deadline and nothing else: §2 gives
+        # the advance to a person, and the last answer of the last question of the whole
+        # didacticiel closes a window exactly as this one does — it does not open the game.
+        room, players = self._joined(two=True)
+        ana, bob = players
+        self._online(room, ana, bob)
+        self._assert_ok(self._answer(room, ana, 0, 0))
+        self._assert_ok(self._answer(room, bob, 0, 0))
+        self._assert_phase(room, Room.Phase.QUIZ)
+        self.assertEqual(room.quiz_index, 0)
+        # Not even called directly: the auto-advance does not dispatch on this phase at all.
+        maybe_advance_phase(room)
+        self._assert_phase(room, Room.Phase.QUIZ)
+        self.assertEqual(room.quiz_index, 0)
+        # And the button is still what moves the room on, onto a FRESH window: the closed one
+        # was question 0's, and nothing it did is inherited by question 1.
+        self.assertEqual(self._next(room).status_code, 200)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 1))
+        quiz = room_state(room.code)["quiz"]
+        self.assertFalse(quiz["revealed"])
+        self.assertGreater(quiz["deadline_ms"], quiz["server_ms"])
+
+    def test_one_online_player_short_of_answered_keeps_the_window_open(self):
+        # THE ANTI-VACUOUS-TRUTH TEST, and the more important half of the feature: closing early
+        # must not be the same thing as closing because it is late. Bob has not tapped and bob's
+        # phone is streaming, so the thirty seconds are still his to use — « Le joueur qui n'a
+        # pas cliqué n'a rien, et c'est tout : il n'est pas bloqué, et il ne bloque personne. »
+        # Only the CLOCK takes the window from him, and a class-wide reveal three seconds in
+        # would hand every phone the key of a question half of them have not read yet.
+        room, players = self._joined(two=True)
+        ana, bob = players
+        self._online(room, ana, bob)
+        self._assert_ok(self._answer(room, ana, 0, 0))
+        room.refresh_from_db()
+        quiz = room_state(room.code)["quiz"]
+        self.assertEqual((quiz["done"], quiz["online_count"]), (1, 2))
+        self.assertFalse(quiz["revealed"])
+        self.assertIsNone(quiz["correct"])
+        self.assertIsNone(quiz["explanation"])
+        # Still the window `admin_start` opened, whole: the answer ana gave did not shorten it.
+        self.assertAlmostEqual(quiz["deadline_ms"] - quiz["server_ms"], QUIZ_SECONDS * 1000, delta=100)
+        self.assertGreater(room.quiz_deadline, timezone.now())
+        # And bob can still use it, which is the sentence the assertions above exist for.
+        self._assert_ok(self._answer(room, bob, 0, 0))
+
+    def test_a_room_nobody_is_connected_to_does_not_close_its_own_window(self):
+        # EVERY ANSWER, NOBODY WATCHING. A class whose phones have all locked has no last answer
+        # to be waiting for, and `0 == 0` — an empty online set trivially contains every answer —
+        # is exactly the vacuous truth this file refuses twice elsewhere. Nothing closes: the
+        # window runs out on its own clock, and the admin's button still moves the room.
+        room, players = self._joined(two=True)  # no heartbeat: every phone dropped
+        self._assert_ok(self._answer(room, players[0], 0, 0))
+        room.refresh_from_db()
+        self.assertGreater(room.quiz_deadline, timezone.now())
+        quiz = room_state(room.code)["quiz"]
+        self.assertEqual(quiz["online_count"], 0)
+        self.assertFalse(quiz["revealed"])
+        self.assertIsNone(quiz["correct"])
+        self.assertAlmostEqual(quiz["deadline_ms"] - quiz["server_ms"], QUIZ_SECONDS * 1000, delta=100)
+        # Even the second player's answer, with the room equally unwatched, changes nothing.
+        self._assert_ok(self._answer(room, players[1], 0, 0))
+        room.refresh_from_db()
+        self.assertGreater(room.quiz_deadline, timezone.now())
+
+    def test_a_late_answer_on_an_already_closed_window_writes_nothing(self):
+        # IDEMPOTENCE, and the case that produces it. Once the window is closed the endpoint
+        # refuses on the clock before it writes anything, so the retry from the phone that
+        # closed it (a flaky network, a double tap, a queued request finally landing) is the
+        # ordinary 409 — and the deadline the close wrote stays on the instant it was written
+        # rather than being dragged along by a request that arrived after it.
+        room, players = self._joined(two=True)
+        ana, bob = players
+        self._online(room, ana, bob)
+        self._assert_ok(self._answer(room, ana, 0, 0))
+        self._assert_ok(self._answer(room, bob, 0, 0))
+        room.refresh_from_db()
+        closed = room.quiz_deadline
+        again = self._answer(room, bob, 0, 1)
+        self.assertEqual(again.status_code, 409, again.content)
+        self.assertEqual(again.json()["error"], "time's up")
+        room.refresh_from_db()
+        self.assertEqual(room.quiz_deadline, closed)
+        # The stored answer is still the first one: nothing was rescored on the way out.
+        self.assertEqual(QuizAttempt.objects.filter(player=bob).count(), 1)
+        self.assertEqual(QuizAttempt.objects.get(player=bob).choice, 0)
+        # And closing an elapsed window again is a no-op rather than a fresh write, which is the
+        # guard the two requests above would otherwise make an accident waiting to happen.
+        room._close_quiz()
+        room.refresh_from_db()
+        self.assertEqual(room.quiz_deadline, closed)
+        self.assertTrue(room_state(room.code)["quiz"]["revealed"])
+
     # --- the admin's button ------------------------------------------------------------------
 
     def test_nothing_opens_the_game_by_itself(self):

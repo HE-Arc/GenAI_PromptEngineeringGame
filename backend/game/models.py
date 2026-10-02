@@ -104,6 +104,38 @@ class Room(models.Model):
         self._open_quiz(nxt)
         return True
 
+    def _close_quiz(self) -> None:
+        """Close the window on the question on screen NOW, rather than letting the class watch the
+        countdown run out on answers that have already been given.
+
+        THE ARBITRATION, and the whole of it: this writes a DEADLINE and NOTHING ELSE. The
+        question on screen does not change, the cursor does not move, and the phase does not —
+        §2 gives the advance to a person (« L'admin décide du passage à la question suivante »),
+        so the last player to answer the eighth question closes the last window exactly as this
+        does and the game is still opened by the admin's button. A "reveal" here is only the
+        comparison `now >= deadline` that `_quiz_state` evaluates for every phone, which is why
+        closing early needs no new state and no timer: the deadline that was already there is
+        the only thing being moved, to an instant that has passed.
+
+        ONLY THE QUESTION ON SCREEN, and only its window: there is no per-question deadline to go
+        and close, because a question the cursor has passed has none. That is what keeps the
+        hurry-up path unrevealed — the admin pressing the button early moves the room on, and
+        the question it left is not on screen to be compared against anything.
+
+        ALREADY ELAPSED IS A NO-OP, and the guard is `now >= deadline` rather than a flag: an
+        answer that arrives after the clock took the window anyway (a phone retrying, a request
+        queued behind a slow one) must not drag the deadline forward and re-open the question,
+        and must not rewrite it backwards either. The endpoint refuses those before reaching
+        this, so the guard is the backstop rather than the primary defence.
+
+        `save(update_fields=...)` and not a bare `save()`, for the reason `_open_quiz` gives.
+        """
+        now = timezone.now()
+        if self.quiz_deadline is not None and now >= self.quiz_deadline:
+            return
+        self.quiz_deadline = now
+        self.save(update_fields=["quiz_deadline"])
+
     def _open_rating(self) -> None:
         """Close the writing phase and put the first prompt of the round on screen.
 

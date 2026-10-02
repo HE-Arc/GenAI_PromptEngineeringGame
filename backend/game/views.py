@@ -790,6 +790,49 @@ def _maybe_advance_reveal(room: Room, rnd, online: set[int]) -> None:
         settle_round(room)
 
 
+def _maybe_close_quiz_window(room: Room) -> None:
+    """Close the current question's window early if every ONLINE player has answered it.
+
+    A shared thirty-second window the class has finished with is thirty seconds of a frozen
+    countdown on every phone in the room, and the answer to that is not a new state but the
+    comparison `_quiz_state` already makes: move the deadline to an instant that has passed and
+    the reveal opens on the next frame, with no timer thread and nothing new in the payload.
+
+    WHY IT IS SAFE TO CLOSE THE WINDOW BUT NOT TO ADVANCE. §2 gives the advance to a person, and
+    the two look identical from a phone's point of view — both are "question over". Closing is
+    safe because it cannot give one player an advantage: the attempt it writes is already
+    recorded and the key it unlocks is the key the clock was going to unlock anyway, only
+    earlier and with nobody scoring on it. Advancing is not, because it would hand the first
+    player to answer the next question a head start over the rest of the class — « §2 donne
+    l'avance à une personne » — and open the game on the last answer of the didacticiel, which
+    is the removal `test_nothing_opens_the_game_by_itself` pins. So this writes a deadline and
+    nothing else: `maybe_advance_phase` is not called from here, and the cursor and the phase
+    are the admin's button alone.
+
+    THE BAR IS THE ONLINE PLAYERS, and it is `maybe_advance_phase`'s bar, its reasoning and its
+    guard, in the same order. Not `room.players`, because a phone that slept is a row forever and
+    the window would then never close. And `if not online` first, because that same row count
+    taken to the limit is `0 == 0`: a room whose every phone dropped has nobody to be the last
+    answerer, and closing its own window unattended is a party teaching itself with nobody in it.
+
+    Only the question on screen is ever considered, and it is the room's own bank — the same
+    `(room, order)` address the POST used, so a late tap for a question the cursor has passed
+    cannot close a window that no longer exists. `_close_quiz` is idempotent, so the call is
+    harmless on every answer after the first that satisfied the condition.
+    """
+    online = online_player_ids(room.code)
+    if not online:
+        return
+    answered = set(
+        QuizAttempt.objects.filter(
+            player_id__in=online, question__room=room, question__order=room.quiz_index
+        ).values_list("player_id", flat=True)
+    )
+    if answered != online:
+        return
+    room._close_quiz()
+
+
 def maybe_advance_phase(room: Room) -> None:
     """Move the game on if the players who are there have done what the phase is waiting for.
 
@@ -1172,6 +1215,13 @@ def _quiz_post(request: HttpRequest, code: str) -> JsonResponse:
     # NO `maybe_advance_phase` HERE, and its absence is the point of the whole phase: the last
     # question answered does not open the game. The admin's button does, from
     # `_PHASE_ADVANCE[QUIZ]`, exactly as it opens each of the next seven questions.
+    #
+    # What DOES happen here is the window closing early, and it is deliberately a different
+    # function: the answer just recorded is the last one the room was waiting for, so the thirty
+    # seconds are over as far as this question goes and the class should be reading the
+    # explanation rather than a countdown. A deadline, and nothing else — see
+    # `_maybe_close_quiz_window` for the arbitration against advancing.
+    _maybe_close_quiz_window(room)
     return JsonResponse(
         {
             "correct": correct,
