@@ -401,32 +401,26 @@ export default function Quiz({
                       {LETTERS[i] ?? ''}
                     </span>
                     <span className="choice__t">{text}</span>
-                    {/* Said three ways, and none of them is the colour: the mark is a shape, the
-                        word is a sentence, and the tag above them is where the console puts what
-                        it wants read across a room. `--good` and `--fault` are reinforcement for
-                        the reader who has both of them, which is not everyone in a bright
-                        classroom on a phone held at arm's length. */}
-                    {isKey && (
-                      <span className="choice__tag">
-                        <span className="choice__mark" aria-hidden="true">
-                          ✓
-                        </span>
-                        Bonne réponse
+                    {/* One mark, no word, and at most one of them on the whole list: `isKey` and
+                        `missed` cannot both be true, so this is the single place the reveal draws
+                        a symbol and the second one would only ever be the same symbol.
+                        *
+                        The two sentences that used to sit in a pill here — « Bonne réponse » and
+                        « Ta réponse » — are gone, and not because the hue is deemed enough. The
+                        `.revealnote` directly underneath already states the outcome in French and
+                        names the letters, in the largest type on the screen. A pill repeating
+                        that sentence in 11px, higher up, inside the row the eye had just left,
+                        said the same thing twice on one sweep — and it was not free: on a 390px
+                        phone it cost the answer text a wrapped line.
+                        *
+                        The tick and the cross stay anyway. They are the channel that survives a
+                        colourblind reader and a monochrome print, both `aria-hidden` precisely
+                        because the sentence a screen reader must read is the one below, not these. */}
+                    {(isKey || missed) && (
+                      <span className="choice__mark" aria-hidden="true">
+                        {isKey ? '✓' : '✗'}
                       </span>
                     )}
-                    {missed && (
-                      <span className="choice__tag">
-                        <span className="choice__mark" aria-hidden="true">
-                          ✗
-                        </span>
-                        Ta réponse
-                      </span>
-                    )}
-                    {/* At most one tag per row, and never the same word twice. On the row the
-                        player got right there is nothing left to say beyond "Bonne réponse":
-                        there is only one green row on the screen, so it IS their row, and the
-                        verdict below says so in words. Squeezing a second tag in there instead
-                        cost the answer itself three wrapped lines on a 390px phone. */}
                   </button>
                 )
               })}
@@ -436,9 +430,13 @@ export default function Quiz({
               <>
                 {/* The verdict, in words, before the reason. Three sentences because there are
                     three truths: the player was right, the player was wrong, or the server had an
-                    attempt this screen did not know about. The middle one names both letters, so
-                    the sentence is complete without reading a single colour on the page — and the
-                    third takes no colour at all, because nothing about it is right or wrong. */}
+                    attempt this screen did not know about. All three name the letters, so no
+                    branch of this reveal is carried by a colour alone — and the middle one names
+                    only the key letter, because it cannot name the player's: the server never told
+                    this screen what was answered, which is exactly why that branch also draws no
+                    `✗` anywhere (no row is `isYours` when `picked` is null) and the absence of the
+                    cross is stated here in words instead. The third takes no colour at all, because
+                    nothing about it is right or wrong. */}
                 <div
                   className={`revealnote${
                     right ? ' revealnote--good' : picked === null ? '' : ' revealnote--miss'

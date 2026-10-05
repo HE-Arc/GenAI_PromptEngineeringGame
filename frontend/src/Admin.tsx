@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, DangerButton, Readout, Roster, RosterList, Step } from './ui'
 import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
@@ -12,21 +12,33 @@ import { useRoom } from './useRoom'
 // code that exists.
 const roomKey = 'jeu-genai:admin-room'
 
-// How often the list of rooms is re-read while the console has no room open.
+// How often the list of rooms is re-read while the console has no room open. Two beats, not
+// one, and which is running is `roomsEveryMs` below.
 //
-// Five seconds, and not the console's own half second: that stream carries the game a host is
-// standing in front of a class about, and a number that moves has to move with it. This list is
-// read between rooms — an admin glances at it to decide which code to go back into — and what it
-// carries moves on human timescales: someone joins, someone leaves, a phase advances because a
-// human pressed a button. One second would be twelve times the requests for a difference no eye
-// can act on; five is short enough that a row is never the reason a tap went to the wrong room,
-// and it is one request every five seconds on a screen nobody is even looking at.
+// Five seconds is the volatile case, and it is not derived from anything: no round lasts five
+// seconds and no deadline lands on it. It is simply the shortest interval at which pressing a
+// row does not feel like pressing a row that has not caught up. Faster than this list's own need
+// would be waste — unlike the room stream it is read between rooms, where what it carries moves
+// on human timescales.
 //
-// A timer rather than a fetch on every render, because every render would be a request per
-// render, and this screen re-renders on each keystroke in the password field. And a timer that
-// lives in an effect keyed on nothing, so it is torn down the moment the component leaves the
-// screen: a console with a room open must not be polling for rooms it is not showing.
+// Thirty seconds is the idle case: no room open, or every room finished, where nothing can change
+// on its own — a row appears only when a human opens another console, and a finished game does
+// not un-finish itself. Long enough that the cost is rounding error, short enough that a room
+// someone else just created is on screen before the admin reaches for the button that would have
+// made it.
 const ROOMS_EVERY_MS = 5_000
+const ROOMS_IDLE_EVERY_MS = 30_000
+
+// The phases that earn the fast beat. `waiting` is in here and looks like the opposite of
+// volatile: a room in the lobby is one press away from becoming a game.
+const ROOMS_IN_PROGRESS: Phase[] = ['waiting', 'quiz', 'playing', 'rating', 'summary']
+
+// Which of the two beats this list is owed, from the rooms the console already holds. `some`, so
+// one live room among finished ones keeps the console fast — an admin with four rooms open is
+// going back into the one in the lobby, not into the one that ended an hour ago.
+function roomsEveryMs(rooms: RoomSummary[]): number {
+  return rooms.some((r) => ROOMS_IN_PROGRESS.includes(r.phase)) ? ROOMS_EVERY_MS : ROOMS_IDLE_EVERY_MS
+}
 
 // What the phase is CALLED, in the room's own French. Six phases, and the name is the first thing
 // on the run-of-show block because it is the answer to the only question a host standing in front
@@ -98,11 +110,18 @@ type Note = {
 
 // The one screen that is never held in a hand, so it is the one screen that may put the
 // cursor in a field for you: a laptop on a table, a password the admin is about to type.
-function useMountFocus<T extends HTMLElement>() {
+//
+// `armed` and not a bare mount effect, because the password screen is no longer the first thing
+// this component draws: on the way in there is a « … » line first, and an effect that ran once
+// on mount would find no field to focus and never look again. Keyed on the flag, so the cursor
+// lands exactly when the field appears — including the second time, when a session that died
+// mid-console hands the admin back to the same field, which is the one moment in this console
+// where the next thing they do is certainly to type.
+function useMountFocus<T extends HTMLElement>(armed = true) {
   const ref = useRef<T>(null)
   useEffect(() => {
-    ref.current?.focus()
-  }, [])
+    if (armed) ref.current?.focus()
+  }, [armed])
   return ref
 }
 
@@ -152,87 +171,137 @@ function RelaunchButtons({
 // component: it owns a timer, and a timer owned by a screen's body is a timer whose cleanup is
 // one forgotten branch away from a console that polls for rooms while an audience is watching.
 //
-// FOUR states, and the first one is not an error. `GET /api/admin/rooms` is behind the same
+// THREE states, and the 403 is not one of them. `GET /api/admin/rooms` is behind the same
 // `require_admin` as everything else on this console, so it answers 403 until a password has been
-// submitted — which is the state the very first paint of this screen is in, for an admin who has
-// not yet been asked to do anything. Printing a fault there would be a broken screen telling
-// someone they have a problem, before they have been given anything to press. So a 403 is read as
-// what it is — « nobody has signed in here yet » — and the list renders nothing at all: not the
-// rows, not a heading, not a message. The password field below already says everything there is
-// to say about it.
+// submitted. That answer used to be read here and answered by rendering nothing — the field it
+// meant was two hundred pixels below it on the same scroll. It is now read here and handed UP,
+// because the gate draws the password and this component draws the list, and a component that
+// renders half of another screen's answer is a component whose states can no longer be read on
+// their own. A callback instead of a `return null` also means the request that said no was the
+// last one this screen asked for.
 //
-// This GET is therefore the session check, and that is deliberate rather than a shortcut: the
+// The same GET is still the session check, and that is deliberate rather than a shortcut: the
 // list appearing IS the evidence the session is alive. The obvious-looking alternative is to
 // open the endpoint and let the list paint, then gate it — and that would publish every room's
 // code, to every phase of every game, to anyone who typed /admin. There is nothing to unpublish
 // afterwards, so the session is the precondition and not a decoration on top.
 //
-// The other three states are about the list itself: still loading, empty, or failed. None of
-// them hides the create form underneath. A list that failed to load is the one that could: an
+// The interval is never expected to survive a 403: `onSignedOut` unmounts this component, so a
+// dead session costs one refused request rather than one per beat. What it used to be
+// kept running FOR is the thing given up here — the list reappearing by itself if the session
+// was re-established in another tab while this one sat on the password field. That was only
+// possible because the two were one screen, and it is a real loss: the gate does not poll, and
+// an admin whose session expired has to say the password again after a reload. A gate that
+// asked itself every five seconds whether it was still needed would be a screen with no state
+// to act on making a request forever, and one refused request per admin per reload is the small
+// honest price.
+//
+// The two remaining states are about the list itself: still loading, empty, or failed. None of
+// them hides the create button underneath. A list that failed to load is the one that could: an
 // admin whose request timed out still has to be able to open a game, and a screen that shows
 // only an error tells them the console is broken when the only thing that failed is the
-// convenience on top of it. So the error is a line under the list and the password field stays
+// convenience on top of it. So the error is a line under the list and the create button stays
 // exactly where it was.
 //
 // The phase shown is the one from `PHASE_NAME` and not a wording written here: the list and the
 // console call a phase by one name, and a second table is a second place for the six phases and
 // their French to drift apart.
-function RoomsList({ onOpen }: { onOpen: (code: string) => void }) {
+function RoomsList({
+  onOpen,
+  onSignedOut,
+}: {
+  onOpen: (code: string) => void
+  onSignedOut: () => void
+}) {
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null)
   const [err, setErr] = useState('')
-  // Set by the 403 and cleared by any other answer, so it is a statement about the LAST reply and
-  // not a latch: a session that dies mid-session has to be able to come back, and the next tick
-  // is what says whether it did.
-  const [signedOut, setSignedOut] = useState(false)
 
   useEffect(() => {
     // `gone` rather than a cancel token because there is nothing to do with a response that
     // arrives after the screen does: the unmounted list throws it away, and the one request
     // still in flight at teardown is at most one list of rooms nobody is looking at.
     let gone = false
-    const read = async () => {
+    // `beat` is a local and not a ref because the effect that owns it is also the only thing
+    // that re-arms it. `every` survives a failed read: a request that did not arrive says
+    // something about the network, not about how fast the list moves.
+    let beat: number | null = null
+    let every = ROOMS_EVERY_MS
+    // The last payload, serialised: the change detector, and it costs no request. `null` first,
+    // so the first read always counts as a change — a console that has just loaded knows nothing
+    // yet, and its first guess must not be the idle one.
+    let seen: string | null = null
+
+    function stop() {
+      if (beat !== null) window.clearInterval(beat)
+      beat = null
+    }
+
+    function rearm(ms: number) {
+      stop()
+      // The read already in flight when the tab was hidden is not covered by `gone`, and would
+      // otherwise arm an interval on a hidden tab and leave it there.
+      if (gone || document.hidden) return
+      beat = window.setInterval(() => void read(), ms)
+    }
+
+    async function read() {
       try {
         const next = await listRooms()
         if (gone) return
         setRooms(next)
         setErr('')
-        setSignedOut(false)
+        const now = JSON.stringify(next)
+        const changed = now !== seen
+        seen = now
+        // A change means somebody has just done something, so the fast beat even when the list
+        // as it stands looks idle — this is what stops the slow one from ever feeling stale.
+        every = changed ? ROOMS_EVERY_MS : roomsEveryMs(next)
       } catch (e) {
         if (gone) return
         // The status is already on the thrown `ApiError` and is read there rather than by
         // asking again: a second probe to find out whether this was a 403 would be a request
         // whose only purpose is to classify another request, and the endpoint that answers it
         // is the same one that just said no.
+        //
+        // Handed up and not latched here. A latch would have been needed while this component
+        // drew the password screen's other half, because nothing above could tell it to stop;
+        // now the gate unmounts this component outright, so the parent's boolean IS the latch
+        // and a second copy of it here could only ever disagree with the first.
         if (e instanceof ApiError && e.status === 403) {
-          setSignedOut(true)
-          setErr('')
+          onSignedOut()
           return
         }
-        setSignedOut(false)
         // Not `describe(e)`: that is the player's phrasing of a failure they can act on — «
         // Réessaie dans un instant », « Cette partie n’existe pas » — and neither is true of a
         // list an admin did not ask for by name. The screen says what is true here and stops
         // there.
         setErr('La liste des parties ne répond pas.')
       }
+      // Re-armed by the read itself, because the rate is only known here — and on the failure
+      // path too, or a console whose first request failed would never ask again at all.
+      rearm(every)
     }
+
+    // A hidden document was the largest single source of requests this list ever made. Coming
+    // back is one read rather than a fresh beat, because whatever changed while it was gone
+    // changed at least `every` ago and the admin is looking at the list at this instant.
+    function onVisibility() {
+      if (document.hidden) {
+        stop()
+        return
+      }
+      void read()
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
     void read()
-    // Kept running across the 403 rather than stopped on it. It costs one refused request per
-    // five seconds on a screen nobody can act on, and it is what lets the list appear by
-    // itself if the session is re-established in another tab while this one sits on the
-    // password field — which is the only way that can happen, since this screen's own submit
-    // signs in and creates a room in one press, which unmounts the list entirely.
-    const beat = setInterval(() => void read(), ROOMS_EVERY_MS)
+    // The flag first: any read still in flight now returns before it can arm a timer.
     return () => {
       gone = true
-      clearInterval(beat)
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [])
-
-  // Nothing at all, including the heading: a « Parties ouvertes » with no parties under it is a
-  // promise the screen is not making yet, and a gap where the list will be is a better thing to
-  // leave the password form than a sentence saying there is nothing.
-  if (signedOut) return null
+  }, [onSignedOut])
 
   return (
     <section className="roomslist">
@@ -331,6 +400,19 @@ export default function Admin() {
   // is the part that survives a phase moving underneath it, which is why this is now a bare
   // string rather than `null`.
   const [armed, setArmed] = useState<string | null>(null)
+  // Whether the session is alive, and `null` for the only state that is not an answer: between
+  // mounting and the check below coming back, nobody knows.
+  //
+  // A tri-state rather than a boolean because a boolean needs a value before the first request
+  // has been made and every value it can pick is a lie. `false` would paint the password field
+  // at an admin who is already signed in and then take it away again — and that swap is not a
+  // flash, it is a focus steal and a layout jump on the way in. `true` would paint an empty
+  // list before anything has been asked, and an empty list says « nobody is playing » which is
+  // not a thing anybody knows yet.
+  //
+  // `null` is a screen too, and the smallest one: the bar, the title the other two screens carry
+  // so nothing jumps when the answer lands, and one line saying the question is being asked.
+  const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const { state, link, retry } = useRoom(code)
   // The same clock the players are watching, on the same terms: the server's deadline against the
   // server's clock, so the host's "12 secondes" and the class's twelve seconds are the same
@@ -342,15 +424,25 @@ export default function Admin() {
   // a hook after them would be called on some renders and not others.
   const quizWindow = useQuizWindow(state?.quiz ?? null)
   const verified = useRef(false)
-  const passwordRef = useMountFocus<HTMLInputElement>()
+  // Armed on the gate screen rather than on mount, because on the way in there is a « … » line
+  // first and there is no field to focus yet — see `useMountFocus`, which is the other half of
+  // this decision.
+  const passwordRef = useMountFocus<HTMLInputElement>(signedIn === false)
 
-  async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  // `onForbidden` is the one failure `describe` cannot phrase for the screen it lands on: a 403
+  // on a create means the session died between the list painting and this press, and the honest
+  // answer is a different screen rather than a sentence under a button. Everything else —
+  // including the wording for a create that failed for its own reasons — is what this has
+  // always done, and it is passed rather than built in because four of the five callers have no
+  // idea a 403 is a screen transition.
+  async function run<T>(fn: () => Promise<T>, onForbidden?: () => void): Promise<T | undefined> {
     setErr('')
     setBusy(true)
     try {
       return await fn()
     } catch (e) {
-      setErr(describe(e))
+      if (onForbidden && e instanceof ApiError && e.status === 403) onForbidden()
+      else setErr(describe(e))
       return undefined
     } finally {
       setBusy(false)
@@ -368,40 +460,195 @@ export default function Admin() {
     }
   }, [state, code])
 
+  // The gate opens by asking, once. It does not watch: a poll here would be a request every
+  // five seconds on a screen whose whole job is to have nothing on it, and the only thing it
+  // could learn is whether the admin had signed in somewhere else — which is a session in
+  // another tab, not a decision anyone made on this one. So the trade is named instead of hidden:
+  // an admin whose session has expired says the password again after a reload. That is the cost
+  // of the password having its own screen, and it is paid once per admin per reload.
+  //
+  // Anything that is not a 403 opens the gate as well, and that is the deliberate reading of the
+  // two other failures. A server that cannot answer is not a session that has expired, but a « … »
+  // line that never resolves tells an admin nothing they can act on either, and the press that
+  // follows produces the real message about it, in the one place they are then looking.
+  useEffect(() => {
+    if (code || signedIn !== null) return
+    // The same `gone` as the list's: the reply can land after the admin has walked away, and
+    // setting a boolean on a component that is not there is a leak of one flag.
+    let gone = false
+    void (async () => {
+      try {
+        await listRooms()
+        if (!gone) setSignedIn(true)
+      } catch {
+        if (!gone) setSignedIn(false)
+      }
+    })()
+    return () => {
+      gone = true
+    }
+  }, [code, signedIn])
+
   function enter(c: string) {
     verified.current = false
     setCode(c)
   }
 
-  if (!code)
+  // The session died under the console. Back to the gate, with the list's own state cleared: a
+  // message about a room that can no longer be reached is not a message about the password they
+  // are about to type, and it would sit under a field it does not describe.
+  //
+  // Memoised because it is a dependency of the list's effect, and a plain function declaration
+  // would be a new identity on every render of this component — which would tear down the poll
+  // and start it again every time `busy` ticked, so a list re-read its rooms once per press of
+  // every button on this screen.
+  const lostSession = useCallback(() => {
+    setSignedIn(false)
+    setErr('')
+  }, [])
+
+  // Three screens behind one `!code`, and the order between them is the whole change: the
+  // password is asked for on a screen of its own, and the rooms list is on the one after it.
+  //
+  // Not a taste decision. The two things were never the same task, and a screen holding both
+  // made the common case — an admin coming back to the game they ran an hour ago — a scroll past
+  // a password field they did not need, while the button the screen was built around was the
+  // one action that half of it did not do. Signing in and creating a room are now two presses on
+  // two screens, each with a button that says which one it is.
+  if (!code) {
+    // Nobody knows yet, and the only honest thing to draw is the question being asked. It lasts
+    // as long as one GET, so it is also the screen that must give nothing away: a password field
+    // flashed up here and taken away would take the cursor with it, and a swap like that is
+    // something an eye reads as a fault rather than as a page loading.
+    //
+    // The title is the one the other two screens carry, so the answer landing does not move
+    // anything. `screen--solo` because this is the same kind of screen as the gate below it —
+    // one job, nothing to watch, vertically centred — and unlike the list, which is as tall as
+    // however many games happen to be running.
+    if (signedIn === null)
+      return (
+        <div className="deck">
+          <ConsoleBar />
+          {/* The skip link's target — see the note on `SkipLink` in App.tsx. Each of this
+              component's screens is a whole screen of its own and renders alone. */}
+          <main className="screen screen--solo" id="main" tabIndex={-1}>
+            <h1 className="title" tabIndex={-1}>Console d’animation</h1>
+            <p className="prose prose--dim">Vérification de la session…</p>
+          </main>
+        </div>
+      )
+
+    // The gate. Console bar, title, one line saying what the press will do, the field, the
+    // button — and nothing else, because the thing this press does not do is on the next screen.
+    //
+    // « Ouvrir la console » and not « Se connecter », which is the label this button could have
+    // taken and the wrong one: api.ts already says « Reconnecte-toi » to an admin whose session
+    // expired, and a gate that answers to the same verb as the game an admin has not entered yet
+    // is a screen talking about two different things. « Ouverture… » is then the honest busy
+    // label for it, and it is the one this form already had.
+    if (!signedIn)
+      return (
+        <div className="deck">
+          <ConsoleBar />
+          <main className="screen screen--solo" id="main" tabIndex={-1}>
+            <h1 className="title" tabIndex={-1}>Console d’animation</h1>
+            <p className="prose prose--dim">
+              Le mot de passe de l’animation. Les parties déjà ouvertes apparaîtront juste après.
+            </p>
+
+            {/* Signing in and nothing else. The submit used to go on to create a room as well,
+                which is why this form's one button had to carry a label about a room: a compound
+                action can only be named after the part of it that matters least, since the part
+                that matters most is the one the host did not come here to do. The create is on
+                the next screen now, with the two flags that configure it in front of the admin
+                and a label that can be read at face value. */}
+            <form
+              className="form"
+              onSubmit={(e: FormEvent) => {
+                e.preventDefault()
+                void run(async () => {
+                  await post('/api/admin/login', { password })
+                  setSignedIn(true)
+                })
+              }}
+            >
+              <div className="field">
+                <label className="label" htmlFor="admin-password">
+                  Mot de passe
+                </label>
+                {/* Visible rather than masked, on purpose: the admin is reading their own password
+                    back off their own screen before starting a game, and a masked field gives no way
+                    to spot a typo until it is silently rejected. */}
+                <input
+                  id="admin-password"
+                  ref={passwordRef}
+                  className="input"
+                  type="text"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  aria-required="true"
+                  aria-invalid={err ? true : undefined}
+                  aria-describedby={err ? 'admin-login-err' : undefined}
+                />
+              </div>
+              {/* The one field on this form, so the message is unambiguously about it: marked,
+                  linked, and announced on arrival. The typed password is kept — an admin who
+                  mistyped a nine-character password should retype one character, not nine. It is
+                  also what survives a session that died mid-console, because the field belongs to
+                  the gate and the gate is where they land. */}
+              {err && (
+                <p className="err" id="admin-login-err" role="alert">
+                  {err}
+                </p>
+              )}
+              <button
+                type="submit"
+                className="btn btn--signal btn--wide"
+                disabled={busy || !password}
+              >
+                {busy ? 'Ouverture…' : 'Ouvrir la console'}
+              </button>
+            </form>
+          </main>
+        </div>
+      )
+
+    // The list. Everything the password screen no longer holds, on a screen of its own: a host
+    // arriving at a console with four games already on the server is looking for the one they
+    // left an hour ago, and everything under the list here creates rather than reopens.
+    //
+    // A plain `.screen` and not `screen--solo`: that modifier centres its content in the deck,
+    // which is right for one form and wrong for a list — a centred list taller than the viewport
+    // overflows in both directions and the row at the top becomes unreachable by scrolling.
     return (
       <div className="deck">
         <ConsoleBar />
-        {/* The skip link's target — see the note on `SkipLink` in App.tsx. Each of this
-            component's three branches is a whole screen of its own and renders alone. */}
-        <main className="screen screen--solo" id="main" tabIndex={-1}>
+        <main className="screen" id="main" tabIndex={-1}>
           <h1 className="title" tabIndex={-1}>Console d’animation</h1>
           <p className="prose prose--dim">
-            Une partie se crée ici. Le code sera affiché à l’écran pour que tu le donnes au
-            groupe.
+            Reprends une partie ouverte, ou crée la tienne. Le code sera affiché à l’écran pour
+            que tu le donnes au groupe.
           </p>
 
-          {/* Above the flags and above the form, not below them. A host arriving at a console
+          {/* Above the flags and above the button, not below them. A host arriving at a console
               with four games already on the server is looking for the one they left an hour
-              ago, and everything on this screen below this line creates rather than reopens —
-              putting the list at the bottom would make the common case a scroll past a password
-              field they do not need. The create form is not demoted by being second: it is
-              still one screen, one scroll, no navigation between the two. */}
-          <RoomsList onOpen={enter} />
-          {/* Two flags, above the password and above the button that creates the party they
-              configure, and outside the form: they are not part of signing in, and a control
-              inside the form would create the room the moment it was touched. Position matters
-              more than it looks — a flag below "Créer une partie" is a flag nobody reads, because
-              the host pressed the button before seeing it and the party is already fixed.
-              Native checkboxes with the console's accent, rather than buttons drawn to look like
-              checkboxes: the whole cost of that choice is that the box cannot be styled to match
-              the panel, and what it buys is a real control with real keyboard, real focus and a
-              real checked state, which three divs would each have to re-implement. */}
+              ago, and everything on this screen below this line creates rather than reopens.
+              Putting the list at the bottom would make the common case a scroll past two flags
+              the host does not want, which is the same mistake this screen used to make in the
+              other direction. */}
+          <RoomsList onOpen={enter} onSignedOut={lostSession} />
+          {/* Two flags, above the button that creates the party they configure. Outside a form
+              now for a different reason than before — there is no form on this screen at all,
+              signing in and creating a room being two separate presses on two separate screens —
+              but the position argument is the same and is the reason it is here rather than
+              beside the button: a flag below « Créer une partie » is a flag nobody reads,
+              because the host pressed the button before seeing it and the party is already
+              fixed. Native checkboxes with the console's accent, rather than buttons drawn to
+              look like checkboxes: the whole cost of that choice is that the box cannot be
+              styled to match the panel, and what it buys is a real control with real keyboard,
+              real focus and a real checked state, which three divs would each have to
+              re-implement. */}
           <div className="checks">
             <label className="check">
               <input
@@ -439,63 +686,39 @@ export default function Admin() {
             </p>
           </div>
 
-          <form
-            className="form"
-            onSubmit={(e: FormEvent) => {
-              e.preventDefault()
+          {/* A button and not a form: there is one control here and one field-less action to
+              take, and a `<form>` would only add an implicit submit for a screen that has
+              nothing to submit. Both flags ride this POST and nowhere else. They are the room's
+              own fields, named as the server names them, so the payload is readable in one place
+              rather than translated on the way out. */}
+          <button
+            type="button"
+            className="btn btn--signal btn--wide"
+            disabled={busy}
+            onClick={() =>
               void run(async () => {
-                await post('/api/admin/login', { password })
-                // Both flags ride the creation POST and nowhere else. They are the room's own
-                // fields, named as the server names them, so the payload is readable in one
-                // place rather than translated on the way out.
                 const { code: c } = await post<{ code: string }>('/api/admin/rooms', {
                   tutorial,
                   anonymous,
                 })
                 enter(c)
-              })
-            }}
+              }, lostSession)
+            }
           >
-            <div className="field">
-              <label className="label" htmlFor="admin-password">
-                Mot de passe
-              </label>
-              {/* Visible rather than masked, on purpose: the admin is reading their own password
-                  back off their own screen before starting a game, and a masked field gives no way
-                  to spot a typo until it is silently rejected. */}
-              <input
-                id="admin-password"
-                ref={passwordRef}
-                className="input"
-                type="text"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                aria-required="true"
-                aria-invalid={err ? true : undefined}
-                aria-describedby={err ? 'admin-login-err' : undefined}
-              />
-            </div>
-            {/* The one field on this form, so the message is unambiguously about it: marked,
-                linked, and announced on arrival. The typed password is kept — an admin who
-                mistyped a nine-character password should retype one character, not nine. */}
-            {err && (
-              <p className="err" id="admin-login-err" role="alert">
-                {err}
-              </p>
-            )}
-            <button
-              type="submit"
-              className="btn btn--signal btn--wide"
-              disabled={busy || !password}
-            >
-              {busy ? 'Ouverture…' : 'Créer une partie'}
-            </button>
-          </form>
-
+            {busy ? 'Création…' : 'Créer une partie'}
+          </button>
+          {/* Under the button rather than over the list above it: this is the answer to the press
+              that just happened, and the list is a thing the admin came here to read, not a thing
+              that failed. */}
+          {err && (
+            <p className="err" role="alert">
+              {err}
+            </p>
+          )}
         </main>
       </div>
     )
+  }
 
   // `connecting` is not a phase: it is the absence of a snapshot, and it stands in for the
   // lobby only because the lobby is the first thing that happens. A union of the real phases and
@@ -641,12 +864,21 @@ export default function Admin() {
   // is why the old version worked at all, and why it worked by accident: `go('/')` dropped the
   // admin on the *player* join form, inviting them to join a game as a player.
   //
-  // `setCode(null)` is the branch that renders the password form, and it is also what tears the
-  // stream down: the hook's effect deps change, React runs the previous cleanup (which clears
-  // the watchdog and closes the EventSource) before the new body early-runs. `state` falls
-  // to null with it, because the hook only hands back a snapshot whose code still matches — so
-  // the "persist a code once the room has answered" effect cannot re-write the key it was just
-  // asked to forget.
+  // `setCode(null)` is the branch that draws a screen of its own — the rooms list, because the
+  // session this function is returning to is still alive — and it is also what tears the stream
+  // down: the hook's effect deps change, React runs the previous cleanup (which clears the
+  // watchdog and closes the EventSource) before the new body early-runs. `state` falls to null
+  // with it, because the hook only hands back a snapshot whose code still matches — so the
+  // "persist a code once the room has answered" effect cannot re-write the key it was just asked
+  // to forget.
+  //
+  // Nothing here touches `signedIn`, and that is the point: an admin who walks out of a game and
+  // straight back into another one must not be asked for the password a second time in the same
+  // sitting. It is left at `null`, which means the way back is one GET and a « Vérification de la
+  // session… » line, and that is deliberate too: this function knows a session existed, not that
+  // it still does, and assuming otherwise would paint an empty rooms list and then take it away.
+  // If the session has died in the meantime it is that one check that finds out, and the gate
+  // opens on its own from there.
   //
   // Added after the room list, and it corrects the first line: this does NOT throw the room
   // away. Nothing in this function leaves the browser — no delete endpoint exists in this API —
@@ -662,8 +894,8 @@ export default function Admin() {
     // the abandoned one.
     verified.current = false
     setCode(null)
-    // Nothing to report about a room that is gone, and the form being revealed is a different
-    // form from the one the error belongs to.
+    // Nothing to report about a room that is gone, and the list being revealed is a different
+    // screen from the one the error belongs to.
     setErr('')
     setArmed(null)
   }
@@ -672,6 +904,11 @@ export default function Admin() {
   // machine running the party was restarted. Without this, every reload of /admin returns to
   // a console watching a room that is not there, with a start button that cannot work. The
   // recovery is to throw the stale code away and open a new one.
+  //
+  // `signedIn` is deliberately left alone here as at `abandon`, and this is the case where the
+  // distinction is sharpest: the room is gone but the SESSION is not. Asking for the password
+  // again to recover from a room that no longer exists would make the admin's own server outage
+  // look like a permissions problem.
   if (link === 'failed') {
     return (
       <div className="deck">
@@ -693,7 +930,13 @@ export default function Admin() {
                 localStorage.removeItem(roomKey)
                 verified.current = false
                 setCode(null)
-                setPassword('')
+                // `setPassword('')` used to be here, and it is not any more. The typed password
+                // belongs to the gate, the gate is the one screen the admin cannot type into
+                // unless they are standing at it, and a session that has died since — which is
+                // the only way this field is ever seen again — hands them a blank one on every
+                // press. Wiping it was the only thing in this console that destroyed work
+                // rather than throwing away a claim, and it cost an admin a second pass at a
+                // nine-character password for no reason at all.
               }}
             >
               Ouvrir une nouvelle partie
@@ -898,9 +1141,12 @@ export default function Admin() {
           <div className="stack">
             {/* The standings, in the two phases where there is one to stand in. Not in the lobby, where
                 every score is zero and ten full bars say less than the list of names beside them;
-                not during the didacticiel or the rating, where the server blanks every score and
-                the board would draw ten em dashes — one thing the host cannot use, when what
-                they need is where the room actually is. The round counter rides on the same
+                not during the didacticiel, where the board would draw a column of zeros — and not
+                the didacticiel's OWN numbers either, which live in `quiz_score` and which this
+                board never reads, so the host is told nothing twice; not during the rating, where
+                the server does blank every score and the board would draw ten em dashes. One
+                thing the host cannot use, when what they need is where the room actually is. The
+                round counter rides on the same
                 condition: `total` is 0 in the lobby, and "Manche 1 sur 0" is a number about
                 nothing. The named roster takes both of the phases the board skips, because the
                 host's decision there is whether to force the room on and that turns on knowing

@@ -191,14 +191,57 @@ export function PlayerName({
 // The named roster, for the one screen a laptop looks at. The host has a decision to make —
 // force the round on, or wait — and it turns on knowing *who* is unreachable, not how many.
 export function RosterList({ players, myName }: { players: Player[]; myName: string }) {
+  // Whether the figures have earned a column, asked of the SNAPSHOT rather than of the phase,
+  // and that is the whole argument for it.
+  //
+  // `score` is `settled + open_round` summed over a player's answers, so in `waiting` and in
+  // `quiz` it is a hard 0 for everybody — not "no score yet", which is the null, but a real
+  // zero produced by the arithmetic over an empty set. A column of those is twenty identical
+  // figures: it says nothing the host did not already know, and it spends the console's figure
+  // face and the reader's attention on a comparison that cannot exist yet. The obvious-looking
+  // implementation is one line that always draws the column, and it prints twenty zeros on the
+  // one screen in the game where the host's next move is a guess about who is listening.
+  //
+  // Once a single figure differs, the column earns its place and the zeros IN it become
+  // meaning rather than noise: a player who answered and earned nothing is genuinely 0, and
+  // the host needs to see that against a leader rather than infer it from a missing digit. So
+  // the test is "is there anything here to compare", not "has the game started" — the two are
+  // not the same question, and the snapshot is the only one this component can be given:
+  // `Admin` calls this in three phases with `players` and nothing else, and adding a prop it
+  // does not pass would only move the decision somewhere it cannot be trusted.
+  //
+  // The rating phase is answered by the same rule rather than by a special case. The server
+  // blanks every score there at once (`views.py`: `shown = None if hiding else total`), so
+  // there is nothing to compare and no column — which is the console's other answer for that
+  // phase, and the reason `Admin` draws a named roster and no standings while it lasts.
+  const scored = players.some((p) => p.score !== null && p.score !== 0)
   return (
     <div className="rosterlist">
       {players.map((p) => (
         <div className="rosterlist__row" key={p.name}>
           <span className={`lamp lamp--${p.online ? 'on' : 'off'}`} aria-hidden="true" />
           <PlayerName name={p.name} isMe={p.name === myName} className="rosterlist__name" />
+          {/* The ranking total, after the name: the only number in this row, printed by `fr`.
+              That is the whole null story here, and it is worth being exact about it — the dash
+              `fr` prints for a null is NOT reached in this component today, because the
+              all-blank case is caught one level up and the column is simply not drawn, the same
+              answer the console gives the rest of the rating phase. It still goes through `fr`
+              rather than through `p.score ?? 0` so that the guarantee is structural rather than
+              editorial: a roster row can only ever print what every other board in the console
+              prints, and the one-line version that looks obviously right — `?? 0` — is the line
+              that hands the ranking a zero nobody earned, which is the exact inference the
+              rating phase exists to prevent. Re-derive `scored` later and this stays true for
+              free; the moment somebody writes a fallback, it stops being true everywhere.
+              It is `score` and never `quiz_score`: the didacticiel's figure is deliberately kept
+              out of the ranking, and it is already drawn where it belongs, under its own heading,
+              with its own sentence saying it does not count. A roster carrying both would be a
+              second surface making the one distinction this game refuses to blur. */}
+          {scored && <span className="rosterlist__score num">{fr(p.score)}</span>}
           {/* Said in words as well as shown by an unlit lamp: colour alone would leave this
-              invisible to a player who cannot separate the two hues. */}
+              invisible to a player who cannot separate the two hues. It sits in its own track
+              rather than pushed to the edge by a margin, because a row that ends with the word
+              and a row that ends with the figure would otherwise draw the figures at two
+              different x positions. */}
           {!p.online && <span className="rosterlist__away">hors ligne</span>}
         </div>
       ))}

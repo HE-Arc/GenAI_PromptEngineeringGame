@@ -1,10 +1,23 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, PlayerName, Readout, ReadyBar, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
-import { absent, describe, getName, getToken, post, postReady, present, type Player, type State } from './api'
+import {
+  absent,
+  describe,
+  getName,
+  getToken,
+  isAbort,
+  postReady,
+  present,
+  StreamError,
+  streamAnswer,
+  type Player,
+  type State,
+} from './api'
+import ModelOutput from './ModelOutput'
 import type { Link } from './useRoom'
 
-type Result = { score: number; comment: string; output: string; round: number }
+type Result = { score: number; comment: string; output: string; round: number; truncated: boolean }
 
 export default function Game({
   state,
@@ -27,6 +40,13 @@ export default function Game({
   const verdictRef = useRef<HTMLDivElement>(null)
   // True the moment the POST has answered, before the stream has said so. See `send`.
   const [sent, setSent] = useState(false)
+  // The answer as it is being written, and then the verdict. Two pieces of one thing rather
+  // than two, because the player's question — « where is my note » — has one answer, and a
+  // screen that could show either would have to say which half is on.
+  const [live, setLive] = useState<{ text: string; scoring: boolean } | null>(null)
+  // Aborting the stream is not a failure and must not be reported as one: unmounting, or the
+  // player leaving, closes the request mid-answer. Kept in a ref because it is never rendered.
+  const abortRef = useRef<AbortController | null>(null)
 
   // A prompt belongs to the target it was written against, and an error to the round that
   // caused it, so both are cleared when the round moves on. This used to be an effect keyed
@@ -80,6 +100,7 @@ export default function Game({
     setPrompt('')
     setErr('')
     setSent(false)
+    setLive(null)
   }
 
   const myName = getName(code)
@@ -115,8 +136,11 @@ export default function Game({
   // are present and on the stream — so being the only one left is `left === 1` while the box
   // is still empty. This is also the exact condition the server closes a round on, so the
   // line is never more or less true than the game is.
+  // `busy` is in the first test, not the second: a player who has pressed send is waiting on
+  // the jury, not being told to answer again. Before the stream existed the POST only came
+  // back at the very end, so this line had ten seconds of nothing to be wrong about.
   const caption = (() => {
-    if (!alreadyDone) return left === 1 ? 'À toi de répondre' : 'Réponses envoyées'
+    if (!alreadyDone && !busy) return left === 1 ? 'À toi de répondre' : 'Réponses envoyées'
     return left === 0 ? 'Tout le monde a répondu' : `En attente de ${noun(left, 'joueur', 'joueurs')}`
   })()
 
@@ -130,6 +154,19 @@ export default function Game({
       ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
       : ''
 
+  // What the button is waiting for. Two waits and two words: the pause after the text is two
+  // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
+  // button telling the player the model is still working when it stopped two seconds ago.
+  const submitLabel = alreadyDone
+    ? 'Réponse envoyée'
+    : busy
+      ? live?.scoring
+        ? 'Le jury délibère…'
+        : 'Le modèle réfléchit…'
+      : stale
+        ? 'En attente de la reconnexion…'
+        : 'Envoyer au modèle'
+
   function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
     // Same refusals as the button, so a shortcut can never send what a click would not.
@@ -142,18 +179,62 @@ export default function Game({
     e.preventDefault()
     setErr('')
     setBusy(true)
+    setLive({ text: '', scoring: false })
+    const ac = new AbortController()
+    abortRef.current = ac
+    // Accumulated here rather than read back off `live`: a state value captured by this closure
+    // is the value it had when the send started, so reading it after the awaits would hand the
+    // verdict an empty answer.
+    let text = ''
+    let scoring = false
     try {
-      const res = await post<Omit<Result, 'round'>>(`/api/rooms/${code}/answer`, { token: getToken(code), prompt })
-      setResult({ ...res, round: state.current })
-      // The answer is in; the round knows it now whether or not the stream has caught up.
+      const res = await streamAnswer(
+        `/api/rooms/${code}/answer`,
+        { token: getToken(code), prompt },
+        {
+          chunk: (delta) => {
+            text += delta
+            setLive({ text, scoring })
+          },
+          scoring: () => {
+            scoring = true
+            setLive({ text, scoring })
+          },
+        },
+        ac.signal,
+      )
+      // The text the player watched, not a second copy from the payload: the server stored the
+      // same string and the judge scored the same string, so one truth reaches the screen.
+      setResult({ score: res.score, comment: res.comment, output: text, round: res.round, truncated: res.truncated })
+      setLive(null)
+      // Only the verdict earns the round its answer. Not the first chunk: the row does not exist
+      // until the `done` frame, and a composer disabled on the strength of a delta would lock a
+      // player out of a round the server has not yet accepted — and lock them out of retrying
+      // if the jury then falls over.
       setSent(true)
       setPrompt('')
     } catch (e) {
-      setErr(describe(e))
+      // An abort says nothing to the player: the screen went away, or the player did. There is
+      // no error line to write and no state to undo, because a cancel writes nothing server-side
+      // either — the generation keeps running and the round closes on the answers that do land.
+      if (!isAbort(e)) {
+        setErr(e instanceof StreamError ? e.message : describe(e))
+        // Nothing was persisted, so the composer must stay usable and must stop claiming the
+        // answer is sent — otherwise a failed send locks the player out of a round they never
+        // answered, and there is nothing on screen saying why.
+        setSent(false)
+        setLive(null)
+      }
     } finally {
+      abortRef.current = null
       setBusy(false)
     }
   }
+
+  // Cancel an answer still being written when this screen goes away. `busy` is deliberately not
+  // in the deps: the effect must fire on unmount only, and a re-run on every send would abort
+  // the request it was mounted for.
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   // The score lands where the eye already is, which takes three things that all used to be
   // missing. The verdict now sits above the composer in the document rather than under it; the
@@ -209,6 +290,21 @@ export default function Game({
             the keyboard up is about 400px: the one thing the player had just earned, invisible,
             with no scroll, no focus move and nothing to say so. Above, it is in the first
             screenful. It keeps its `manche N` label because it survives a round change. */}
+        {/* The answer being written, in the same panel as the verdict it becomes and in the same
+            place in the document, so the text never jumps. Deliberately WITHOUT a score: a `0`
+            or a `—` in the score slot while the text arrives would be a number nobody gave, and
+            the slot is the loudest thing on the screen. */}
+        {live && (
+          <div className="verdict" ref={verdictRef} tabIndex={-1}>
+            <div>
+              <p className="label">
+                {live.scoring ? 'Le jury délibère…' : 'Le modèle a répondu'}
+              </p>
+              <ModelOutput text={live.text} streaming={!live.scoring} />
+            </div>
+          </div>
+        )}
+
         {result && (
           <div className="verdict" ref={verdictRef} tabIndex={-1}>
             <div className="verdict__top">
@@ -220,7 +316,16 @@ export default function Game({
             <p className="prose prose--sm">{result.comment}</p>
             <div>
               <p className="label">Le modèle a répondu</p>
-              <pre className="slot">{result.output}</pre>
+              <ModelOutput text={result.output} />
+              {/* Said here because the truncation is a fact about the answer, not about the
+                  game: the note below was given for a text that stops mid-sentence, and a class
+                  reading a bad score deserves to know the answer is why. */}
+              {result.truncated && (
+                <p className="prose prose--sm prose--dim">
+                  La réponse s’arrête ici : le modèle a atteint sa limite de longueur. C’est ce
+                  texte, coupé à cet endroit, que le jury a noté.
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -296,7 +401,7 @@ export default function Game({
                     pushing every other row off a phone screen. */}
                 <details className="tally__more">
                   <summary className="tally__morebtn">Voir la réponse du modèle</summary>
-                  <pre className="slot">{row.output}</pre>
+                  <ModelOutput text={row.output} />
                 </details>
               </div>
             ))}
@@ -404,13 +509,7 @@ export default function Game({
                   className="btn btn--signal btn--wide"
                   disabled={busy || alreadyDone || stale || !prompt.trim()}
                 >
-                  {alreadyDone
-                    ? 'Réponse envoyée'
-                    : busy
-                      ? 'Le modèle réfléchit…'
-                      : stale
-                        ? 'En attente de la reconnexion…'
-                        : 'Envoyer au modèle'}
+                  {submitLabel}
                 </button>
                 <p className="hint">
                   <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer

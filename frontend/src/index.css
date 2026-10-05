@@ -274,6 +274,52 @@ figure {
   color: var(--cool-lit);
 }
 
+/* A rendered model output. The same tokens as `.prose` — no colour of its own — and the job
+ * is done by the spacing: markdown with no margin between blocks is one unreadable wall. */
+.md {
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--rail);
+  border-radius: var(--radius);
+  background: var(--well);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 0.6rem 0; }
+.md h1, .md h2, .md h3, .md h4 { margin: 0.9rem 0 0.4rem; line-height: 1.2; }
+.md ul, .md ol { margin: 0.6rem 0; padding-left: 1.3rem; }
+.md li { margin: 0.2rem 0; }
+.md blockquote {
+  margin: 0.6rem 0;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--cool);
+  color: var(--ink-dim);
+}
+.md code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+.md pre {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.7rem;
+  overflow-x: auto;
+  background: var(--well);
+}
+/* `--rail`, the border colour `.slot` and `.tally__more` already draw with: a table is a set of
+ * rules, not a second design language, and there is no `--line` token to reach for. */
+.md pre code { font-size: 0.8125rem; }
+.md table { border-collapse: collapse; margin: 0.6rem 0; }
+.md th, .md td { border: 1px solid var(--rail); padding: 0.3rem 0.5rem; text-align: left; }
+.md a { color: var(--cool-lit); }
+/* While generating: the text arrives raw, without tags. Same face as the rendered markdown, so
+ * the switch at the end is not a change of size. */
+.md--raw { margin: 0; font-family: inherit; white-space: pre-wrap; }
+/* The raw answer carries `.slot` as well as `.md`, so the frame is drawn once and does not
+ * appear when the text stops being raw — a border flashing in at the end of an answer is a
+ * flash nobody asked for. The margin under the summary's disclosure is the one `.slot` had. */
+.tally__more .md { margin-bottom: 0.5rem; }
+
 /* A frozen snapshot beats a spinner, but only if it says it is frozen. This is the label for
  * everything the server told us that we may no longer trust. */
 .notice {
@@ -569,10 +615,14 @@ figure {
  * also left right and wrong sharing one hue and differing by a word, which is a signal that
  * depends entirely on the reader separating sodium from fault red.
  *
- * Three signals now, and not one of them is the colour. The rule and the letter chip are green or
- * red, the tag spells it out, and the tag carries a MARK, because a shape is the one channel a
- * colourblind reader and a monochrome print both still have. `prefers-reduced-motion` is honoured
- * in this console, so nothing here may be carried by a fade.
+ * Three signals, and not one of them is the colour. The rule and the letter chip are green or
+ * red, and the mark is a tick or a cross, because a shape is the one channel a colourblind
+ * reader and a monochrome print both still have. The sentence that used to sit in a pill beside
+ * that mark is gone, and not because the hue was judged sufficient: `.revealnote` under the list
+ * already says "Tu as juste" or "Pas celle-là" in the largest type on the screen and names the
+ * letters, so a pill restating it in 11px was the same sentence a second time on the same sweep
+ * — and on a 390px phone it also cost the answer text a wrapped line.
+ * `prefers-reduced-motion` is honoured in this console, so nothing here may be carried by a fade.
  *
  * A rule and not a fill: the choice is still a row of text to read, and four rows that turn
  * into four colour blocks would be four paragraphs to read again.
@@ -606,38 +656,31 @@ figure {
   border-color: var(--fault);
   color: var(--fault);
 }
-/* The chosen-and-right row is already the right one; the inset says so and the tag says who
- * picked it. */
+/* The chosen-and-right row is already the right row, so this spends a second rule and not a
+ * second hue on it — and the tick above lands on this row exactly as it does on the key row,
+ * which is the whole point: past the reveal they are the same row. */
 .btn.choice--yours:disabled {
   box-shadow: inset 3px 0 0 var(--good), inset 0 0 0 1px var(--good-wash);
 }
-.choice__tag {
-  flex: none;
-  align-self: center;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.05rem 0.35rem;
-  border: 1px solid currentColor;
-  border-radius: var(--radius);
-  color: var(--ink-dim);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-/* The mark inside the tag. `aria-hidden` because the word beside it is the sentence a screen
- * reader should say — "check mark, bonne réponse" is a worse label than "bonne réponse" — and the
- * mark is there for the reader looking at the row, who gets nothing else from a hue. */
+/* The mark, alone, with no pill around it. A bordered, padded box around a single glyph is a
+ * second object inside a row that is already an object, and the row's inset rule and its hue
+ * have said which row this is before the eye reaches the far edge. `flex: none` so the row's
+ * text keeps its width, and the mark stays under the 1.6rem letter chip in height, so gaining
+ * or losing one cannot move a row's edge — the four stay a stack of identical lines. */
 .choice__mark {
-  font-size: 0.8125rem;
-  line-height: 1;
+  flex: none;
+  color: var(--ink-dim);
+  font: 800 1rem/1 var(--font-ui);
 }
-.choice--right .choice__tag,
-.btn.choice--right:disabled .choice__tag {
+/* `aria-hidden` in the markup, and the reason has changed with the copy: the sentence a screen
+ * reader should say is no longer the word beside the mark, it is the verdict under the list, so
+ * "check mark" on its own would be strictly worse than nothing. */
+.choice--right .choice__mark,
+.btn.choice--right:disabled .choice__mark {
   color: var(--good);
 }
-.btn.choice--miss .choice__tag,
-.btn.choice--miss:disabled .choice__tag {
+.btn.choice--miss .choice__mark,
+.btn.choice--miss:disabled .choice__mark {
   color: var(--fault);
 }
 

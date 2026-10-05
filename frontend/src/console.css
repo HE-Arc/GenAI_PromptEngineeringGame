@@ -349,13 +349,34 @@
   margin-top: 0.5rem;
 }
 
+/* The list's columns are declared here, on the list, and every row BORROWS them through
+ * `subgrid`. A column of figures has to line up down the list, and it cannot when each row
+ * lays itself out on its own: an `auto` track in twenty separate grids sizes to twenty
+ * separate contents, so the figures would agree with each other only by accident — and they
+ * would stop agreeing the first time a row grew a name long enough to push its number
+ * sideways. `.qboard__row` is the rule this is deliberately NOT copied from; it lays each
+ * didacticiel row out independently and its `/ 8` column drifts for the same reason.
+ *
+ * Each row keeps its own box — the padding, the rule and the alignment belong to the row and
+ * not to the four cells — and inherits only the tracks, which is what `subgrid` is for.
+ *
+ * The plain template under the `subgrid` one is the fallback, not a leftover. A browser that
+ * does not know `subgrid` drops the second declaration and lays every row out as lamp, name,
+ * score, away: today's row plus the figure, which is a worse answer but not a broken one, and
+ * the fallback repeats the track list because the row's own gap would otherwise be the
+ * parent's only and the cells would touch. */
 .rosterlist {
   display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  column-gap: 0.55rem;
 }
 .rosterlist__row {
-  display: flex;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  grid-template-columns: subgrid;
+  column-gap: 0.55rem;
   align-items: center;
-  gap: 0.55rem;
   padding: 0.4rem 0;
   border-top: 1px solid var(--rail);
   font-size: 0.9375rem;
@@ -368,8 +389,21 @@
   color: var(--ink);
   overflow-wrap: anywhere;
 }
+/* The player's total, in the console's figure and in the board's position after the name. One
+ * step down from `.board__pts` for the reason `.board__cell` gives: the total is the one
+ * figure in the row THE BOARD is about, and here the row is about a person. The host is
+ * scanning this list for a name they cannot reach, and a total set at the board's size
+ * competes with that scan.
+ * `--ink-dim`, like `.board__cell`, because these are other people's scores: sodium belongs to
+ * the target and to "you", and a list of figures that borrowed it would be spending the accent
+ * on twenty numbers instead of one player's answer. */
+.rosterlist__score {
+  color: var(--ink-dim);
+  font-size: 1.0625rem;
+  line-height: 1;
+  text-align: right;
+}
 .rosterlist__away {
-  margin-left: auto;
   color: var(--ink-dim);
   font-size: 0.75rem;
   font-weight: 600;
