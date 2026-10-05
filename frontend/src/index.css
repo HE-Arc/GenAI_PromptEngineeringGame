@@ -434,8 +434,8 @@ figure {
   width: 100%;
 }
 
-/* The class's own bar on a discussion. One component, three screens, so it is one block: a
- * full-width button with the count under it, because on a phone held in one hand the button is
+/* The class's own bar on a discussion. One component, four screens, so it is one block: an
+ * instruction, a full-width button, the count under it. On a phone held in one hand the button is
  * the target and the count is what the teacher standing in front of the room reads off the
  * students' phones.
  *
@@ -453,6 +453,50 @@ figure {
 
 .ready .prose {
   text-align: center;
+}
+
+/* What the class is being asked to do, above the button. No panel and no rule around it, and
+ * that is this console's own position rather than a saving: `.prompt` already established that
+ * on a screen the display face is what separates the thing you are here to read from the sentence
+ * around it, "without a box around either". A rule here would also be a second edge for the eye,
+ * one row above the sodium slab it is meant to be quieter than.
+ *
+ * Centred on the button's account, for the count's reason. `balance` because this is two runs of
+ * different length more often than one: left alone, a one-word verb strands the clause it opens
+ * on a short last line, and a short last line under a centred line reads as an afterthought rather
+ * than as one sentence. */
+.ready__ask {
+  color: var(--ink);
+  font-size: 1rem;
+  line-height: 1.4;
+  text-align: center;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+/* The verb is the one word that has to arrive from across a classroom, and the display face is
+ * what buys that without eating the line: Big Shoulders runs about 30% narrower than Barlow at the
+ * same size, so set a size larger and heavier it takes LESS width than the sentence it opens than
+ * it would in the UI face. That is the only way this word can outrank the prose beside it inside
+ * a 350px column, and it is why this is the one line of prose in the console not set in Barlow.
+ *
+ * 800, not the 600 `.prompt` uses, because that split is already the console's own: 600 is a thing
+ * read at one's own pace on a phone of one's own, 800 is a value a room reads at distance, which is
+ * this word's job. 1.5rem, the room-code step rather than `.prompt`'s 1.25rem, for the same reason.
+ *
+ * `inline-block` keeps it in the line and on the sentence's baseline instead of making it a block
+ * that reads as a heading with a caption under it — which is the failure a two-part instruction
+ * gets for free if the type is allowed to break the line. The 0.1em is the word space: it belongs
+ * to the paragraph, so it is set at 1rem against a 24px glyph, and the condensation closes the gap
+ * more than the size opens it. */
+.ready__verb {
+  display: inline-block;
+  margin-inline-end: 0.1em;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.5rem;
+  line-height: 1;
+  letter-spacing: 0.01em;
 }
 
 /* 1rem and never smaller. iOS Safari zooms the whole page in on focus below 16px and does

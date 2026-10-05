@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from 'react'
+import { useId, useState, type CSSProperties, type ReactNode } from 'react'
 import { fr, noun, nounOf } from './format'
 import { linkWord, type Link } from './useRoom'
 import { SCALE_MAX, type Player, type ReadyState } from './api'
@@ -496,13 +496,58 @@ export function DangerButton(props: DangerProps) {
   )
 }
 
-// The class's own bar on a discussion: one wide button, the count under it. ONE component for
-// the three screens that discuss, and the reason is not tidiness — the rule, the wording and the
-// two disabled states are the same in all three, and three copies are three places for « Prêt »
-// and the sentence under it to drift apart while the server keeps one rule.
+// The class's own bar on a discussion: one instruction, one wide button, the count under it. ONE
+// component for the four screens that discuss, and the reason is not tidiness — the rule, the
+// wording and the three disabled states are the same in all four, and four copies are four places
+// for « Prêt » and the sentence under it to drift apart while the server keeps one rule.
 //
 // It renders itself away when there is no discussion rather than being handed a flag: `ready` is
 // null outside a step, so the screen that mounts this never has to know the phase it is in.
+
+// WHAT THE CLASS IS TALKING ABOUT, keyed on the FAMILY of `ready.step` and stored as a TUPLE.
+//
+// The tuple is the point, and a single string cannot hold it. The imperative is a different KIND of
+// thing from the sentence — it is the word that has to arrive from across the room, set heavier and
+// larger, while the sentence is prose read at normal pace — so it needs two fields to become two
+// elements. One string would mean parsing an emphasis marker out of it at render time and building
+// the span from the string, which is the one thing this console does not do with copy. And
+// `readonly [string, string]` is checked: a fifth entry cannot come with a missing verb or a
+// third field, where `Record<string, string>` would have said nothing.
+//
+// Keyed on the family — the part before the colon — because the cursor in `ready.step` is an
+// index: `quiz:3` must read as the didacticiel whatever question it is, and a key per index would
+// be eight sentences of which four can never be right.
+//
+// Derived rather than passed in, because `current_step` already names the discussion in the payload
+// the bar already reads: the wording costs no prop, so a fifth screen cannot forget it.
+const DISCUSSION: Record<string, readonly [string, string]> = {
+  // The class has arrived and is deciding to start, so the thing to settle out loud is presence,
+  // not the game — the roster above the bar is the same fact drawn, and the bar is where the
+  // decision is made.
+  lobby: ['Dites', 'à voix haute si tout le monde est là.'],
+  // The one screen where the discussion is not « what did you think » but « why ». The explanation
+  // is on screen precisely so a student can argue it to a neighbour, and a bar that said
+  // « comparez vos idées » here would spend the strongest moment of the didacticiel on the
+  // vaguest possible prompt.
+  quiz: ['Expliquez', 'à un voisin pourquoi c’est la bonne réponse.'],
+  // PRESENT tense, « ce que vous pensez », and it is not a style choice: the bar is up from the
+  // moment the prompt appears, so a « ce que vous avez pensé » asserts a judgement this player has
+  // not made yet, and a « la note que vous avez donnée » asserts one they may be structurally
+  // barred from making — `Rating` swaps the scale for `.ownprompt` on the prompt's author, and
+  // anonymous mode bars one prompt per player the same way. An opinion is available to all three
+  // populations on every frame the bar is visible; a score is available to one of them.
+  rating: ['Dites', 'à voix haute ce que vous pensez de ce prompt.'],
+  // The summary is the one step with a number on screen that is still PROVISIONAL, so the round's
+  // scores are the thing worth arguing about rather than the prompt that produced them.
+  summary: ['Dites', 'à voix haute ce que vous pensez des notes du tour.'],
+}
+// A real sentence rather than a hole, on the same argument as the server's `_PHASE_ADVANCE`: a
+// step family added there must not paint an empty paragraph above the button.
+const DEFAULT_DISCUSSION: readonly [string, string] = [
+  'Discutez',
+  'de ce qui vient d’être montré à l’écran.',
+]
+
 export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady: () => Promise<boolean> }) {
   // The POST is the authority on its own outcome and the stream is half a second behind a thumb,
   // so this flag is the window the server's `already ready` lives in: without it, a thumb that
@@ -536,6 +581,9 @@ export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady
   // Noter button and Envoyer, and a vote in flight must not do that.
   const [optimistic, setOptimistic] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // `useId` over a literal: four mounts, one document lifetime, and a hand-written id is an id a
+  // second mount would collide with.
+  const askId = useId()
   // Dropped by a comparison during render rather than by an effect: React re-runs this component
   // the moment `ready` moves and never paints the stale value, so no frame exists in which the
   // flag is read for a discussion this phone has left — while an effect would put one there. It
@@ -554,8 +602,24 @@ export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady
   // the stream has not caught up with are the same fact to the player looking at the phone, and
   // the label, the ghost class and `disabled` all read this one line, so all three stay together.
   const settled = ready.mine || there || optimistic === ready.step
+  const [verb, sentence] = DISCUSSION[ready.step.split(':')[0]] ?? DEFAULT_DISCUSSION
   return (
     <div className="ready">
+      {/* THE INSTRUCTION GOES ABOVE THE BUTTON, and the reason is the order the reader already
+          has. `aria-describedby` reads what it points at when the control takes focus, and the eye
+          reaches a full-width sodium slab before a line of text under it — so a description placed
+          after the button is one every player has already acted before reading, which is the exact
+          failure this bar was asked to fix. The count stays below, because the count is about the
+          button (« how many of us have pressed it ») and this is about the room.
+          `aria-describedby` and NOT a live region, which is the other half of the same decision. A
+          live region announces on every change; this sentence changes once per step while the count
+          changes several times inside one step, so folding it into the polite region would re-read
+          the instruction on every vote or need a guard to stay quiet. The count below is the only
+          live region on the bar, and it is quiet until another phone presses — which a player
+          cannot otherwise perceive at all until the room jumps. */}
+      <p className="ready__ask" id={askId}>
+        <b className="ready__verb">{verb}</b> {sentence}
+      </p>
       {/* Disabled on all three, and none of them is a mistake: a player who has voted does not
           vote again, a player whose own vote carried the class is not handed a second one to
           press, and a vote still travelling is not sent twice. Ghost is the console's own
@@ -565,6 +629,7 @@ export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady
           to wait. */}
       <button
         type="button"
+        aria-describedby={askId}
         className={`btn${settled ? ' btn--ghost' : ' btn--signal'} btn--wide`}
         onClick={async () => {
           setBusy(true)
@@ -586,7 +651,10 @@ export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady
           anything: other phones pressing, which a player cannot otherwise perceive at all until
           the room jumps. `polite`, so it never talks over the screen's own live region — and it
           carries the sentence AND the fraction, so the change it announces is the whole of what
-          the row above it draws.
+          the row above it draws. « La classe passe à la suite. » is the one string here that is
+          true while `settled` is true for somebody else's reason, and it stays in this region for
+          that reason — a player reads it as the state of the room, not as an invitation that
+          outlived the thing it invited.
           The noun goes through `nounOf` like every other count in the console: « 1 sur 2 prêts »
           is wrong French on a phone a teacher is reading from the front of the room, and the
           rule that fixes it already exists in `format.ts`. */}
