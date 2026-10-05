@@ -1,16 +1,33 @@
 import json
+import threading
 from unittest.mock import patch
 
 from django.db.models import Sum
 from django.http import HttpResponse
-from django.test import Client, TestCase
+from django.test import Client, TransactionTestCase
 
+from game import llm
 from game.llm import Verdict
 from game.models import Answer, Player, Room, Round
+from game.tests.support import answer_chunks, drain, read_frames, wait_for
 from game.views import _beat, _inflight, _presence, room_state, settle_round
 
 
-class PlayTest(TestCase):
+class PlayTest(TransactionTestCase):
+    """The play phase, and the stream the answer comes back on.
+
+    `TransactionTestCase` and not `TestCase`, and the reason is the endpoint's shape rather than
+    a preference: the three billed calls now run in a WORKER THREAD, so the row is written on a
+    connection of its own. A `TestCase` holds its fixture in an uncommitted transaction on the
+    test's connection, which that thread can neither see nor write — every answer would end in
+    `database is locked`, and the failure would look like a bug in the endpoint. Real commits are
+    what a second connection needs, so they are what the test has to give up.
+
+    Every `/answer` call is therefore read to its end (`drain`): the work outlives the client by
+    design, and a test that returned while the thread was still writing would race the flush
+    that tears the fixture down.
+    """
+
     def setUp(self) -> None:
         self.c = Client()
         self.room = Room.objects.create(code="ABCD", phase=Room.Phase.WAITING)
@@ -20,6 +37,7 @@ class PlayTest(TestCase):
         # roll it back: without this, a heartbeat from an earlier test marks a same-named player
         # online in a later one.
         _presence.clear()
+        _inflight.clear()
 
     def _play(self) -> None:
         self.room.phase = Room.Phase.PLAYING
@@ -42,12 +60,22 @@ class PlayTest(TestCase):
         for name in names:
             _beat("ABCD", Player.objects.get(room=self.room, name=name).pk)
 
-    def _answer(self, token: str, prompt: str) -> HttpResponse:
+    def _post_answer(self, token: str, prompt: str) -> HttpResponse:
         return self.c.post(
             "/api/rooms/ABCD/answer",
             data=json.dumps({"token": token, "prompt": prompt}),
             content_type="application/json",
         )
+
+    def _answer(self, token: str, prompt: str) -> HttpResponse:
+        """One submit, read to the end: the status is all this returns, and the work behind it
+        has to have finished before the next line asserts on what it wrote."""
+        r = self._post_answer(token, prompt)
+        drain(r)
+        return r
+
+    def _answer_frames(self, token: str, prompt: str) -> list[tuple[str, dict]]:
+        return read_frames(self._post_answer(token, prompt))
 
     def _answered_state(self) -> dict:
         """Room state mid-round: ana answered round 0, bob has not. Bob is the spectator that
@@ -55,7 +83,7 @@ class PlayTest(TestCase):
         _, t = self._join("ana")
         self._join("bob")
         self._play()
-        with patch("game.llm.answer", return_value="quarante-deux"), patch(
+        with patch("game.llm.answer_stream", new=answer_chunks("quarante-deux")), patch(
             "game.llm.score", return_value=Verdict(8, "tres proche")
         ):
             self._answer(t, "repete 42")
@@ -88,15 +116,24 @@ class PlayTest(TestCase):
         self.assertEqual(r.status_code, 409)
         self.assertIsNone(token)
 
+    @patch("game.llm.grade_prompt", return_value=Verdict(6, "methode"))
     @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
-    @patch("game.llm.answer", return_value="quarante-deux")
-    def test_answer_scores_and_advances_when_everyone_answered(self, m_answer, m_score) -> None:
+    @patch("game.llm.answer_stream", new=answer_chunks("quarante-deux"))
+    def test_answer_scores_and_advances_when_everyone_answered(self, _m_score, _m_grade) -> None:
         _, ta = self._join("ana")
         _, tb = self._join("bob")
         self._play()
         self._online("ana", "bob")
-        r = self._answer(ta, "repete 42")
-        self.assertEqual(json.loads(r.content), {"score": 8, "comment": "tres proche", "output": "quarante-deux"})
+        # What the old `{"score": …, "comment": …, "output": …}` body carried is the `done` frame
+        # and the `chunk` frames before it, so it is asserted where it now lives.
+        self.assertEqual(
+            self._answer_frames(ta, "repete 42"),
+            [
+                ("chunk", {"delta": "quarante-deux"}),
+                ("scoring", {}),
+                ("done", {"score": 8, "comment": "tres proche", "round": 0, "truncated": False}),
+            ],
+        )
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (0, "playing"))  # bob still pending
 
@@ -108,29 +145,181 @@ class PlayTest(TestCase):
         # skipped the whole point of the game.
         self.assertEqual((self.room.current, self.room.phase), (0, "rating"))
 
+    @patch("game.llm.grade_prompt", return_value=Verdict(7, "prompt correct"))
+    @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
+    @patch("game.llm.answer_stream", new=answer_chunks("quarante-", "deux"))
+    def test_the_frames_arrive_in_order_and_say_what_they_are(self, m_score, _m_grade) -> None:
+        """The whole wire contract in one assertion: four frame names, in this order.
+
+        The ORDER is the contract, not a detail. `scoring` exists so the client can say the jury
+        is working during two more billed calls, and it is only meaningful before the verdict: a
+        `done` frame ahead of the text would leave the client rendering a score over a verdict
+        whose text it had not drawn yet. Whole-list equality, so a frame that stops being sent,
+        starts being sent twice, or arrives out of order all fail here.
+        """
+        _, ta = self._join("ana")
+        self._play()
+        self._online("ana")
+        r = self._post_answer(ta, "repete 42")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Content-Type"], "text/event-stream")
+        self.assertEqual(r["Cache-Control"], "no-cache")
+        self.assertEqual(r["X-Accel-Buffering"], "no")
+        self.assertEqual(
+            read_frames(r),
+            [
+                ("chunk", {"delta": "quarante-"}),
+                ("chunk", {"delta": "deux"}),
+                ("scoring", {}),
+                ("done", {"score": 8, "comment": "tres proche", "round": 0, "truncated": False}),
+            ],
+        )
+        # The judge scored the text the player just watched, joined from the same deltas: one
+        # truth, not a streamed text and a scored text that can differ. And it is that same text
+        # the row keeps, so the summary cannot contradict the verdict either.
+        m_score.assert_called_once_with("repete 42", "quarante-deux", "42")
+        self.assertEqual(Answer.objects.get().output, "quarante-deux")
+
+    @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
+    @patch("game.llm.answer_stream", new=answer_chunks("quarante-", "deux", truncated=True))
+    def test_a_generation_cut_by_the_token_cap_says_so_in_the_done_frame(self, _m_score) -> None:
+        # The text of a truncated answer is indistinguishable from a complete one, so the flag is
+        # the only way a player learns their recipe stopped mid-sentence. It rides on `done`
+        # because that is the frame the client resolves on, and a missing flag would be read as
+        # "false" by every client anyway.
+        _, ta = self._join("ana")
+        self._play()
+        self._online("ana")
+        frames = self._answer_frames(ta, "repete 42")
+        self.assertEqual(frames[-1], ("done", {"score": 8, "comment": "tres proche", "round": 0, "truncated": True}))
+
+    @patch("game.llm.grade_prompt", return_value=Verdict(6, "methode"))
+    @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
+    def test_the_no_key_path_streams_the_local_answer_in_pieces(self, _m_grade, _m_score) -> None:
+        # The only test that runs the play call UNMOCKED, because with no key `llm.answer_stream`
+        # is the local stub — and that fallback is what every classroom without a key will
+        # actually run, so the endpoint has to work on it rather than beside it. The frames are
+        # the stub's own chunks: a fallback that answered in one lump would fail here, which is
+        # the point of the stub streaming at all.
+        _, ta = self._join("ana")
+        self._play()
+        self._online("ana")
+        prompt = "repete 42 en trois phrases"
+        with patch("game.llm._has_key", return_value=False):
+            frames = self._answer_frames(ta, prompt)
+        deltas = [payload["delta"] for name, payload in frames if name == "chunk"]
+        self.assertEqual("".join(deltas), llm._stub_answer(prompt))
+        self.assertEqual([name for name, _ in frames], ["chunk", "chunk", "scoring", "done"])
+        self.assertEqual(Answer.objects.get().output, llm._stub_answer(prompt).strip())
+
+    @patch("game.llm.grade_prompt", return_value=Verdict(7, "prompt correct"))
+    @patch("game.llm.score", side_effect=RuntimeError("le juge est tombe"))
+    @patch("game.llm.answer_stream", new=answer_chunks("quarante-deux"))
+    def test_a_failed_jury_streams_an_error_and_saves_nothing(self, _m_score, _m_grade) -> None:
+        # A generator cannot `yield` inside an `except`, which is the whole reason the work is
+        # not a generator: without a thread the client would see the text and then a closed
+        # stream, and could not tell a crash from a phone that went to sleep.
+        _, ta = self._join("ana")
+        self._play()
+        self._online("ana")
+        player = Player.objects.get(room=self.room, name="ana")
+        with self.assertLogs("game.views", level="ERROR"):
+            frames = self._answer_frames(ta, "repete 42")
+        self.assertEqual(frames[-1], ("error", {"error": "La partie a planté côté serveur. Préviens l'animateur."}))
+        # `scoring` IS sent before the jury runs, so the crash arrives after it: the client has to
+        # be able to hear "the jury is working" and then hear it failed, and the whole frame list
+        # is pinned so neither of those two frames can quietly stop being sent.
+        self.assertEqual([name for name, _ in frames], ["chunk", "scoring", "error"])
+        # Nothing persisted: the player is not credited with an answer nobody judged, and the
+        # round must not close on it. Their composer stays usable on the client precisely because
+        # the row does not exist.
+        self.assertEqual(Answer.objects.count(), 0)
+        self.room.refresh_from_db()
+        self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
+        # And the claim is released, or the player is locked out of a round they may still answer.
+        self.assertNotIn((Round.objects.get(room=self.room, order=0).pk, player.pk), _inflight)
+
+    @patch("game.llm.grade_prompt", return_value=Verdict(7, "prompt correct"))
+    def test_a_client_that_walks_away_does_not_cancel_the_answer(self, _m_grade) -> None:
+        """A phone that locks its screen mid-generation, which is the reason for the thread.
+
+        The double blocks on the second delta, so the stream is closed while the work is provably
+        mid-flight: had the calls run inline in the SSE generator — the obvious way to write this
+        — `close()` would have stopped them there, nothing would have been stored, and the round
+        would wait for a player who is asleep. Without this test the thread is an assertion in a
+        comment rather than a design.
+        """
+        gate = threading.Event()
+
+        class StallsAfterTheFirstDelta:
+            """One delta, then nothing until the gate opens — a phone that locks its screen the
+            moment the text starts arriving, which is the moment this whole design is about.
+
+            Carries `truncated` because that is part of what `llm.answer_stream` returns: a
+            double without it would fail on the `done` frame for a reason that has nothing to do
+            with what this test is about.
+            """
+
+            truncated = False
+
+            def __iter__(self):
+                yield "quarante-"
+                gate.wait(5.0)
+                yield "deux"
+
+        _, ta = self._join("ana")
+        self._play()
+        self._online("ana")
+        player = Player.objects.get(room=self.room, name="ana")
+        with patch("game.llm.answer_stream", new=lambda *_a, **_kw: StallsAfterTheFirstDelta()), patch(
+            "game.llm.score", return_value=Verdict(8, "tres proche")
+        ):
+            r = self._post_answer(ta, "repete 42")
+            self.assertIn(b"event: chunk", next(r.streaming_content))  # the phone is watching here
+            # `response.close()` is the close the WSGI server itself calls when the client goes
+            # away, and it is what raises GeneratorExit inside the SSE generator.
+            r.close()  # the phone locks its screen here, before the jury has been called
+            gate.set()  # the second delta, from a client nobody is there to receive
+            # The work is finished when the claim is released: it is released in the `finally`
+            # that runs after the write, so waiting on the claim is waiting on the write.
+            claim = (Round.objects.get(room=self.room, order=0).pk, player.pk)
+            self.assertTrue(wait_for(lambda: claim not in _inflight), "the work thread never finished")
+        answer = Answer.objects.get(player=player)
+        self.assertEqual((answer.output, answer.score), ("quarante-deux", 8))
+        self.room.refresh_from_db()
+        # The phase moved too, not just the row: the work ran to its end after the client was
+        # gone, jury and critic included. `rating` because ana is the only player and the round
+        # closes on the players who are there.
+        self.assertEqual((self.room.current, self.room.phase), (0, "rating"))
+
     @patch("game.llm.score", return_value=Verdict(5, "moyen"))
-    @patch("game.llm.answer", return_value="x")
-    def test_cannot_answer_twice(self, _m_answer, _m_score) -> None:
+    @patch("game.llm.answer_stream", new=answer_chunks("x"))
+    def test_cannot_answer_twice(self, _m_score) -> None:
         _, t = self._join("ana")
         self._join("bob")  # bob never answers, so round 0 stays open and the second submit hits the same round
         self._play()
         self.assertEqual(self._answer(t, "a").status_code, 200)
-        self.assertEqual(self._answer(t, "b").status_code, 409)
+        # The SECOND one is the refusal under test, and it is still JSON with a 409: decided
+        # before the stream starts, which is the only way a client can read a status it has not
+        # spent yet.
+        second = self._answer(t, "b")
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(json.loads(second.content), {"error": "already answered"})
 
     def test_answer_refused_with_bad_token(self) -> None:
         self._play()
         self.assertEqual(self._answer("nope", "a").status_code, 403)
 
-    @patch("game.llm.score", return_value=Verdict(5, "moyen"))
-    @patch("game.llm.answer", return_value="x")
-    def test_answer_refused_when_prompt_is_blank(self, m_answer, m_score) -> None:
+    def test_answer_refused_when_prompt_is_blank(self) -> None:
         # The client disables the button, but the client is not the boundary. Without this
         # guard a blank submit costs two billed calls and a 0 in the ranking.
+        play = answer_chunks("x")
         _, t = self._join("ana")
         self._play()
-        self.assertEqual(self._answer(t, "   \n ").status_code, 400)
-        m_answer.assert_not_called()
-        m_score.assert_not_called()
+        with patch("game.llm.answer_stream", new=play), patch("game.llm.score", return_value=Verdict(5, "moyen")):
+            r = self._answer(t, "   \n ")
+        self.assertEqual(r.status_code, 400)
+        play.assert_not_called()
         self.assertEqual(Answer.objects.count(), 0)
 
     def test_token_is_scoped_to_its_room(self) -> None:
@@ -151,14 +340,13 @@ class PlayTest(TestCase):
         _, t = self._join("ana")
         self.assertEqual(self._answer(t, "a").status_code, 409)
 
-    @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
-    @patch("game.llm.answer", return_value="quarante-deux")
-    def test_concurrent_resubmit_is_refused_before_the_billed_calls(self, m_answer, _m_score) -> None:
+    def test_concurrent_resubmit_is_refused_before_the_billed_calls(self) -> None:
         # The duplicate check runs before the ~5s the two model calls take, so a reload in
         # that window used to be billed twice and lose the unique_together race. The claim
         # makes the second copy 409 without touching the model, which is the whole point:
-        # `m_answer` being called once is the assertion that matters, not the status code,
-        # since the IntegrityError backstop returns 409 too.
+        # `play` being called once is the assertion that matters, not the status code,
+        # since the IntegrityError backstop reports the same way now.
+        play = answer_chunks("quarante-deux")
         _, t = self._join("ana")
         self._join("bob")  # bob never answers, so round 0 stays open for the reentrant submit
         self._play()
@@ -174,20 +362,22 @@ class PlayTest(TestCase):
                 second.append(self._answer(t, "meme reponse"))
             return Verdict(8, "tres proche")
 
-        with patch("game.llm.score", side_effect=resubmit_while_in_flight):
+        with patch("game.llm.answer_stream", new=play), patch("game.llm.score", side_effect=resubmit_while_in_flight):
             first = self._answer(t, "repete 42")
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second[0].status_code, 409)
         self.assertEqual(json.loads(second[0].content), {"error": "already answered"})
-        self.assertEqual(m_answer.call_count, 1)  # the loser never reached the model
+        self.assertEqual(play.call_count, 1)  # the loser never reached the model
         self.assertEqual(Answer.objects.count(), 1)
         self.assertEqual(len(_inflight), 0)  # claim released
 
-    @patch("game.llm.answer", return_value="quarante-deux")
-    def test_duplicate_row_committed_mid_flight_returns_409(self, m_answer) -> None:
+    def test_a_row_committed_mid_flight_is_reported_in_band(self) -> None:
         # The durable backstop the process-local claim cannot see: another process wins
         # unique_together between the duplicate check and the create. Without the
-        # IntegrityError handling this is a 500, and no test elsewhere would notice.
+        # IntegrityError handling this is an unhandled error in a thread, and no test elsewhere
+        # would notice. It can no longer be a 409 — the status was spent with the first chunk —
+        # so the same refused answer reaches the player as the error frame.
+        play = answer_chunks("quarante-deux")
         _, t = self._join("ana")
         self._join("bob")
         self._play()
@@ -198,21 +388,21 @@ class PlayTest(TestCase):
             Answer.objects.create(player=player, round=rnd, prompt="aile", output="42", score=3, comment="bof")
             return Verdict(8, "tres proche")
 
-        with patch("game.llm.score", side_effect=win_the_race):
-            r = self._answer(t, "repete 42")
-        self.assertEqual(r.status_code, 409)
-        self.assertEqual(json.loads(r.content), {"error": "already answered"})
+        with patch("game.llm.answer_stream", new=play), patch("game.llm.score", side_effect=win_the_race):
+            with self.assertLogs("game.views", level="ERROR"):
+                frames = self._answer_frames(t, "repete 42")
+        self.assertEqual(frames[-1][0], "error")
         self.assertEqual(Answer.objects.count(), 1)  # the winner's row, not ours
         self.assertEqual(Answer.objects.get().score, 3)
         self.room.refresh_from_db()
         self.assertEqual((self.room.current, self.room.phase), (0, "playing"))  # not advanced
-        self.assertEqual(m_answer.call_count, 1)
+        self.assertEqual(play.call_count, 1)
 
     def test_state_shape_and_totals(self) -> None:
         _, t = self._join("ana")
         self._play()
         self._online("ana")
-        with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(10, "parfait")):
+        with patch("game.llm.answer_stream", new=answer_chunks("42")), patch("game.llm.score", return_value=Verdict(10, "parfait")):
             self._answer(t, "repete 42")
         st = room_state("ABCD")
         # The FULL top-level key set, all eleven. This is the assertion that catches a key
@@ -415,7 +605,7 @@ class PlayTest(TestCase):
         # the final screen prints an em dash until these arrive.
         _, t = self._join("ana")
         self._play()
-        with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(9, "nickel")):
+        with patch("game.llm.answer_stream", new=answer_chunks("42")), patch("game.llm.score", return_value=Verdict(9, "nickel")):
             self._answer(t, "repete 42")
         ana = room_state("ABCD")["players"][0]
         self.assertEqual(ana["score"], 9)  # the proximity it was just told
@@ -452,7 +642,7 @@ class PlayTest(TestCase):
         self._play()
         self._online("zoe", "ana")
         for t in (ta, tb):
-            with patch("game.llm.answer", return_value="42"), patch("game.llm.score", return_value=Verdict(5, "moyen")):
+            with patch("game.llm.answer_stream", new=answer_chunks("42")), patch("game.llm.score", return_value=Verdict(5, "moyen")):
                 self._answer(t, "repete 42")
         self.room.refresh_from_db()
         self.room.current = 0  # keep both answers in the same round for the ranking assertion

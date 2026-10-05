@@ -4,12 +4,13 @@ from datetime import timedelta
 from unittest import mock
 
 from django.db import IntegrityError, transaction
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TransactionTestCase
 from django.utils import timezone
 
 from game.llm import Verdict
 from game.models import Player, QuizQuestion, Ready, Room
-from game.prompts import majority
+from game.prompts import LOBBY_STEP, majority, threshold
+from game.tests.support import answer_chunks, drain
 from game.quiz import pick
 from game.views import (
     PRESENCE_TTL,
@@ -69,7 +70,61 @@ class MajorityTests(SimpleTestCase):
                 self.assertLessEqual(majority(n), n)
 
 
-class ReadyModelTests(TestCase):
+class ThresholdTests(SimpleTestCase):
+    """The one function that decides which rule a step is under, tested without a room.
+
+    `SimpleTestCase` for the same reason `MajorityTests` is: `prompts` is the module of pure rules
+    with no Django in it, and the case that matters here — which rule a STEP NAME lands on — is a
+    decision about a string, not about anybody's presence.
+    """
+
+    def test_the_lobby_is_the_only_step_that_asks_for_everybody(self):
+        # THE TWO RULES, AND THEY DIFFER ON PURPOSE. The lobby is unanimity: everybody in it just
+        # arrived and is looking at the same screen, so waiting for the last phone costs nothing.
+        # A discussion is a majority: twenty minutes in, one phone sleeps, and unanimity would park
+        # the whole class on a bar that will never move. Written as two separate assertions rather
+        # than a table so the difference is readable, and so a rule that swallowed the other fails
+        # on the case it broke instead of on a diff nobody reads.
+        for n in (1, 2, 3, 5, 20, 21):
+            with self.subTest(players=n):
+                self.assertEqual(threshold(LOBBY_STEP, n), n)
+
+    def test_every_discussion_step_is_a_majority(self):
+        # THE THREE STEP FAMILIES, named as `current_step` names them. They are steps, not phases:
+        # the cursor moves inside them (`quiz:3` is question four) and the threshold must not care
+        # which one it is, which is why this passes real step names rather than a phase constant.
+        for step in ("quiz:0", "quiz:3", "quiz:7", "rating:0:0", "rating:2:0", "summary:0", "summary:2"):
+            for n in (1, 2, 3, 20):
+                with self.subTest(step=step, players=n):
+                    self.assertEqual(threshold(step, n), majority(n))
+
+    def test_the_step_name_is_not_a_phase_name(self):
+        # `waiting` IS the phase and `lobby` IS its step. A threshold keyed on the phase would
+        # have made every discussion unanimous the day someone renamed a step, and this is the
+        # assertion that says the lobby's string is its own.
+        self.assertEqual(threshold(LOBBY_STEP, 4), 4)
+        self.assertEqual(threshold("waiting", 4), majority(4))
+
+    def test_a_room_with_nobody_connected_has_no_threshold_under_either_rule(self):
+        # `0` and not `1`, for both branches: a caller that got 1 for an empty lobby would compare
+        # a room with no players against a bar of one, which is the `0 == 0` this module refuses
+        # everywhere else in a costume.
+        for step in (LOBBY_STEP, "quiz:0", "rating:2:0", "summary:2"):
+            with self.subTest(step=step):
+                self.assertEqual(threshold(step, 0), 0)
+
+    def test_every_threshold_is_reachable_and_never_over_the_population(self):
+        # THE PROPERTY THE AUTONOMOUS GAME STANDS ON, both rules: with every connected player
+        # ready, the room always crosses the line. Unanimity is exactly `n` and a majority is at
+        # most `n`, so there is no class size at which the bar is a number nobody can reach — which
+        # is a dead game at the lobby and a dead step mid-round.
+        for step in (LOBBY_STEP, "quiz:3", "rating:2:0", "summary:2"):
+            for n in range(1, 30):
+                with self.subTest(step=step, players=n):
+                    self.assertLessEqual(threshold(step, n), n)
+
+
+class ReadyModelTests(TransactionTestCase):
     def test_one_vote_per_player_per_step(self):
         room, player = _one_player_room()
         Ready.objects.create(room=room, player=player, step="quiz:0")
@@ -104,7 +159,7 @@ class ReadyModelTests(TestCase):
         self.assertEqual(Ready.objects.filter(room=room, step="quiz:0").count(), 1)
 
 
-class VoteBase(TestCase):
+class VoteBase(TransactionTestCase):
     """The room a vote happens in: players joined, all online, the didacticiel open.
 
     COPIED, NOT SHARED, and the reason is worth stating because it will look like duplication
@@ -133,7 +188,7 @@ class VoteBase(TestCase):
         """
         self._post("/api/admin/login", {"password": "genai"})
 
-    def _create(self) -> Room:
+    def _create(self, tutorial: bool = True) -> Room:
         """A room through the ADMIN ENDPOINT, not `Room.objects.create`.
 
         The bank is materialised in `admin_create_room` and nowhere else, so a room built on the
@@ -141,9 +196,14 @@ class VoteBase(TestCase):
         which is the documented fall-through to opening the game. Every advance below would then
         land on `playing` instead of the next question, and the tests would be measuring the empty
         gate rather than the ready bar. Same reason, in the same words, as `test_quiz._create`.
+
+        `tutorial` is a parameter because the lobby is where the two openings differ: a class that
+        votes its own game into existence gets the didacticiel, and a room created without one has
+        to land in `playing` instead — the vote path and the admin's button agreeing on that is
+        half of what these tests are for.
         """
         self._login()
-        code = self._post("/api/admin/rooms", {"tutorial": True}).json()["code"]
+        code = self._post("/api/admin/rooms", {"tutorial": tutorial}).json()["code"]
         return Room.objects.get(code=code)
 
     def _join(self, room: Room, name: str) -> Player:
@@ -188,6 +248,24 @@ class VoteBase(TestCase):
         self._reveal_now(room)
         self._online(room, *joined)
         room.refresh_from_db()
+        return room, joined
+
+    def _lobby(self, players: int = 1, tutorial: bool = True) -> tuple[Room, list[Player]]:
+        """A room in its lobby: `players` joined, streaming, and the game NOT started.
+
+        THE SAME ROOM `_room_with` BUILDS WITH ONE STEP LEFT OUT, and the step left out is the
+        admin's press: `_room_with` starts the game, a lobby is the state before that press, and a
+        fixture that started the room to get players into it would have nothing left to test. The
+        phase is asserted rather than assumed because every test below is about whether the room
+        MOVED, and a fixture that quietly started would make all of them pass on a room that never
+        was in its lobby.
+        """
+        room = self._create(tutorial=tutorial)
+        joined = [self._join(room, f"p{i}") for i in range(players)]
+        self._online(room, *joined)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.WAITING)
+        self.assertEqual(room.rounds.count(), 0)
         return room, joined
 
     def _age_out(self, player: Player) -> None:
@@ -237,14 +315,15 @@ class VoteBase(TestCase):
         several seconds slower per answer, on a code path that is not what any of these tests are
         about. The ready bar never reads a prompt's text.
         """
-        with mock.patch("game.llm.answer", return_value="la reponse"), mock.patch(
+        with mock.patch("game.llm.answer_stream", new=answer_chunks("la reponse")), mock.patch(
             "game.llm.score", return_value=Verdict(8, "tres proche")
         ), mock.patch("game.llm.grade_prompt", return_value=Verdict(6, "methode")):
             r = self._post(
                 f"/api/rooms/{room.code}/answer",
                 {"token": player.token, "prompt": text},
             )
-        self.assertEqual(r.status_code, 200, r.content)
+            drain(r)  # the work runs in a thread: the next line must not race it
+        self.assertEqual(r.status_code, 200)
 
     def _to_rating(self, room: Room, players: list[Player]) -> None:
         """Drive the room to `rating` on the first prompt, the honest way.
@@ -552,3 +631,195 @@ class ReadyEdgeCaseTests(VoteBase):
         # votes and nothing else.
         self.assertEqual(room.players.count(), 3)
         self.assertEqual(Ready.objects.filter(room=room).count(), 0)
+
+
+class LobbyVoteTests(VoteBase):
+    """The lobby is a step too, and it is the one step that asks for EVERYBODY.
+
+    The class could not open its own game before this: `waiting` named no step, so the only thing
+    that moved the room out of it was `admin_start`. Every test here is the vote path doing what the
+    admin's button does, through the same function, and the two thresholds are asserted apart
+    because a lobby on the discussion's majority is the one change that would break the feature
+    silently — the bar would read « 2 sur 3 prêts » and start a game without the third phone.
+    """
+
+    def test_the_lobby_is_a_step_and_its_bar_asks_for_everybody(self):
+        room, players = self._lobby(3)
+        self.assertEqual(current_step(room), LOBBY_STEP)
+        ready = room_state(room.code, players[0])["ready"]
+        self.assertEqual((ready["step"], ready["count"], ready["needed"]), (LOBBY_STEP, 0, 3))
+        # Three connected, three needed: a majority rule here would say 2 and let the class start
+        # without the phone that has not been picked up yet.
+        self.assertEqual(ready["needed"], len(players))
+
+    def test_one_player_alone_in_the_lobby_starts_the_game_with_their_own_vote(self):
+        # A THRESHOLD OF ONE, AND THE CLASS'S OWN VOTE IS THE ONE THAT CROSSES IT. Not a footgun,
+        # and the reasoning is the same as the rule's: the bar counts CONNECTED players, so the only
+        # player this can start a game for is the player pressing, in a room nobody else is in. It
+        # cannot carry a group into a game they did not agree to — there is no group to carry. What
+        # it CAN do is leave a one-student room unplayable, which is a real classroom (the teacher
+        # trying it out, one group left after the others went home) and was the state this feature
+        # existed to end.
+        room, players = self._lobby(1)
+        self.assertEqual(room_state(room.code, players[0])["ready"]["needed"], 1)
+        r = self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token})
+        self.assertEqual(r.status_code, 200)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 0))
+        # And the ten rounds, drawn by the same line the admin's button runs.
+        self.assertEqual(room.rounds.count(), 10)
+
+    def test_one_of_two_ready_players_does_not_start_the_game(self):
+        # IN THE LOBBY, ONE IS NOT ENOUGH. This is the line the discussion's rule would cross: at
+        # two connected players a majority happens to be two as well, so this room is the SMALLEST
+        # one that can tell the two rules apart, and the assertion is on the bar the phone shows
+        # rather than only on the phase, because a lobby that started early would leave the second
+        # player on a game nobody asked them to join.
+        room, players = self._lobby(2)
+        self.assertEqual(self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token}).status_code, 200)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.WAITING)
+        ready = room_state(room.code, players[1])["ready"]
+        self.assertEqual((ready["count"], ready["needed"], ready["mine"]), (1, 2, False))
+        # Nothing was drawn, so the room is exactly as it was: a lobby with a round nobody asked for
+        # would break every caller of `current_round`, which is None in a lobby on purpose.
+        self.assertEqual(room.rounds.count(), 0)
+
+    def test_two_of_two_ready_players_start_the_game(self):
+        room, players = self._lobby(2)
+        self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token})
+        # The reported bar is the acted one: the number on the phone is 2, which is what
+        # `maybe_advance_by_votes` compares against. A `needed` from another rule would be a bar
+        # nobody can trust, and `test_the_lobby_is_a_step` pins the rule separately.
+        self.assertEqual(room_state(room.code, players[1])["ready"]["needed"], 2)
+        r = self._post(f"/api/rooms/{room.code}/ready", {"token": players[1].token})
+        self.assertEqual(r.status_code, 200)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 0))
+        self.assertEqual(room.rounds.count(), 10)
+
+    def test_the_bar_shrinks_when_one_of_the_ready_players_disconnects(self):
+        # THE BAR IS THE CONNECTED PLAYERS, AND THAT WORKS IN THE LOBBY TOO — with one difference
+        # from a discussion that is worth being explicit about. Three connected, two ready: the
+        # lobby needs three, so nothing starts. Then one of the two READY phones sleeps, and the
+        # bar falls to 1 of 2 — two connected players, one of them voted — which is still short, so
+        # the room holds. A bar that counted `room.players` would have stayed at 3 of 3 in reach
+        # forever on a phone in a bag, and the lobby would never open for anybody.
+        room, players = self._lobby(3)
+        for p in players[:2]:
+            self._post(f"/api/rooms/{room.code}/ready", {"token": p.token})
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.WAITING)
+        self.assertEqual(
+            (room_state(room.code)["ready"]["count"], room_state(room.code)["ready"]["needed"]), (2, 3)
+        )
+        self._age_out(players[1])
+        ready = room_state(room.code)["ready"]
+        self.assertEqual((ready["count"], ready["needed"]), (1, 2))
+        maybe_advance_by_votes(room)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.rounds.count()), (Room.Phase.WAITING, 0))
+
+    def test_a_player_joining_after_the_others_have_voted_grows_the_bar(self):
+        # A LATE ARRIVAL PUTS THEMSELF BACK ON THE BAR, and their own vote is not the one that
+        # vanishes: the two earlier votes stay on the `lobby` step because `step` is part of the
+        # key, and the bar grows from 2 of 2 to 2 of 3. This is the cost of asking for everybody in
+        # the lobby, and it is the right trade — the alternative is a game that starts while someone
+        # is still walking into the room with their phone out.
+        #
+        # The join goes through the endpoint, so it is a real arrival: a `Player.objects.create`
+        # would not put the newcomer in the presence registry, and `needed` counts presence.
+        #
+        # THREE IN THE ROOM AND TWO OF THEM VOTE, because a two-player room cannot show this: at 2
+        # connected the lobby needs 2, so the second vote starts the game and there is no lobby
+        # left for a fourth phone to walk into.
+        room, players = self._lobby(3)
+        for p in players[:2]:
+            self._post(f"/api/rooms/{room.code}/ready", {"token": p.token})
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.WAITING)
+        self.assertEqual(
+            (room_state(room.code)["ready"]["count"], room_state(room.code)["ready"]["needed"]), (2, 3)
+        )
+        late = self._join(room, "late")
+        self._online(room, late)
+        ready = room_state(room.code)["ready"]
+        self.assertEqual((ready["count"], ready["needed"]), (2, 4))
+        # The earlier votes are still counted, on the step the room is still in.
+        self.assertEqual(Ready.objects.filter(room=room, step=LOBBY_STEP).count(), 2)
+        maybe_advance_by_votes(room)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.WAITING)
+
+    def test_the_vote_opens_the_didacticiel_on_question_zero_with_its_window(self):
+        # EXACTLY WHAT `admin_start` LEAVES BEHIND, which is the whole point of the two writers
+        # sharing one function: a class that votes itself into the game must not land somewhere the
+        # admin's button would not have put it. Question 0 on screen, thirty seconds of window, ten
+        # rounds behind the gate.
+        room, players = self._lobby(2)
+        for p in players:
+            self._post(f"/api/rooms/{room.code}/ready", {"token": p.token})
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 0))
+        self.assertGreater(room.quiz_deadline, timezone.now())
+        self.assertEqual(room.rounds.count(), 10)
+
+    def test_a_room_without_the_didacticiel_goes_straight_to_playing(self):
+        # THE OTHER BRANCH OF THE SAME FUNCTION. A teacher who created the room « sans
+        # didacticiel » gets no gate from a vote either: the lobby's last vote lands in `playing`,
+        # with no question and no window opened behind it, because `_start_game` reads the flag
+        # exactly as the admin's button does.
+        room, players = self._lobby(1, tutorial=False)
+        self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token})
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+        self.assertIsNone(room.quiz_deadline)
+        self.assertEqual(room.rounds.count(), 10)
+
+    def test_playing_and_done_still_have_no_step(self):
+        # THE LOBBY IS NOT A PHASE-WIDE LOOSENING. `playing` and `done` name nothing, so a vote
+        # there is still a 409 with nothing recorded — the two cases that were already refused, and
+        # the reason the lobby needed its own branch rather than `waiting` being loosened into
+        # everything that is not a discussion.
+        room = self._create(tutorial=False)
+        players = [self._join(room, f"p{i}") for i in range(2)]
+        self._start(room)
+        self._online(room, *players)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
+        self.assertIsNone(current_step(room))
+        self.assertIsNone(room_state(room.code)["ready"])
+        self.assertEqual(self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token}).status_code, 409)
+        self.assertEqual(Ready.objects.filter(room=room).count(), 0)
+        room.phase = Room.Phase.DONE
+        room.save(update_fields=["phase"])
+        self.assertIsNone(current_step(room))
+        self.assertIsNone(room_state(room.code)["ready"])
+
+    def test_joining_after_a_vote_driven_start_is_still_refused(self):
+        # THE LOBBY HAS NOT STAYED OPEN BY ACCIDENT. Once the class has started its own game the
+        # room is `quiz`, and `join` still answers 409 — otherwise the third player would walk into
+        # a game that had already asked everybody for a vote and start it with nobody.
+        room, players = self._lobby(2)
+        for p in players:
+            self._post(f"/api/rooms/{room.code}/ready", {"token": p.token})
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.QUIZ)
+        r = self._post(f"/api/rooms/{room.code}/join", {"name": "late"})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "game already started")
+
+    def test_a_lobby_with_nobody_connected_changes_nothing(self):
+        # THE `0 == 0` GUARD, IN THE LOBBY, WITH THE VOTES ALREADY WRITTEN. This is the case that
+        # would be worst to get wrong: a room whose phones all slept, holding a full set of ready
+        # votes from before they dropped. Threshold of zero would cross on `0 >= 0` and open a game
+        # in an empty room — twenty students' worth of votes firing a transition nobody is there to
+        # see. The rows are written directly because the endpoint is not what is under test, and
+        # they are written the way a real run leaves them: on the lobby step, one per player.
+        room, players = self._lobby(2)
+        self._drop_everyone(room)
+        for p in players:
+            Ready.objects.create(room=room, player=p, step=LOBBY_STEP)
+        maybe_advance_by_votes(room)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.rounds.count()), (Room.Phase.WAITING, 0))

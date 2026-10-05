@@ -1,14 +1,18 @@
 import json
+import logging
+import queue
 import secrets
 import string
 import threading
 import time
 from collections import Counter
+from collections.abc import Iterator
+from datetime import datetime, timedelta
 
 from django.conf import settings
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, close_old_connections, transaction
 from django.db.models import Count, Sum
-from django.http import Http404, HttpRequest, JsonResponse, StreamingHttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
@@ -60,6 +64,54 @@ _inflight: set[tuple[int, int]] = set()
 PRESENCE_TTL = 3.0
 _TICK = 0.5
 
+# HOW LONG A ROOM MAY SIT WITH NOBODY IN IT before the admin's list stops showing it, and — for a
+# room nobody ever played — before the sweep DELETES it. Ten minutes, and it is a named constant
+# because the number appears in two different questions ("how stale is too stale" for the sweep,
+# "how long is the floor after a restart" below) and a literal in both would be two policies
+# pretending to be one.
+#
+# The floor idea is the reason this is not simply "ten minutes since the last beat": a teacher's
+# admin screen is closed more often than it is open, so an install that is not in use all day
+# accumulates rooms and the list would be pages long the next morning. Ten minutes of a classroom
+# with nobody streaming is not a game in progress, it is a lobby somebody walked out of.
+ROOM_IDLE_TTL = 600.0
+
+# HOW LONG A ROOM THAT WAS PLAYED survives with nobody in it. This is a DELETE, not a hide: past
+# that delay the row goes and the players' tokens go with it, so a teacher who comes back the next
+# day does not find their game. The delay is short because the database is local and nothing is
+# backed up — an hour is the compromise between "the table does not grow" and "the lunch break does
+# not eat the game".
+#
+# THE FALLBACK, in practice: `Room.last_activity_at` is what the delete actually reads, and this
+# number only judges a room the sweeper has never seen alive — a game started and abandoned with no
+# player ever connected — where the age of the game is the only fact there is.
+ROOM_KEEP_TTL = 3600.0
+# The sweeper's tick. Short enough that a room leaves the list shortly after its last player leaves,
+# long enough that a tick is free: the sweep reads one table and writes only for the rooms where
+# somebody is connected.
+SWEEP_EVERY = 60.0
+
+# Named `logger` and used for exactly one thing: a tick of the sweeper that failed. A sweep that
+# failed silently would be a sweep nobody notices has stopped cleaning anything.
+logger = logging.getLogger(__name__)
+
+# WHEN THIS PROCESS STARTED, on the same monotonic clock as the beats, captured ONCE at import.
+#
+# THE FLOOR FOR EVERY ROOM WITH NO BEATS, and the reason it exists is the clock itself:
+# `time.monotonic()` is an arbitrary instant chosen by the OS, it is only meaningful inside one
+# process, and it has no relation to yesterday. So a room whose last beat was recorded by the
+# previous run has, in this run, a beat that is either impossibly far in the past or — after a
+# reboot — not in the registry at all. Sweeping on the raw difference would therefore declare EVERY
+# room the server has ever hosted idle on its first list poll after a restart, and delete ten
+# minutes of yesterday's classrooms because someone rebooted a laptop.
+#
+# Treating the boot instant as the oldest possible beat means nothing is sweepable until this
+# process has itself been up for `ROOM_IDLE_TTL`: a restart cannot lose a room, it only postpones
+# the question by ten minutes. The cost is the obvious one and is the right way round — a room that
+# was abandoned before the reboot survives one boot's grace period instead of being cleaned up on
+# the spot.
+_BOOT_INSTANT = time.monotonic()
+
 # A lock is genuinely required here, unlike `_inflight`. Every stream thread writes this dict twice
 # a second, there is one thread per connected phone, and `room_state` reads it from all of them at
 # once; a dict mutated during another thread's iteration raises. It is held only for the few
@@ -90,6 +142,194 @@ def online_player_ids(code: str) -> set[int]:
     now = time.monotonic()
     with _presence_lock:
         return {pid for (room_code, pid), seen in _presence.items() if room_code == code and now - seen <= PRESENCE_TTL}
+
+
+def _last_beats() -> dict[str, float]:
+    """The most recent beat in each room that has one, on the monotonic clock. One locked read of
+    the whole registry, so the sweep below takes the lock once for every room rather than once per
+    room.
+
+    AGES ARE NOT JUDGED HERE, deliberately: this returns the last beat whether it is half a second
+    or half a day old, and the caller decides what "idle" means. A stale entry is still the last
+    thing that happened in that room — pruning ages out of the dict on its own schedule, and a room
+    whose only beat is old is exactly the room this is looking for.
+
+    `_BOOT_INSTANT` IS NOT THE DEFAULT HERE: a room with no beats at all is simply absent from the
+    mapping, so the caller applies the floor and the two decisions stay apart.
+    """
+    with _presence_lock:
+        last: dict[str, float] = {}
+        for (room_code, _pid), seen in _presence.items():
+            if room_code not in last or seen > last[room_code]:
+                last[room_code] = seen
+    return last
+
+
+def _sweep_plan(
+    rooms: list[dict], beats: dict[str, float], boot: float, now: float, wall: datetime
+) -> tuple[set[str], list[str], set[str]]:
+    """(codes to hide, codes to delete, codes whose activity must be written).
+
+    THREE OUTCOMES, AND THE LAST ONE IS IRREVERSIBLE. A room idle for `ROOM_IDLE_TTL` disappears
+    from the list; a lobby never started disappears from the database; a PLAYED game only
+    disappears after `ROOM_KEEP_TTL`, because it holds the players' tokens and the rounds somebody
+    may want back at the price of a break.
+
+    PURE — no query, no clock read, no write. Every fact it needs arrives as an argument, which is
+    what lets the admin-list path and the thread path share ONE decision instead of two rules that
+    drift apart the first time one of them is edited. `beats` is the last heartbeat per room on
+    the monotonic clock and `boot` is the floor for a room with no beats at all; `now` is the same
+    monotonic instant, and `wall` is the SAME MOMENT ON THE WALL CLOCK.
+
+    THE TWO CLOCKS ARE BOTH ARGUMENTS on purpose. Heartbeats are monotonic because a phone cannot
+    make the system time step backwards, and a persisted instant cannot be monotonic because a
+    monotonic value read in a previous process means nothing in this one. Comparing the one with
+    the other is not a conversion, it is a bug — so the caller reads both and passes both.
+
+    THE DELETE DECISION OF A PLAYED ROOM READS THE DURABLE COLUMN, not `beats`. `last_activity_at`
+    is what the sweeper itself wrote on an earlier tick, so it is the only instant that carries a
+    one-hour threshold across a restart; without it the threshold would be unreachable on the
+    second run and the table would grow anyway. `started_at` is the fallback for a room the sweeper
+    has never seen alive, and a `None` there means "we never knew anything about this room", in
+    which case the age of the game is the only fact left.
+    """
+    hide: set[str] = set()
+    dead: list[str] = []
+    active: set[str] = set()
+    for room in rooms:
+        code = room["code"]
+        # The floor, read as a module global so it stays the boot instant rather than a copy taken
+        # at import: `beats.get(code, _BOOT_INSTANT)` is the whole of "this process has been up for
+        # less than ROOM_IDLE_TTL, so nothing is sweepable yet".
+        seen = beats.get(code)
+        # A LIVE BEAT IS NOT IDLE AND THAT IS THE STRUCTURAL GUARANTEE, not a careful check: a
+        # heartbeat inside `PRESENCE_TTL` — three seconds, two hundred times shorter than the idle
+        # TTL — puts the room in neither `hide` nor `dead`, so it never reaches a delete line even
+        # if its stamps are years old. The sweep's own activity write is what keeps
+        # `last_activity_at` young for exactly these rooms.
+        #
+        # ONLY A ROOM THAT HAS A BEAT AT ALL, and the membership test is the point: the boot floor
+        # below is `time.monotonic()` minus a few seconds on a process that just started, so folding
+        # it in here would call EVERY room live on the first tick after a restart, stamp
+        # `last_activity_at` on the whole table, and push the one-hour deadline out by an hour for
+        # every game this server has ever hosted. The column would be written by the restart it was
+        # invented to survive.
+        if seen is not None and now - seen <= PRESENCE_TTL:
+            active.add(code)
+            continue
+        if now - (seen if seen is not None else boot) <= ROOM_IDLE_TTL:
+            continue
+        hide.add(code)
+        if room["started_at"] is None:
+            dead.append(code)
+            continue
+        # `or`, not a null check: the column is null until a tick has seen somebody connected, and
+        # a game started and abandoned in the same minute has only its own age to be measured by.
+        last = room["last_activity_at"] or room["started_at"]
+        if wall - last > timedelta(seconds=ROOM_KEEP_TTL):
+            dead.append(code)
+    return hide, dead, active
+
+
+def _delete_rooms(codes: list[str]) -> None:
+    """Delete these rooms, or nothing at all when the list is empty.
+
+    DELETING CASCADES ON PURPOSE, and the cascade is what makes one row enough: `QuizQuestion` and
+    `Player` hang off `Room`, so the bank and the tokens go with the room rather than accumulating as
+    orphans that a later room could never collide with but a database would carry forever. The empty
+    guard keeps a tick that found nothing dead — the overwhelming majority, and every one of them
+    before this feature existed — at zero queries.
+    """
+    if codes:
+        Room.objects.filter(code__in=codes).delete()
+
+
+def _sweep_idle_rooms(rooms: list[dict]) -> set[str]:
+    """Hide every room nobody has been in for `ROOM_IDLE_TTL`, and DELETE the ones nobody ever
+    played or that nobody has touched for an hour. Returns the codes to leave out of the answer.
+
+    IT TAKES THE ROOMS RATHER THAN QUERYING FOR THEM, and that is a budget, not a convenience:
+    `admin_list_rooms` already enumerates every room with one query, and a second enumeration of
+    the same table on the same request would be paying twice for one fact — and it is a fact the
+    list's own cost test pins. Each row is `admin_list_rooms`'s `.values(...)` dict and must carry
+    `code`, `started_at` and `last_activity_at`; nothing else is read.
+
+    READ-ONLY APART FROM THE DELETE, and the third element of the plan is discarded on purpose.
+    `admin_list_rooms` is a GET: a console polls it every few seconds, and having it stamp
+    `last_activity_at` too would mean recording the same instant an order of magnitude more often
+    than the sweeper does, for a value only ever compared against `ROOM_KEEP_TTL` — a minute of
+    staleness cannot change an hour-long verdict. It would also make "one query per GET" hold only
+    while nobody is connected. `_sweep_tick` is the single writer instead.
+
+    THE THIRD ELEMENT IS STILL COMPUTED because the decision is one function and not two: a list
+    path with its own copy of the rule is a second rule, and the two drift apart the first time one
+    of them is edited.
+    """
+    hide, dead, _active = _sweep_plan(
+        rooms, _last_beats(), _BOOT_INSTANT, time.monotonic(), timezone.now()
+    )
+    _delete_rooms(dead)
+    return hide
+
+
+def _sweep_tick() -> None:
+    """One tick of the sweeper, and the ONLY writer of `Room.last_activity_at`.
+
+    The console polls `/api/admin/rooms` every few seconds while a game is live and this runs once
+    a minute, so a write on both paths is a write an order of magnitude too often for a number
+    whose only reader compares it to an hour. Which is why the recording is HERE and not in
+    `_sweep_idle_rooms`: one writer, and it is the writer that runs when nobody is looking.
+
+    THE INSTANT JUDGED IS THE INSTANT WRITTEN, `wall` being read once and passed to both, so the
+    column can never be a tick older than the decision that read it — an off-by-one-tick staleness
+    would be harmless, but a rule that cannot be read off the value it wrote is a rule nobody can
+    reason about.
+
+    `hide` is computed and dropped: hiding is a property of the ANSWER, and this thread has no
+    answer to filter. A room nobody is in leaves the list on the console's next poll, whether or not
+    this tick is the one that noticed.
+    """
+    wall = timezone.now()
+    _hide, dead, active = _sweep_plan(
+        list(Room.objects.values("code", "started_at", "last_activity_at")),
+        _last_beats(),
+        _BOOT_INSTANT,
+        time.monotonic(),
+        wall,
+    )
+    # ONE BULK UPDATE FOR THE TICK, never one per room and never one per heartbeat: thirty players
+    # beating twice a second would be sixty writes a second for a number only this loop reads.
+    if active:
+        Room.objects.filter(code__in=active).update(last_activity_at=wall)
+    _delete_rooms(dead)
+
+
+def _sweep_forever() -> None:
+    """Sweeps for as long as the process lives.
+
+    `close_old_connections` at both ends: this thread is attached to no request, so nothing closes
+    its connection for it, and without that SQLite keeps a descriptor open per tick.
+
+    THE CYCLE IS SWEEP THEN SLEEP, never the other way round: sweeping first lets the connection of
+    a tick's rest go stale rather than reopening it every time the thread wakes up.
+
+    AND IT LIVES IN THE SERVER PROCESS, which is the only place it could live. `_last_beats` reads
+    `_presence`, a dict in this process's memory: a `manage.py` command or a cron would see no
+    heartbeat at all, call every room idle, and delete games that are being played right now.
+
+    IT SWALLOWS EVERY EXCEPTION. A sweeper that dies takes with it the only thing cleaning the
+    table, and the symptom — a database that slowly fills up — would look like the feature never
+    having worked rather than like a thread that crashed.
+    """
+    while True:
+        try:
+            close_old_connections()
+            _sweep_tick()
+        except Exception:  # noqa: BLE001
+            logger.exception("room sweep failed")
+        finally:
+            close_old_connections()
+        time.sleep(SWEEP_EVERY)
 
 
 def body(request: HttpRequest) -> dict:
@@ -257,14 +497,37 @@ def admin_list_rooms(request: HttpRequest) -> JsonResponse:
     reason `room_state` counts `online_count` off its per-player flags.
 
     The phase is the RAW string, not a label. The words are the client's to choose.
+
+    IT ALSO SWEEPS, on the way past, so that the answer a console reads is already the answer AFTER
+    the cleanup: one request does both jobs, and a caller never sees a room the same GET is
+    deleting. Sweeping HERE IS NOT THE ONLY SWEEP — `runserver` starts a daemon thread that runs
+    `_sweep_tick` every `SWEEP_EVERY` seconds, which is what cleans a table nobody is looking at and
+    what records `last_activity_at`. This GET keeps the call because a console must not show a room
+    it is about to delete even if the thread has not run yet; both go through `_sweep_plan`, so they
+    cannot disagree, and neither of them records the activity instant.
+
+    THE THREAD IS NOT A `manage.py` LOOP, and that is the whole reason it is not: it reads
+    `_presence`, which is this process's memory, so a second process would see no heartbeat
+    anywhere and delete games in progress. That is also why it is behind `GENAI_SWEEP` — `ready()`
+    runs under `manage.py test` too, and a deleter thread under the suite is a suite whose result
+    depends on the wall clock.
     """
     if (err := require_admin(request)):
         return err
     rooms = list(
         Room.objects.annotate(
             players_count=Count("players", distinct=True), total=Count("rounds", distinct=True)
-        ).values("code", "phase", "current", "tutorial", "anonymous", "players_count", "total")
+        ).values(
+            "code", "phase", "current", "tutorial", "anonymous", "players_count", "total",
+            "started_at", "last_activity_at",
+        )
     )
+    # The sweep runs between the enumeration and the answer, on the rows just read, so this GET both
+    # sweeps and answers: the codes it deletes or hides are filtered out of the list it is about to
+    # build, and a caller never sees a room the same request is deleting. `started_at` and
+    # `last_activity_at` are selected here for that reason and are not in the payload — they are the
+    # sweep's inputs, not the console's.
+    idle = _sweep_idle_rooms(rooms)
     # One presence read per room, not one query: the registry is a process-local dict of heartbeats,
     # so this is an in-memory filter rather than the N+1 the room rows above would otherwise be.
     online = {room["code"]: online_player_ids(room["code"]) for room in rooms}
@@ -272,6 +535,10 @@ def admin_list_rooms(request: HttpRequest) -> JsonResponse:
     # One query for the whole list, so a room nobody is in costs nothing.
     present = Counter(Player.objects.filter(pk__in=connected).values_list("room__code", flat=True))
     rooms.sort(key=lambda r: (_PHASE_RANK.get(r["phase"], len(_PHASE_RANK)), r["code"]))
+    # The idle ones go out of the ANSWER, not out of existence: for a played room this is the only
+    # thing that happened, and a player who reconnects is back in the next poll with the game
+    # exactly as they left it.
+    rooms = [room for room in rooms if room["code"] not in idle]
     return JsonResponse(
         {
             "rooms": [
@@ -307,27 +574,89 @@ def admin_rooms(request: HttpRequest) -> JsonResponse:
     return admin_create_room(request)
 
 
+def _start_game(room: Room) -> bool:
+    """Draw the ten rounds, open the didacticiel and leave the lobby. True when it started, False
+    when the room had already begun.
+
+    EXTRACTED FROM `admin_start` AND NOT FROM ANYTHING ELSE, because the class can now open its own
+    game and the two writers have to be the same code: a start that draws ten targets in one path
+    and goes to `playing` in the other is a game whose opening phase depends on who pressed which
+    button. `admin_start` keeps its session check and its 409 — it maps this False back to
+    « already started », so the admin's double press still refuses and so a vote that wins the race
+    is reported to a teacher as a room that has already begun, which is what it is.
+
+    FALSE MEANS `rounds.exists()`, and that table is the definition of a started room rather than a
+    field on `Room`: the phase alone says `waiting` after a restart whose rounds were deleted, and a
+    second ten-round draw on top of a half-played game is the failure this check exists to stop.
+
+    ATOMIC, WITH THE RE-CHECK INSIDE IT, because `runserver` is threaded and the admin's press on
+    « lancer » and the last player's vote are now the same transition landing at once. Both writers
+    re-read `rounds` inside the transaction, and `unique_together` on `(room, order)` is the last
+    word: whichever loses raises `IntegrityError` and is caught as the admin having won the race,
+    which is a no-op rather than a second set of rounds. The inner `atomic` is a SAVEPOINT and not
+    tidiness — without it the caught error would poison the enclosing transaction and the `return`
+    would fail on the way out. The transaction pattern is `admin_restart`'s, for the same reason.
+
+    THE TEN TARGETS ARE DRAWN HERE AND NOW. Drawing them at the moment the game commits is the one
+    instant nobody is waiting on anything, and it makes the target set fixed for the whole game —
+    which is what « the same ten rounds for everybody » has to mean. With a tutorial, the rounds
+    sit behind the quiz until the room advances out of it.
+
+    THE FIRST QUIZ QUESTION IS PUT ON SCREEN HERE, in the same write that opens the phase, and its
+    thirty-second window opens with it. The last player to press « prêt » in the lobby is answered
+    with thirty seconds on question 0 rather than an empty screen and a button to find — the same
+    promise the admin's button has always made, now kept by the same line. Every later question is
+    opened by `_advance_quiz`, and both paths go through `Room._open_quiz`, so the two cannot
+    disagree about how long a window lasts.
+    """
+    with transaction.atomic():
+        if room.rounds.exists():
+            return False
+        try:
+            with transaction.atomic():
+                Round.objects.bulk_create(
+                    [
+                        Round(room=room, order=i, target=t)
+                        for i, t in enumerate(pick(ROUNDS_PER_GAME))
+                    ]
+                )
+        except IntegrityError:
+            # THE OTHER WRITER GOT THERE FIRST, and that is a success for the room: one game, ten
+            # rounds, opened by whoever pressed first. The vote path treats this as a no-op and the
+            # admin's button reports « already started », which is exactly the truth.
+            return False
+        if room.tutorial:
+            room._open_quiz()
+        room._go(Room.Phase.QUIZ if room.tutorial else Room.Phase.PLAYING)
+        # THE STAMP IS WRITTEN HERE, AFTER THE ROUNDS EXIST AND ONCE PER GAME, because this is the
+        # only place a game is ever opened and the idle sweep may only delete what was never opened.
+        # `rounds.exists()` cannot say that on its own — `admin_restart` deletes the rounds of a
+        # game that WAS played and puts the room back in the lobby — so the fact lives in a column
+        # nothing ever takes back.
+        #
+        # AFTER `_go` AND NOT INSIDE IT, so the phase transition stays the single write `_go` owns;
+        # and `update_fields` rather than a bare `save()`, for the reason every other write in this
+        # file says it. `_go` has just saved, so the instance is current and this touches one field.
+        room.started_at = timezone.now()
+        room.save(update_fields=["started_at"])
+    return True
+
+
 @require_POST
 def admin_start(request: HttpRequest, code: str) -> JsonResponse:
+    """« Lancer la partie. » The admin's own button, and one of two ways into `_start_game`.
+
+    THE SESSION IS STILL REQUIRED HERE, and it is worth being explicit that the vote path did not
+    weaken it: a player is allowed to press « prêt » in the lobby, which opens the game, and is NOT
+    allowed to press the admin's button, which is a room-management verb with no player-facing
+    equivalent. Creation, restart and start stay behind the password because those are the acts
+    that configure a room rather than take part in one.
+    """
     if (err := require_admin(request)):
         return err
     room = get_object_or_404(Room, code=code)
-    if room.rounds.exists():
+    if not _start_game(room):
         return json_error("already started", 409)
-    Round.objects.bulk_create([Round(room=room, order=i, target=t) for i, t in enumerate(pick(ROUNDS_PER_GAME))])
-    # The ten targets are drawn HERE and not when the didacticiel closes. Drawing them at the
-    # moment the admin commits is the one instant nobody is waiting on anything, and it makes the
-    # target set fixed for the whole game — which is what "same ten rounds for everybody" has to
-    # mean. With a tutorial, the rounds sit behind the quiz until the admin advances out of it.
-    #
-    # THE FIRST QUIZ QUESTION IS PUT ON SCREEN HERE, in the same write that opens the phase, and
-    # its thirty-second window opens with it. The admin presses start and the class has thirty
-    # seconds on question 0 rather than an empty screen and a button to find. Every later question
-    # is opened by the same button through `_PHASE_ADVANCE[QUIZ]`, and both go through
-    # `Room._open_quiz`, so the two cannot disagree about how long a window lasts.
-    if room.tutorial:
-        room._open_quiz()
-    room._go(Room.Phase.QUIZ if room.tutorial else Room.Phase.PLAYING)
     return JsonResponse({"ok": True, "total": ROUNDS_PER_GAME, "phase": room.phase})
 
 
@@ -418,9 +747,17 @@ def _advance_quiz(room: Room) -> None:
 
 # What the admin's single "advance" button means in each phase. A phase absent from this table has
 # no advance: 409. Written as data so the six cases are readable at a glance, and so adding a phase
-# forces a decision here instead of defaulting to something arbitrary — `waiting` has nothing to
-# advance into and `done` has nothing left, and both would otherwise be whatever the last `else`
-# happened to be.
+# forces a decision here instead of defaulting to something arbitrary — `done` has nothing left,
+# and it would otherwise be whatever the last `else` happened to be.
+#
+# `waiting` IS DELIBERATELY ABSENT, and it now HAS something to advance into: the class opens its
+# own game from the lobby. It stays out because this table is « suivant », and opening the game is
+# not « suivant » — it is the verb `admin_start` owns, with its own « already started » on a room
+# that has begun. An entry here would hand a teacher a second button that starts a game twenty
+# phones can also start, and this table is the one place that says what the admin's button means:
+# two ways to start, one of them a coincidence, is how a room ends up started twice or not at all.
+# The lobby is dispatched in `maybe_advance_by_votes` instead, through the same `_start_game` the
+# admin's button calls.
 #
 # The room's own methods do the moving, not lambdas that write fields: a transition that has to
 # touch the round's reveal cursor as well as the phase cannot be one line, and hiding that behind
@@ -504,6 +841,13 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
     the questions stay. The players who already answered them are re-asked the same eight in the
     same order on the relaunch, instead of being handed a freshly drawn set they cannot compare
     with the attempt they already made.
+
+    `started_at` SURVIVES THE RESTART, and it is the one field the transaction below does not
+    rewrite, because it is the one fact about this room that the restart did not undo. This IS a
+    game that has been played — ten rounds of prompts, ratings and a score — even though its rounds
+    are about to be deleted and its phase is going back to the lobby. Clearing the stamp would put
+    the room back into the only state the idle sweep is allowed to delete, and a finished class that
+    went quiet after its relaunch would lose everything the moment a teacher closed the console.
     """
     if (err := require_admin(request)):
         return err
@@ -735,6 +1079,12 @@ def _ready_state(room: Room, player, online: set[int]) -> dict | None:
     their vote outright — a `mine` of True beside a count that ignores the vote would tell a
     player their press landed when it was thrown away.
 
+    `needed` COMES OUT OF `prompts.threshold` WITH THIS `step` AND THIS `voters`, which is the
+    whole reason the number on a phone is the number the server acts on: a caller that read
+    `majority` here would put a majority bar in the lobby and let the class start the game without
+    the one phone that has not been picked up yet. In the lobby the bar therefore reads « X sur Y
+    prêts » with Y the CONNECTED players, because starting a game asks for everybody.
+
     NO VIEWER IS NOT NO BAR. `room_state` is called with no player by the admin screen and by any
     spectator, and `None` there means "nobody in particular is asking" rather than "there is
     nothing to report": the count and the bar are properties of the ROOM and are correct without
@@ -750,7 +1100,7 @@ def _ready_state(room: Room, player, online: set[int]) -> dict | None:
     return {
         "step": step,
         "count": Ready.objects.filter(room=room, step=step, player_id__in=voters).count(),
-        "needed": prompts.majority(len(voters)),
+        "needed": prompts.threshold(step, len(voters)),
         "mine": player is not None
         and Ready.objects.filter(room=room, step=step, player=player).exists(),
     }
@@ -998,12 +1348,19 @@ def _quiz_is_revealed(room: Room) -> bool:
 
 
 def current_step(room: Room) -> str | None:
-    """The discussion the room is in, named, or None when it is not discussing anything.
+    """The step the room is in, named, or None when it is not discussing anything.
 
-    THREE STEPS, one per place the class talks: after a didacticiel question is revealed, after
-    a prompt has been rated, and after a round is summarised. `playing` is not one of them —
-    that phase closes on the answers themselves, and adding a button there would ask twenty
-    students to press something that says nothing they have not already said with a prompt.
+    FOUR STEPS, one per place the class talks: the lobby before the game opens, after a didacticiel
+    question is revealed, after a prompt has been rated, and after a round is summarised. `playing`
+    is not one of them — that phase closes on the answers themselves, and adding a button there
+    would ask twenty students to press something that says nothing they have not already said with a
+    prompt.
+
+    THE LOBBY IS A STEP AND NOT THE ABSENCE OF ONE. It used to be: `waiting` named nothing, so the
+    only thing that opened the game was `admin_start` and a class could not start its own game from
+    the screen every member of it was already looking at. The lobby is the one moment where the bar
+    costs nothing to be strict on — everybody has just arrived — so it is exactly the step that was
+    missing, and `prompts.threshold` is what makes it ask for all of them rather than half.
 
     THE QUIZ STEP ONLY EXISTS AFTER THE REVEAL, through `_quiz_is_revealed`. The phase stays
     `quiz` after the window closes — the phase is where the room IS, not what it is doing — so
@@ -1011,11 +1368,13 @@ def current_step(room: Room) -> str | None:
     majority pressing it would advance past a question whose answer nobody had seen. Asking and
     discussing are separate moments; only the second one gets a button.
 
-    `None` IS THE ANSWER for four phases, and it is why this returns an option rather than a
-    default: `waiting`, `playing`, `done`, an unasked `quiz` question and a `summary` with no
-    round behind it have no discussion, and a client that renders a ready bar for a step that
-    does not exist shows a button that goes nowhere.
+    `None` IS THE ANSWER for the phases that discuss nothing — `playing` and `done`, an unasked
+    `quiz` question, a `summary` with no round behind it — and it is why this returns an option
+    rather than a default: a client that renders a ready bar for a step that does not exist shows a
+    button that goes nowhere.
     """
+    if room.phase == Room.Phase.WAITING:
+        return prompts.LOBBY_STEP
     if room.phase == Room.Phase.QUIZ:
         return f"quiz:{room.quiz_index}" if _quiz_is_revealed(room) else None
     if room.phase == Room.Phase.RATING:
@@ -1058,18 +1417,22 @@ def maybe_advance_by_votes(room: Room) -> None:
     to keep a hand on the laptop: the discussion the round was built around could not start
     until they pressed something. A majority of the players who are CONNECTED is enough, so the
     class ends its own discussion — and a phone in a bag is not a veto, because the bar counts
-    `online_player_ids` and not `room.players`.
+    `online_player_ids` and not `room.players`. The lobby is the one step that asks for all of
+    them instead, and `prompts.threshold` carries the reason rather than this function: everybody
+    is in the lobby because they just arrived, so waiting there is free, and waiting for a phone
+    that has gone to sleep twenty minutes into a discussion is not.
 
-    THE THREE WRITERS, REACHED THROUGH THE SAME TABLE THE ADMIN BUTTON USES. The last three
-    lines are `_PHASE_ADVANCE[room.phase](room)` and nothing else: the vote path and the admin's
-    button path must be the same code, because a class that advances itself and a teacher who
-    presses "suivant" are the same transition, and two implementations of it would drift within
-    a week — the vote path settling the round while the button path does not, say, and the bug
-    only appearing when a class finishes itself.
+    THE LOBBY IS DISPATCHED BEFORE THE TABLE, NOT THROUGH IT. Starting the game is `admin_start`'s
+    verb and `WAITING` is absent from `_PHASE_ADVANCE` on purpose, so the branch that opens the
+    game from a vote is written here rather than reached through the table the admin's « suivant »
+    uses. Every other step still ends in `_PHASE_ADVANCE[room.phase](room)` and nothing else: a
+    class that advances itself and a teacher who presses « suivant » are the same transition, and
+    two implementations of it would drift within a week — the vote path settling the round while the
+    button path does not, say, and the bug only appearing when a class finishes itself.
 
-    NOTHING HAPPENS ON AN EMPTY ROOM. `majority(0)` is 0 and the comparison below would be
-    `0 >= 0`, which is the vacuous truth this file refuses in three other places; the early
-    return is what keeps a room whose phones all dropped from running itself unattended.
+    NOTHING HAPPENS ON AN EMPTY ROOM. `threshold(step, 0)` is 0 and the comparison below would be
+    `0 >= 0`, which is the vacuous truth this file refuses in three other places; the early return
+    is what keeps a room whose phones all dropped from starting itself unattended.
     """
     step = current_step(room)
     if step is None:
@@ -1082,11 +1445,21 @@ def maybe_advance_by_votes(room: Room) -> None:
     # is not one of them, and a threshold counted over players whose votes are excluded is a
     # step that cannot end in a two-player room. `_ready_state` reads the same pair, so the
     # number on the phone and the number acted on here are the same number by construction.
-    needed = prompts.majority(len(voters))
+    # `threshold`, not `majority`: the lobby asks for everybody and a discussion for half, and
+    # picking the rule here instead of asking it is how the two would drift apart.
+    needed = prompts.threshold(step, len(voters))
     if needed == 0:
         return
     count = Ready.objects.filter(room=room, step=step, player_id__in=voters).count()
     if count < needed:
+        return
+    if step == prompts.LOBBY_STEP:
+        # THE RACE IS ALREADY HANDLED IN THERE, and the return value is deliberately dropped:
+        # `_start_game` re-checks the rounds inside a transaction and treats the unique constraint
+        # on `(room, order)` as the admin having pressed « lancer » first, so the loser of a
+        # simultaneous start is a no-op. There is nobody here to hand a refusal to — the caller is
+        # a tap on a button whose whole job was to make the game happen.
+        _start_game(room)
         return
     advance = _PHASE_ADVANCE.get(room.phase)
     if advance is not None:
@@ -1199,7 +1572,20 @@ def events(request: HttpRequest, code: str) -> StreamingHttpResponse:
 
 
 @require_POST
-def answer(request: HttpRequest, code: str) -> JsonResponse:
+def answer(request: HttpRequest, code: str) -> HttpResponse:
+    """The play call, streamed: `chunk` per delta, then `scoring`, then `done` or `error`.
+
+    EVERY REFUSAL IS DECIDED BEFORE THE FIRST BYTE, and that ordering is the contract rather
+    than an implementation detail: `already answered`, `not playing`, `bad token` and `prompt
+    required` are JSON with their status code, and the client reads them off `r.status`. Once
+    the 200 and its `text/event-stream` are out, the status is spent, so a duplicate arriving a
+    second later can only be reported in-band — which is why the claim below is the thing that
+    has to be right rather than the status.
+
+    The three billed calls are split around one frame: the text streams, `scoring` says the jury
+    is working, and `done` carries the verdict. The pause in between is two more model calls
+    and nothing else, and the client shows a label rather than a spinner that means "hung".
+    """
     room = get_object_or_404(Room, code=code)
     if room.phase != Room.Phase.PLAYING:
         return json_error("not playing", 409)
@@ -1217,46 +1603,76 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
         return json_error("prompt required")
     # The duplicate check above cannot cover the ~5s the two billed calls take. Claimed here,
     # before the calls, so a second copy arriving in that window is refused without paying for
-    # the model a second time. Released in `finally` however this block leaves.
+    # the model a second time. Released in the worker's `finally` however that block leaves.
     claim = (rnd.pk, player.pk)
     if claim in _inflight:
         return json_error("already answered", 409)
     _inflight.add(claim)
-    try:
-        output = llm.answer(prompt)
-        verdict = llm.score(prompt, output, rnd.target)
-        # THE CRITIC'S CALL BELONGS HERE, NOT IN `settle_round`. It is the third billed call of the
-        # submit the player is already waiting on: each player's own request pays for their own
-        # critic, and `runserver` is threaded, so twenty phones are graded concurrently. In
-        # `settle_round` it would be twenty back-to-back calls inside ONE request, fired by the
-        # last player's rating tap — a single HTTP call blocking for the better part of a minute,
-        # on the phase where every phone is waiting for a snapshot that will not come. Same total
-        # spend, a fraction of the latency, and settlement stays arithmetic: free and instant.
-        #
-        # The critic's COMMENT IS STORED, on `Answer.quality_comment`, and reaches the player
-        # through the summary row. It used to be discarded here, on the reasoning that the frozen
-        # `SummaryRow` had no room for it and the summary's four numbers told the story anyway.
-        # Both halves of that were wrong, and the audit that found the bug is the evidence: with no
-        # API key `llm.grade_prompt` is `_stub_grade`, a count of keyword markers, and the plan's
-        # four numbers then put a heuristic on screen under the label « note du modèle » with
-        # nothing anywhere saying no model was called. The spec asks for the opposite — « le modèle
-        # devient un écho, le jury devient un chevauchement de mots, et l'écran le dit
-        # explicitement » — and this string is the only thing on that screen that can say it. It is
-        # the same sentence the judge already returns as `verdict.comment` and `answer` hands
-        # straight back, so the reason a prompt is bad and the reason its quality is low are both
-        # now stored rather than one of them.
-        #
-        # The target travels with the prompt so the critic knows what the prompt is FOR, and the
-        # rubric is what forbids it from comparing anything: it never sees the answer it produced,
-        # nor a single peer rating, so it cannot be pulled by either.
-        critique = llm.grade_prompt(prompt, rnd.target)
-        # The durable backstop, for the case the process-local claim cannot see: another
-        # process won unique_together. `transaction.atomic()` is defensive here — with
-        # ATOMIC_REQUESTS unset, autocommit already rolls back the single failed statement, so
-        # it changes nothing today. It is what makes the `except` reachable at all under
-        # ATOMIC_REQUESTS, where an IntegrityError would otherwise poison the rest of the
-        # request. Losing the race is the same 409 the player already got, not a 500.
+
+    def frame(name: str, **payload: object) -> str:
+        # The blank line is the frame terminator and the client splits on it: a frame without it
+        # is never dispatched, so it is part of the value and not formatting.
+        return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    out: queue.Queue[str | None] = queue.Queue()
+
+    def work() -> None:
+        """The billed work, off the request thread, reporting its steps through `out`.
+
+        A GENERATOR CANNOT DO THIS JOB, and both of its failures are the reason. It cannot
+        `yield` inside an `except`, so an LLM call blowing up would close the response with no
+        frame at all and the client could only see a truncated stream. And the server calls a
+        generator's `close()` when the client goes away — a phone that locks its screen mid
+        generation would cancel work it has already been billed for, storing nothing, and the
+        round would then wait forever for a player who is asleep. So the work is already paid
+        for and already claimed: it finishes, and nobody left to read it is not a reason to
+        throw away a player's answer.
+        """
         try:
+            parts: list[str] = []
+            stream = llm.answer_stream(prompt)
+            for delta in stream:
+                parts.append(delta)
+                out.put(frame("chunk", delta=delta))
+            # The judge scores the SAME text the client just watched, joined from the same deltas
+            # rather than re-asked for. `.strip()` is what the one-shot call did, so a stored
+            # answer is byte-identical to what the old path stored — and a score computed on a
+            # text nobody saw is a score about nothing.
+            output = "".join(parts).strip()
+            out.put(frame("scoring"))
+            verdict = llm.score(prompt, output, rnd.target)
+            # THE CRITIC'S CALL BELONGS HERE, NOT IN `settle_round`. It is the third billed call of the
+            # submit the player is already waiting on: each player's own request pays for their own
+            # critic, and `runserver` is threaded, so twenty phones are graded concurrently. In
+            # `settle_round` it would be twenty back-to-back calls inside ONE request, fired by the
+            # last player's rating tap — a single HTTP call blocking for the better part of a minute,
+            # on the phase where every phone is waiting for a snapshot that will not come. Same total
+            # spend, a fraction of the latency, and settlement stays arithmetic: free and instant.
+            #
+            # The critic's COMMENT IS STORED, on `Answer.quality_comment`, and reaches the player
+            # through the summary row. It used to be discarded here, on the reasoning that the frozen
+            # `SummaryRow` had no room for it and the summary's four numbers told the story anyway.
+            # Both halves of that were wrong, and the audit that found the bug is the evidence: with no
+            # API key `llm.grade_prompt` is `_stub_grade`, a count of keyword markers, and the plan's
+            # four numbers then put a heuristic on screen under the label « note du modèle » with
+            # nothing anywhere saying no model was called. The spec asks for the opposite — « le modèle
+            # devient un écho, le jury devient un chevauchement de mots, et l'écran le dit
+            # explicitement » — and this string is the only thing on that screen that can say it. It is
+            # the same sentence the judge already returns as `verdict.comment` and `answer` hands
+            # straight back, so the reason a prompt is bad and the reason its quality is low are both
+            # now stored rather than one of them.
+            #
+            # The target travels with the prompt so the critic knows what the prompt is FOR, and the
+            # rubric is what forbids it from comparing anything: it never sees the answer it produced,
+            # nor a single peer rating, so it cannot be pulled by either.
+            critique = llm.grade_prompt(prompt, rnd.target)
+            # ONE WRITE, AT THE END. SQLite has a single writer, so a write per chunk would serialise
+            # the whole class on one lock for the length of a generation, and a row that exists
+            # before the jury has ruled is a row the summary would show as an answer nobody judged.
+            # `transaction.atomic()` keeps the durable backstop — another process winning
+            # unique_together — from poisoning the rest of this thread's work. That race can no
+            # longer answer 409, because the status was spent with the first chunk; it arrives as
+            # the error frame below, with nothing written, which is the same outcome the player had.
             with transaction.atomic():
                 rnd.answers.create(
                     player=player,
@@ -1267,12 +1683,49 @@ def answer(request: HttpRequest, code: str) -> JsonResponse:
                     quality_llm=critique.score,
                     quality_comment=critique.comment,
                 )
-        except IntegrityError:
-            return json_error("already answered", 409)
-    finally:
-        _inflight.discard(claim)
-    maybe_advance_phase(room)
-    return JsonResponse({"score": verdict.score, "comment": verdict.comment, "output": output})
+            maybe_advance_phase(room)
+            out.put(
+                frame(
+                    "done",
+                    score=verdict.score,
+                    comment=verdict.comment,
+                    # The round this answer belongs to, not `room.current`: the phase may have
+                    # moved on by the time the last player answers, and a verdict labelled with
+                    # the NEXT round is one the client would file under the wrong prompt.
+                    round=rnd.order,
+                    truncated=stream.truncated,
+                )
+            )
+        except Exception:  # noqa: BLE001 — one player's model call, reported to that player
+            # Nothing is written, so the player may send again: the composer stays usable on the
+            # client precisely because the row does not exist. Logged as well as streamed, because
+            # the player is only told that it broke, not why, and the animateur is the one who can
+            # do something about it.
+            logger.exception("answer failed in room %s", room.code)
+            out.put(frame("error", error="La partie a planté côté serveur. Préviens l'animateur."))
+        finally:
+            _inflight.discard(claim)
+            out.put(None)  # the sentinel: the stream ends
+            # A thread attached to no request never gets `request_finished`, so nothing else
+            # closes the connection it opened. Same reason, and the same call, as `_sweep_forever`.
+            close_old_connections()
+
+    threading.Thread(target=work, daemon=True, name=f"answer-{room.code}").start()
+
+    def stream() -> Iterator[str]:
+        # A SYNC generator, deliberately: an async one is consumed whole by Django before the
+        # first byte is sent, which is the buffering this endpoint exists to avoid.
+        while True:
+            item = out.get()
+            if item is None:
+                return
+            yield item
+
+    return StreamingHttpResponse(
+        stream(),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @require_POST

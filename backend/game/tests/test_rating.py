@@ -14,12 +14,13 @@ import json
 import time
 from unittest import mock
 
-from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TransactionTestCase, override_settings
 
 from game import llm
 from game.llm import Verdict
 from game.models import Answer, Player, Rating, Room, Round
 from game.prompts import QUALITY_BAND, SCALE_MAX, SCALE_MIN, half_up, quality
+from game.tests.support import answer_chunks, drain
 from game.views import (
     PRESENCE_TTL,
     _beat,
@@ -132,7 +133,7 @@ class PeerBoundTests(SimpleTestCase):
 
 
 @override_settings(ADMIN_PASSWORD="s3cret")
-class RatingPlayTests(TestCase):
+class RatingPlayTests(TransactionTestCase):
     """The endpoint, the reveal it is read against, and the anonymity that makes it fair."""
 
     def setUp(self) -> None:
@@ -237,12 +238,12 @@ class RatingPlayTests(TestCase):
         self._online(room, *players)
 
         with (
-            mock.patch("game.llm.answer", return_value="le resultat"),
+            mock.patch("game.llm.answer_stream", new=answer_chunks("le resultat")),
             mock.patch("game.llm.score", return_value=Verdict(8, "bien")),
             mock.patch("game.llm.grade_prompt", return_value=Verdict(6, "moyen")),
         ):
             for p in players:
-                self._post(f"/api/rooms/{code}/answer", {"token": p.token, "prompt": "mon prompt"})
+                drain(self._post(f"/api/rooms/{code}/answer", {"token": p.token, "prompt": "mon prompt"}))
                 room.refresh_from_db()
 
         self.assertEqual(room.phase, Room.Phase.RATING, "the last answer must open the rating")
@@ -856,7 +857,7 @@ class RatingPlayTests(TestCase):
 
 
 @override_settings(ADMIN_PASSWORD="s3cret")
-class SettlementBoundTests(TestCase):
+class SettlementBoundTests(TransactionTestCase):
     """`prompts.quality` again, this time through the whole game: the critic's billed call, three
     players' taps, and the write that settles the round.
 
@@ -893,7 +894,7 @@ class SettlementBoundTests(TestCase):
         for p in (author, *raters):
             _beat(code, p.pk)
         with (
-            mock.patch("game.llm.answer", return_value="la reponse"),
+            mock.patch("game.llm.answer_stream", new=answer_chunks("la reponse")),
             mock.patch("game.llm.score", return_value=Verdict(8, "tres proche")),
             mock.patch("game.llm.grade_prompt", return_value=Verdict(critic, "methode")) as critic_call,
         ):
@@ -902,7 +903,8 @@ class SettlementBoundTests(TestCase):
                 data=json.dumps({"token": author.token, "prompt": "mon prompt"}),
                 content_type="application/json",
             )
-        assert r.status_code == 200, r.content
+            drain(r)  # the work runs in a thread: the next line must not race it
+        self.assertEqual(r.status_code, 200)
         # The critic was called on the SUBMIT, by the player who paid for it, and on the prompt
         # alone — never inside the settlement, which is why twenty phones do not queue up behind
         # one request.
@@ -1094,7 +1096,7 @@ class SettlementBoundTests(TestCase):
         # way `test_llm` does it, so this test cannot bill a real critic on a developer machine
         # that exports a key.
         with mock.patch("game.llm._has_key", return_value=False), mock.patch(
-            "game.llm.answer", return_value="la reponse"
+            "game.llm.answer_stream", new=answer_chunks("la reponse")
         ), mock.patch("game.llm.score", return_value=Verdict(8, "tres proche")):
             code = "OFFL"
             room = Room.objects.create(code=code, tutorial=False)
@@ -1108,7 +1110,8 @@ class SettlementBoundTests(TestCase):
                 data=json.dumps({"token": author.token, "prompt": "Tu es un guide, pour un public, contexte, en 3 lignes"}),
                 content_type="application/json",
             )
-            self.assertEqual(r.status_code, 200, r.content)
+            drain(r)  # the work runs in a thread: the row below must not race it
+            self.assertEqual(r.status_code, 200)
             # Stored on the row, not just in the response: the `answer` response is gone by the
             # time the summary is read, and the summary is where the number is judged.
             answer = Answer.objects.get()

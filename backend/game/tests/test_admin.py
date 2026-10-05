@@ -4,19 +4,20 @@ from unittest.mock import patch
 
 from django.db import connection
 from django.http import HttpResponse
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from game.llm import Verdict
 from game.models import Answer, Player, QuizAttempt, QuizQuestion, Rating, Room, Round
 from game.quiz import QUIZ_LENGTH, QUIZ_SECONDS
+from game.tests.support import answer_chunks, drain, read_frames
 from game.targets import ROUNDS_PER_GAME
 from game.views import PRESENCE_TTL, _beat, _presence, _presence_lock, room_state
 
 
 @override_settings(ADMIN_PASSWORD="s3cret")
-class AdminTest(TestCase):
+class AdminTest(TransactionTestCase):
     # This module is also the regression guard for Task 1's MIDDLEWARE: `admin_login` writes
     # `request.session["admin"]`, which raises AttributeError without `SessionMiddleware` in the
     # chain. If every test here 500s, check that middleware before anything else.
@@ -741,14 +742,14 @@ class AdminTest(TestCase):
         code = json.loads(self._post("/api/admin/rooms", {"tutorial": False}).content)["code"]
         token = self._join(code, "ana")
         self._post(f"/api/admin/rooms/{code}/start")
-        with patch("game.llm.answer", return_value="42"), patch(
+        with patch("game.llm.answer_stream", new=answer_chunks("42")), patch(
             "game.llm.score", return_value=Verdict(7, "pas mal")
         ):
-            self.c.post(
+            drain(self.c.post(
                 f"/api/rooms/{code}/answer",
                 data=json.dumps({"token": token, "prompt": "repete 42"}),
                 content_type="application/json",
-            )
+            ))
         self.assertEqual(Answer.objects.count(), 1)
 
         self._post(f"/api/admin/rooms/{code}/restart")
@@ -757,7 +758,7 @@ class AdminTest(TestCase):
 
         # Second game, same player, same token, no rejoin.
         self.assertEqual(self._post(f"/api/admin/rooms/{code}/start").status_code, 200)
-        with patch("game.llm.answer", return_value="42"), patch(
+        with patch("game.llm.answer_stream", new=answer_chunks("42")), patch(
             "game.llm.score", return_value=Verdict(9, "nickel")
         ):
             r = self.c.post(
@@ -765,8 +766,10 @@ class AdminTest(TestCase):
                 data=json.dumps({"token": token, "prompt": "repete 42"}),
                 content_type="application/json",
             )
+        # The verdict is the last frame of the stream now, and it carries the score the old
+        # `{"score": …}` body carried.
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(json.loads(r.content)["score"], 9)
+        self.assertEqual(read_frames(r)[-1], ("done", {"score": 9, "comment": "nickel", "round": 0, "truncated": False}))
         # Score is per-round, so the previous game's 7 is not carried over.
         self.assertEqual(Answer.objects.get().score, 9)
         self.assertEqual(Answer.objects.count(), 1)

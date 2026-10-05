@@ -2,10 +2,11 @@ import json
 import time
 from unittest.mock import patch
 
-from django.test import Client, TestCase
+from django.test import Client, TransactionTestCase
 
 from game.llm import Verdict
 from game.models import Answer, Player, Rating, Room, Round
+from game.tests.support import answer_chunks, drain, read_frames
 from game.views import (
     PRESENCE_TTL,
     _beat,
@@ -18,7 +19,10 @@ from game.views import (
 )
 
 
-class PresenceTest(TestCase):
+class PresenceTest(TransactionTestCase):
+    # `TransactionTestCase` because `POST /answer` runs its three billed calls in a worker
+    # thread, and the row it writes goes through a connection of its own: a `TestCase` keeps its
+    # fixture uncommitted on the test's connection, which that thread can neither see nor write.
     def setUp(self) -> None:
         self.c = Client()
         self.room = Room.objects.create(code="ABCD", phase=Room.Phase.PLAYING)
@@ -145,19 +149,15 @@ class PresenceTest(TestCase):
     # --- game logic ------------------------------------------------------------------------
 
     @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
-    @patch("game.llm.answer", return_value="quarante-deux")
-    def test_round_closes_when_every_online_player_answered(self, _m_answer, _m_score) -> None:
+    @patch("game.llm.answer_stream", new=answer_chunks("quarante-deux"))
+    def test_round_closes_when_every_online_player_answered(self, _m_score) -> None:
         # The whole point of the feature. `bob` is in `room.players` and will never answer: under
         # the old `answers.count() == players.count()` this round never closed and the party hung
         # on it. Ana online and answering is enough.
         ana = self._player("ana")
         self._player("bob")
         _beat("ABCD", ana.pk)
-        r = self.c.post(
-            "/api/rooms/ABCD/answer",
-            data=json.dumps({"token": ana.token, "prompt": "repete 42"}),
-            content_type="application/json",
-        )
+        r = self._answer(ana, "repete 42")
         self.assertEqual(r.status_code, 200)
         self.room.refresh_from_db()
         # (0, "rating"), not (1, "playing"): the last answer ends the WRITING phase and opens
@@ -204,8 +204,8 @@ class PresenceTest(TestCase):
     # --- the round trip: offline, then back, in a ten-round game ----------------------------
 
     @patch("game.llm.score", return_value=Verdict(8, "tres proche"))
-    @patch("game.llm.answer", return_value="quarante-deux")
-    def test_an_offline_player_who_comes_back_can_still_answer(self, m_answer, _m_score) -> None:
+    @patch("game.llm.answer_stream", new=answer_chunks("quarante-deux"))
+    def test_an_offline_player_who_comes_back_can_still_answer(self, _m_score) -> None:
         """The stall fix must not cost a player the rest of the game.
 
         This is the whole round trip, in order, because each step is a place the feature could
@@ -308,8 +308,8 @@ class PresenceTest(TestCase):
         self.assertEqual(room_state("ABCD")["online_count"], 2)
 
     @patch("game.llm.score", return_value=Verdict(5, "moyen"))
-    @patch("game.llm.answer", return_value="42")
-    def test_a_dropped_submit_leaves_no_answer_row(self, _m_answer, _m_score) -> None:
+    @patch("game.llm.answer_stream", new=answer_chunks("42"))
+    def test_a_dropped_submit_leaves_no_answer_row(self, _m_score) -> None:
         """A prompt typed but never sent is client state, and it stays there.
 
         Bob's browser dies between typing and the POST landing. Nothing server-side has run: the
@@ -329,30 +329,39 @@ class PresenceTest(TestCase):
         self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
 
     @patch("game.llm.score", side_effect=RuntimeError("model call failed"))
-    @patch("game.llm.answer", return_value="42")
-    def test_a_failed_submit_rolls_back_completely(self, _m_answer, _m_score) -> None:
+    @patch("game.llm.answer_stream", new=answer_chunks("42"))
+    def test_a_failed_submit_rolls_back_completely(self, _m_score) -> None:
         """The all-or-nothing claim, from the client's point of view.
 
-        `llm.score` raising is the model call blowing up after `llm.answer` already returned. The
-        `create` is never reached, so no row exists; `finally` still discards the claim, so the
-        player is not locked out of the round by a request that failed. A row written before the
-        second call returned would be the bug this guards: bob would reconnect to a round showing
-        `answered: true` for a submission that never completed.
+        `llm.score` raising is the model call blowing up after the text already streamed. The
+        `create` is never reached, so no row exists; the worker's `finally` still discards the
+        claim, so the player is not locked out of the round by a submit that failed. A row
+        written before the second call returned would be the bug this guards: bob would
+        reconnect to a round showing `answered: true` for a submission that never completed.
         """
         bob = self._player("bob")
         _beat("ABCD", bob.pk)
-        with self.assertRaises(RuntimeError):
-            self._answer(bob, "repete 42")
+        with self.assertLogs("game.views", level="ERROR"):
+            frames = read_frames(self._answer_raw(bob, "repete 42"))
+        # A closed stream rather than an exception: the work is not the request, so its failure
+        # cannot be raised into the client, and the error frame is how it is reported instead.
+        self.assertEqual(frames[-1][0], "error")
         self.assertEqual(Answer.objects.filter(player=bob).count(), 0)
         self.assertEqual(len(_inflight), 0)  # the claim was released despite the exception
         self.assertFalse(room_state("ABCD")["players"][0]["answered"])
 
     def _answer(self, player: Player, prompt: str):
+        r = self._answer_raw(player, prompt)
+        drain(r)  # the work runs in a thread: the assertion after it must not race it
+        return r
+
+    def _answer_raw(self, player: Player, prompt: str):
         return self.c.post(
             "/api/rooms/ABCD/answer",
             data=json.dumps({"token": player.token, "prompt": prompt}),
             content_type="application/json",
         )
+
 
     # --- serialisation ---------------------------------------------------------------------
 

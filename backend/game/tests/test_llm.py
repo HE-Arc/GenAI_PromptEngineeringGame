@@ -8,9 +8,9 @@ from django.test import SimpleTestCase
 from game import llm
 from game.llm import Verdict
 
-# `answer` and `score` fall back to a local stub when no key is present, so the real-path
-# tests pin one. The stub tests blank it instead, which holds whether or not the machine
-# running the suite happens to have a real key in its environment.
+# `answer_stream`, `score` and `grade_prompt` fall back to a local stub when no key is present,
+# so the real-path tests pin one. The stub tests blank it instead, which holds whether or not the
+# machine running the suite happens to have a real key in its environment.
 KEYED = patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
 UNKEYED = patch.dict(os.environ, {"OPENAI_API_KEY": ""})
 
@@ -33,6 +33,31 @@ def _client(content: str) -> MagicMock:
     """
     client = MagicMock()
     client.chat.completions.create.return_value = _completion(content)
+    return client
+
+
+def _chunk(text: str | None = None, finish_reason: str | None = None) -> MagicMock:
+    """One streamed chunk, shaped the way this SDK's `stream=True` returns them."""
+    delta = MagicMock()
+    delta.content = text
+    choice = MagicMock()
+    choice.delta = delta
+    choice.finish_reason = finish_reason
+    chunk = MagicMock()
+    chunk.choices = [choice]
+    return chunk
+
+
+def _usage_chunk() -> MagicMock:
+    """A chunk carrying nothing but usage. `choices` is empty, so it has no delta to read."""
+    chunk = MagicMock()
+    chunk.choices = []
+    return chunk
+
+
+def _stream_client(*chunks: MagicMock) -> MagicMock:
+    client = MagicMock()
+    client.chat.completions.create.return_value = iter(chunks)
     return client
 
 
@@ -81,10 +106,60 @@ class ScoreTest(SimpleTestCase):
 
 
 @KEYED
-class AnswerTest(SimpleTestCase):
-    def test_strips_whitespace(self) -> None:
-        with patch.object(llm, "OpenAI", return_value=_client("  bonjour  ")):
-            self.assertEqual(llm.answer("salut"), "bonjour")
+class AnswerStreamTest(SimpleTestCase):
+    """The play call, read as a stream. Asserted through `llm.OpenAI` so the chunk shapes these
+    tests fake are the ones a real SDK hands back, and not the ones `_chat` was rewritten to
+    expect.
+    """
+
+    def test_yields_every_delta_and_never_an_empty_one(self) -> None:
+        # The empty string and the `None` are both real: a delta can be empty mid-stream and the
+        # terminal chunk's is `None` in this SDK. The transport would carry an empty frame and the
+        # player would pay a round trip for no text, so they are dropped here.
+        with patch.object(llm, "OpenAI", return_value=_stream_client(
+            _chunk("Bonjour"), _chunk(""), _chunk(None), _chunk(" le monde")
+        )):
+            self.assertEqual(list(llm.answer_stream("salut")), ["Bonjour", " le monde"])
+
+    def test_a_chunk_with_no_choices_is_skipped(self) -> None:
+        # We do not ask for usage, so this should not happen — but it costs one line to survive
+        # and the alternative is an IndexError in the middle of a paid generation.
+        with patch.object(llm, "OpenAI", return_value=_stream_client(_usage_chunk(), _chunk("42"))):
+            self.assertEqual(list(llm.answer_stream("salut")), ["42"])
+
+    def test_the_play_call_asks_the_api_for_a_stream(self) -> None:
+        client = _stream_client(_chunk("une recette"))
+        with patch.object(llm, "OpenAI", return_value=client):
+            list(llm.answer_stream("repete la recette"))
+        self.assertIs(client.chat.completions.create.call_args.kwargs["stream"], True)
+
+    def test_the_judge_never_asks_for_a_stream(self) -> None:
+        # The judge and the critic must have the WHOLE json before they can parse it, so
+        # `stream` stays the play call's alone. A `stream=True` here would hand `_verdict` an
+        # `AnswerStream` and `json.loads` would raise on it.
+        client = _client('{"score": 7, "comment": "proche"}')
+        with patch.object(llm, "OpenAI", return_value=client):
+            llm.score("p", "o", "t")
+        self.assertNotIn("stream", client.chat.completions.create.call_args.kwargs)
+
+    def test_a_call_cut_by_the_token_cap_reports_itself(self) -> None:
+        # `finish_reason` is the only place the cap is visible: the text of a truncated answer is
+        # indistinguishable from a complete one, and the player has to be told which they got.
+        for reason, expected in (("length", True), ("stop", False), (None, False)):
+            with self.subTest(finish_reason=reason):
+                with patch.object(llm, "OpenAI", return_value=_stream_client(
+                    _chunk("une recette qui s"), _chunk(None, finish_reason=reason)
+                )):
+                    stream = llm.answer_stream("repete la recette")
+                    deltas = list(stream)
+                self.assertEqual(deltas, ["une recette qui s"])
+                self.assertIs(stream.truncated, expected)
+
+    def test_truncation_is_false_before_the_stream_is_read(self) -> None:
+        # It is a report about a call that has not happened yet, so it cannot claim to know:
+        # asserting this pins that the flag is set by the reader rather than guessed at creation.
+        with patch.object(llm, "OpenAI", return_value=_stream_client(_chunk(None, finish_reason="length"))):
+            self.assertIs(llm.answer_stream("salut").truncated, False)
 
 
 @KEYED
@@ -96,9 +171,9 @@ class TokenCapTest(SimpleTestCase):
     """
 
     def test_play_call_gets_the_long_cap(self) -> None:
-        client = _client("une recette")
+        client = _stream_client(_chunk("une recette"))
         with patch.object(llm, "OpenAI", return_value=client):
-            llm.answer("repete la recette en entier")
+            list(llm.answer_stream("repete la recette en entier"))
         self.assertEqual(client.chat.completions.create.call_args.kwargs["max_tokens"], llm.PLAY_MAX_TOKENS)
         self.assertGreater(llm.PLAY_MAX_TOKENS, 400)  # a full paragraph of French, not a sentence
 
@@ -194,11 +269,27 @@ class StubTest(SimpleTestCase):
     """No key means no model. The game must still be playable, and must say so."""
 
     def test_answer_echoes_the_prompt_without_a_key(self) -> None:
-        self.assertIn("un escargot", llm.answer("un escargot sur un clavier"))
+        self.assertIn("un escargot", "".join(llm.answer_stream("un escargot sur un clavier")))
+
+    def test_the_stub_streams_rather_than_answering_in_one_lump(self) -> None:
+        # The stub is the only way the streaming path is exercised with no key and no bill, so a
+        # fallback that answered all at once would leave the dev loop showing nothing that
+        # production shows. More than one chunk, and the chunks join back to the same text the
+        # one-shot call returned — a stub that drifted here would change the answer the judge
+        # scores, not only the way it arrives.
+        prompt = "repete 42 en trois phrases bien remplies"
+        chunks = list(llm.answer_stream(prompt))
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunks), llm._stub_answer(prompt))
+
+    def test_the_stub_never_reports_itself_as_truncated(self) -> None:
+        # It is a local echo with no token budget behind it, so claiming the cap cut it short
+        # would be a lie the player is shown.
+        self.assertIs(llm.answer_stream("repete 42").truncated, False)
 
     def test_answer_never_builds_a_client_without_a_key(self) -> None:
         with patch.object(llm, "OpenAI", side_effect=AssertionError("client built")):
-            llm.answer("peu importe")
+            list(llm.answer_stream("peu importe"))
 
     def test_exact_target_scores_ten(self) -> None:
         self.assertEqual(llm.score("p", "un escargot sur un clavier", "un escargot sur un clavier").score, 10)

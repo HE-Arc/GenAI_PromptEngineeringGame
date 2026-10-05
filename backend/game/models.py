@@ -36,6 +36,30 @@ class Room(models.Model):
     # it mid-game would tell players whose name appeared and whose did not, which leaks the
     # mapping the anonymity exists to hide.
     anonymous = models.BooleanField(default=True)
+    # WHEN THIS GAME WAS OPENED, or null while it never was. Written once by `_start_game` and
+    # never cleared — including by `admin_restart`, which is the whole reason this column exists.
+    #
+    # NOT `rounds.exists()`, which is the trap this field was added to defuse. `rounds` is the
+    # definition of a room that has STARTED — `_start_game` checks it to refuse a second start, and
+    # `admin_restart` DELETES every round while keeping the room, its players and their tokens. So a
+    # finished ten-round game that goes quiet after a relaunch has no rounds at all, and a sweep
+    # written on `rounds.exists()` would delete a completed game — the one kind of data loss this
+    # codebase has gone out of its way to avoid everywhere else (`Admin.tsx`'s abandon button is
+    # built on the room surviving). A stamp that only ever moves forward is the one fact about a
+    # room that a restart cannot take back.
+    #
+    # NULL IS A REAL VALUE and it is the ONLY thing the idle sweep is allowed to delete on, because
+    # a room nobody ever played holds nothing but a bank, some tokens and an admin's typo — and a
+    # played room holds a class's prompts, their ratings and their score.
+    started_at = models.DateTimeField(null=True, blank=True)
+    # WHEN THIS GAME WAS LAST USED, or null until the sweep writes it. Written by the sweep thread,
+    # once per tick, and only for a room somebody is connected to — never by a heartbeat.
+    #
+    # THIS IS THE ONLY THING THAT SURVIVES A RESTART for the deletion policy. `_presence` is in
+    # memory, so after a restart a played game's idle instant fell back to `_BOOT_INSTANT`, the
+    # one-hour threshold became unreachable, and the table grew anyway — the policy would have
+    # existed without ever being applied.
+    last_activity_at = models.DateTimeField(null=True, blank=True)
     # WHICH didacticiel question the room is on, 0-based, and when its answering window closes.
     #
     # BOTH ARE ROOM STATE, not player state, and that is the whole change. The question on screen

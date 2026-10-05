@@ -10,7 +10,8 @@ model judged them.
 import json
 import os
 import re
-from typing import NamedTuple
+from collections.abc import Iterable, Iterator
+from typing import Any, NamedTuple
 
 from openai import OpenAI
 
@@ -138,6 +139,21 @@ def _stub_answer(prompt: str) -> str:
     return f"(reponse locale) {prompt}"
 
 
+def _stub_chunks(prompt: str, words_per_chunk: int = 6) -> list[str]:
+    """The stub, cut into the pieces the API would have delivered.
+
+    It streams on purpose: it is the only way the streaming path is ever exercised with no key
+    and no bill, and a fallback that answered in one lump would leave the dev loop showing
+    nothing that production shows. Chunked on words rather than characters, because one frame
+    per character is not what the real API does and rehearsing it would prove nothing.
+    """
+    words = _stub_answer(prompt).split(" ")
+    groups = [" ".join(words[i : i + words_per_chunk]) for i in range(0, len(words), words_per_chunk)]
+    # The separator goes BETWEEN the chunks, not on the end of every one: `"".join(chunks)` has
+    # to be `_stub_answer(prompt)` exactly, since the view strips that join and stores it.
+    return [group + " " for group in groups[:-1]] + groups[-1:]
+
+
 def _stub_score(output: str, target: str) -> Verdict:
     # Overlap divided by the TARGET's word count, so the ceiling is only reached by reproducing
     # every word. That was fair when a target was two to four words and a player could hold the
@@ -191,17 +207,79 @@ def _stub_grade(prompt: str) -> Verdict:
     return Verdict(points, STUB_COMMENT)
 
 
-def _chat(model: str, messages: list[dict], temperature: float, json_mode: bool, max_tokens: int) -> str:
+class AnswerStream:
+    """One play call, as deltas, plus the one fact about it that only exists at the end.
+
+    `truncated` is a property of the CALL and not of the text: the text reads the same whether
+    the model stopped on its own or ran into `PLAY_MAX_TOKENS`, and a player whose answer was
+    cut in half has to be told rather than left to guess from a sentence that stops mid-word.
+    It rides on the iterator rather than being yielded as a special delta, so a stand-in for
+    this call stays a plain list of strings — see `tests/support.py`.
+
+    An iterator class and not a generator function, for the one thing a generator cannot do:
+    carry a value out of itself.
+    """
+
+    def __init__(self, deltas: Iterable[str] = ()) -> None:
+        self._deltas = iter(deltas)
+        self.truncated = False
+
+    @classmethod
+    def reading(cls, chunks: Iterable[Any]) -> "AnswerStream":
+        """Reads an SDK stream: `choices[*].delta.content`, and `finish_reason` on the last one.
+
+        A classmethod because the reader sets `self.truncated`, and a generator defined outside
+        the class has no `self` to set it on. Nothing is read from `chunks` until the caller
+        iterates: the HTTP call is made, the body is not.
+        """
+        stream = cls()
+        stream._deltas = stream._read(chunks)
+        return stream
+
+    def _read(self, chunks: Iterable[Any]) -> Iterator[str]:
+        for chunk in chunks:
+            for choice in chunk.choices:
+                # Neither field is trusted: `choices` is empty on a chunk that carries only
+                # usage, and `delta.content` is None on a terminal chunk in this SDK. An empty
+                # delta is dropped rather than forwarded — the transport would carry it and the
+                # player would pay for the round trip in latency for no text.
+                if choice.finish_reason == "length":
+                    self.truncated = True
+                text = choice.delta.content or ""
+                if text:
+                    yield text
+
+    def __iter__(self) -> Iterator[str]:
+        return self
+
+    def __next__(self) -> str:
+        return next(self._deltas)
+
+
+def _chat(
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    json_mode: bool,
+    max_tokens: int,
+    stream: bool = False,
+) -> AnswerStream | str:
     # The client is built here, not at import: `views.py` imports this module on every
     # request, and `OpenAI()` raises if OPENAI_API_KEY is missing. All three public entry points
     # return before reaching this when there is no key, so the suite also runs with none.
     #
     # `max_tokens` is a parameter, not a constant, because the callers want different caps —
     # see PLAY_MAX_TOKENS and JUDGE_MAX_TOKENS for why, and for why unifying them is the bug.
+    #
+    # `stream=True` hands back the deltas as they arrive instead of one string at the end, and
+    # only the play call wants that: the judge and the critic must have the WHOLE json before
+    # they can parse it, so they keep the string.
     client = OpenAI()
     kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if stream:
+        return AnswerStream.reading(client.chat.completions.create(stream=True, **kwargs))
     return client.chat.completions.create(**kwargs).choices[0].message.content.strip()
 
 
@@ -225,10 +303,16 @@ def _verdict(raw: str, default_comment: str) -> Verdict:
     return Verdict(max(0, min(10, points)), str(data.get("comment") or default_comment))
 
 
-def answer(prompt: str) -> str:
+def answer_stream(prompt: str) -> AnswerStream:
+    """The play call, as a stream of text deltas. The only way a player can watch it write.
+
+    Never yields an empty delta, and carries no promise about being cut short — `truncated` says
+    that, once the call is over. Same cap and same temperature as before: streaming changes WHEN
+    the words arrive, not what they are.
+    """
     if not _has_key():
-        return _stub_answer(prompt)
-    return _chat(PLAY_MODEL, [{"role": "user", "content": prompt}], 0.7, False, PLAY_MAX_TOKENS)
+        return AnswerStream(_stub_chunks(prompt))
+    return _chat(PLAY_MODEL, [{"role": "user", "content": prompt}], 0.7, False, PLAY_MAX_TOKENS, stream=True)
 
 
 def score(prompt: str, output: str, target: str) -> Verdict:

@@ -84,12 +84,19 @@ def quality(llm: int | None, peers: list[int]) -> int:
     return half_up(max(llm - QUALITY_BAND, min(mean, llm + QUALITY_BAND)))
 
 
-# A ready vote is a majority of the players who are CONNECTED, and this is the one place the
-# rule is written. Not unanimity: a class of twenty with one phone in a bag would otherwise sit
-# through nineteen waiting screens, and the teacher would be back to pressing the button — which
-# is the thing this rule exists to remove. Not a fixed number either: « 3 votes » is a deadlock
-# in a class of two and a stampede in a class of twenty.
+# A ready vote on a DISCUSSION is a majority of the players who are CONNECTED, and this is the one
+# place the rule is written. Not unanimity: a class of twenty with one phone in a bag would
+# otherwise sit through nineteen waiting screens, and the teacher would be back to pressing the
+# button — which is the thing this rule exists to remove. Not a fixed number either: « 3 votes » is
+# a deadlock in a class of two and a stampede in a class of twenty.
 VOTE_MAJORITY = True
+
+# The step a room is in while it is still in the lobby. NOT `waiting`: `waiting` is the PHASE a
+# lobby has, and a `Ready` row whose `step` repeats a phase name reads as a second thing called
+# waiting. The step names carry the cursor (`quiz:3`, `rating:2:0`, `summary:2`) and a row saying
+# `step="waiting"` in a log line would be mistaken for the discussion that follows a question —
+# which is the other thing « waiting » means in this codebase.
+LOBBY_STEP = "lobby"
 
 
 def majority(n: int) -> int:
@@ -104,3 +111,31 @@ def majority(n: int) -> int:
     if n <= 0:
         return 0
     return n // 2 + 1
+
+
+def threshold(step: str, n: int) -> int:
+    """How many connected players must be ready on `step` before the room moves on. THE ENTRY
+    POINT, and the reason it exists rather than two call sites each picking a rule.
+
+    THE LOBBY IS UNANIMOUS AND A DISCUSSION IS A MAJORITY, and the two differ on purpose, so the
+    code has to say which is which or a future reader will helpfully unify them. The lobby is the
+    one moment where every player is present by definition — they have just arrived and are looking
+    at the screen the button is on — so waiting for the last one costs nothing: a phone that has not
+    been picked up yet is a phone that is about to be. A discussion is the opposite: the class is
+    mid-game, a phone sleeps, and unanimity would park twenty students on a bar that will never move
+    for the rest of the session. Starting a game can afford to be strict; continuing one cannot.
+
+    `n` is the CONNECTED population of the step, not the room: a phone in a bag is a row in a table
+    forever, and every caller counts the players who are streaming. `step` is the name `Ready`
+    carries, so the caller cannot pass a phase here by mistake.
+
+    ZERO FOR AN EMPTY ROOM, for `majority`'s reason: an empty lobby's threshold of 1 would be
+    crossed by nobody and read by a client as « 0 sur 1 », and the callers all refuse an empty
+    online set before asking. Both rules return 0 there, which keeps the degenerate value
+    unrepresentable instead of merely unlikely.
+    """
+    if n <= 0:
+        return 0
+    if step == LOBBY_STEP:
+        return n
+    return majority(n)
