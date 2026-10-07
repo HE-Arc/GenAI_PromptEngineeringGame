@@ -78,14 +78,13 @@ ROOM_IDLE_TTL = 600.0
 
 # HOW LONG A ROOM THAT WAS PLAYED survives with nobody in it. This is a DELETE, not a hide: past
 # that delay the row goes and the players' tokens go with it, so a teacher who comes back the next
-# day does not find their game. The delay is short because the database is local and nothing is
-# backed up — an hour is the compromise between "the table does not grow" and "the lunch break does
-# not eat the game".
+# day does not find their game. Thirty minutes idle and the room is gone, played or not — one
+# threshold for every room, measured from the last heartbeat the sweeper saw.
 #
 # THE FALLBACK, in practice: `Room.last_activity_at` is what the delete actually reads, and this
 # number only judges a room the sweeper has never seen alive — a game started and abandoned with no
 # player ever connected — where the age of the game is the only fact there is.
-ROOM_KEEP_TTL = 3600.0
+ROOM_KEEP_TTL = 1800.0
 # The sweeper's tick. Short enough that a room leaves the list shortly after its last player leaves,
 # long enough that a tick is free: the sweep reads one table and writes only for the rooms where
 # somebody is connected.
@@ -188,7 +187,7 @@ def _sweep_plan(
 
     THE DELETE DECISION OF A PLAYED ROOM READS THE DURABLE COLUMN, not `beats`. `last_activity_at`
     is what the sweeper itself wrote on an earlier tick, so it is the only instant that carries a
-    one-hour threshold across a restart; without it the threshold would be unreachable on the
+    thirty-minute threshold across a restart; without it the threshold would be unreachable on the
     second run and the table would grow anyway. `started_at` is the fallback for a room the sweeper
     has never seen alive, and a `None` there means "we never knew anything about this room", in
     which case the age of the game is the only fact left.
@@ -211,7 +210,7 @@ def _sweep_plan(
         # ONLY A ROOM THAT HAS A BEAT AT ALL, and the membership test is the point: the boot floor
         # below is `time.monotonic()` minus a few seconds on a process that just started, so folding
         # it in here would call EVERY room live on the first tick after a restart, stamp
-        # `last_activity_at` on the whole table, and push the one-hour deadline out by an hour for
+        # `last_activity_at` on the whole table, and push the thirty-minute deadline out for
         # every game this server has ever hosted. The column would be written by the restart it was
         # invented to survive.
         if seen is not None and now - seen <= PRESENCE_TTL:
@@ -246,7 +245,7 @@ def _delete_rooms(codes: list[str]) -> None:
 
 def _sweep_idle_rooms(rooms: list[dict]) -> set[str]:
     """Hide every room nobody has been in for `ROOM_IDLE_TTL`, and DELETE the ones nobody ever
-    played or that nobody has touched for an hour. Returns the codes to leave out of the answer.
+    played or that nobody has touched for thirty minutes. Returns the codes to leave out of the answer.
 
     IT TAKES THE ROOMS RATHER THAN QUERYING FOR THEM, and that is a budget, not a convenience:
     `admin_list_rooms` already enumerates every room with one query, and a second enumeration of
@@ -258,7 +257,7 @@ def _sweep_idle_rooms(rooms: list[dict]) -> set[str]:
     `admin_list_rooms` is a GET: a console polls it every few seconds, and having it stamp
     `last_activity_at` too would mean recording the same instant an order of magnitude more often
     than the sweeper does, for a value only ever compared against `ROOM_KEEP_TTL` — a minute of
-    staleness cannot change an hour-long verdict. It would also make "one query per GET" hold only
+    staleness cannot change a thirty-minute verdict. It would also make "one query per GET" hold only
     while nobody is connected. `_sweep_tick` is the single writer instead.
 
     THE THIRD ELEMENT IS STILL COMPUTED because the decision is one function and not two: a list
@@ -277,7 +276,7 @@ def _sweep_tick() -> None:
 
     The console polls `/api/admin/rooms` every few seconds while a game is live and this runs once
     a minute, so a write on both paths is a write an order of magnitude too often for a number
-    whose only reader compares it to an hour. Which is why the recording is HERE and not in
+    whose only reader compares it to thirty minutes. Which is why the recording is HERE and not in
     `_sweep_idle_rooms`: one writer, and it is the writer that runs when nobody is looking.
 
     THE INSTANT JUDGED IS THE INSTANT WRITTEN, `wall` being read once and passed to both, so the
@@ -1154,10 +1153,14 @@ def room_state(code: str, player=None) -> dict:
         # PROXIMITY, provisionally: the board moves the moment a player answers, and the number
         # is corrected — not merely recomputed — when the round settles. That correction is the
         # teaching moment: a player who sees their total drop by two at the summary is seeing the
-        # price of a weak prompt, which is the thing the whole didacticiel is for.
+        # price of a weak prompt, which is the thing the whole didacticiel is for. On top of the
+        # rounds sits the quiz bonus: one correct answer is one point (see below).
         settled = p.answers.aggregate(total=Sum("round_score"))["total"] or 0
         open_round = p.answers.filter(round_score__isnull=True).aggregate(s=Sum("score"))["s"] or 0
-        total = settled + open_round
+        # Quiz carryover: one correct answer is one point, added raw on top of the rounds.
+        # Quiz is N/8 while rounds are /10-based, so the bonus tops out at the bank size rather
+        # than at a round mark; kept raw so a player can read the division they were taught.
+        total = p.quiz_score() + settled + open_round
         shown = None if hiding else total
         # The two dimensions behind `total`, over the rounds that have been SETTLED — the same
         # rows `settle_round` writes `round_score` on, so the three numbers a player reads always

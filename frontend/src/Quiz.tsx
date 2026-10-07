@@ -305,6 +305,13 @@ export default function Quiz({
 
         {notice && <p className="notice">{notice}</p>}
 
+        {questions && (
+          <p className="prose prose--sm prose--cool">
+            Tes points : {fr(me?.quiz_score ?? 0)} — chaque bonne réponse vaut 1 point dans la
+            partie.
+          </p>
+        )}
+
         {question && quiz && (
           <>
             {/* Eight questions are a sequence before they are eight screens, so they get the
@@ -534,8 +541,7 @@ export default function Quiz({
                 <span className="qboard__den">bonnes réponses sur {total}</span>
               </p>
               <p className="prose prose--sm prose--dim">
-                Ce score n’entre pas dans le classement de la partie : il dit ce que tu savais
-                avant de commencer, pas ce que tu écriras.
+                Chaque bonne réponse vaut 1 point reporté dans la partie.
               </p>
             </div>
 

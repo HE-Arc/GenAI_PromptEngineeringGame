@@ -1069,10 +1069,9 @@ class QuizPlayTests(TestCase):
         self.assertEqual(self._next(room).status_code, 200)
         self._assert_phase(room, Room.Phase.PLAYING)
 
-    def test_the_quiz_score_does_not_reach_the_final_ranking(self):
-        # A gate you must pass must not also be points you can farm: eight out of eight is
-        # `score: 0` on the board, and the final ranking is built from the rounds alone. The board
-        # only means anything once the game is open, so the admin's button opens it.
+    def test_the_quiz_score_carries_into_the_game_total(self):
+        # One correct answer is one point, added raw on top of the rounds: eight out of eight
+        # opens the game at `score: 8`, before a single prompt is written.
         room, players = self._joined()
         player = players[0]
         self._online(room, player)
@@ -1083,7 +1082,7 @@ class QuizPlayTests(TestCase):
         self.assertEqual(player.quiz_score(), QUIZ_LENGTH)
         self._next(room)
         self._assert_phase(room, Room.Phase.PLAYING)
-        self.assertEqual(room_state(room.code)["players"][0]["score"], 0)
+        self.assertEqual(room_state(room.code)["players"][0]["score"], QUIZ_LENGTH)
 
     # --- the snapshot ------------------------------------------------------------------------
 

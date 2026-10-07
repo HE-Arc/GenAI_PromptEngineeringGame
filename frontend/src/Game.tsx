@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, Readout, ReadyBar, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
@@ -346,76 +346,31 @@ export default function Game({
              * cell never shows a zero that nobody earned. */}
         {scored && state.summary && (
           <section className="tally">
-            <h2 className="label">Les notes de la manche {state.summary.round + 1}</h2>
-            {state.summary.rows.map((row, i) => (
-              // Staged reveal, visual only: every row stays in the DOM so assistive tech and
-              // search keep the full table. The delay runs last-first so the top rows land
-              // last. Driven by a CSS var, disabled under prefers-reduced-motion.
-              <div
-                className="tally__row tally__row--in"
-                key={row.author}
-                style={{ '--d': `${(state.summary!.rows.length - 1 - i) * 400}ms` } as CSSProperties}
-              >
-                <div className="tally__head">
-                  <PlayerName
-                    name={row.author}
-                    isMe={row.author === myName}
-                    className={row.author === myName ? 'board__name board__name--me' : 'board__name'}
-                  />
-                  <span className="tally__round num">
-                    {fr(row.round_score)}
-                    <span className="tally__roundden">/ 10</span>
-                  </span>
-                </div>
-                <pre className="slot tally__prompt">{row.prompt}</pre>
-                <div className="tally__figs">
-                  <span className="tally__fig">
-                    <b className="num">{fr(row.proximity)}</b>
-                    <span>proximité</span>
-                  </span>
-                  <span className="tally__fig">
-                    <b className="num">{fr(row.quality)}</b>
-                    <span>qualité retenue</span>
-                  </span>
-                  {/* The critic's cell is the one that spans the row, because it is the one that
-                      * carries a sentence. The reason sits inside the same box as the number it
-                      * explains, in the same voice and the same `prose--sm` as the judge's comment
-                      * in `.verdict` above — it is the same act, the critic accounting for itself.
-                      *
-                      * It travels here rather than in a banner of its own because that is the whole
-                      * point of it: with no API key this string is the admission that there was no
-                      * model, only a count of keyword markers, and the spec asks for that admission
-                      * to reach the player (« l'écran le dit explicitement »). One surface, sitting
-                      * on the number it qualifies, is a thing that can be right. A second
-                      * "you are offline" notice elsewhere would be a second thing that can be
-                      * wrong, and a class holding both would have to decide which one to believe.
-                      * An empty comment renders nothing rather than an empty panel. */}
-                  <div className="tally__fig tally__fig--critic">
-                    <b className="num">{fr(row.quality_llm)}</b>
-                    <span>note du modèle</span>
-                    {row.quality_comment && (
-                      <p className="prose prose--sm tally__why">{row.quality_comment}</p>
-                    )}
+            <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
+            {(() => {
+              const mine = state.summary!.rows.find((row) => row.author === myName)
+              if (!mine) return <p className="prose prose--dim">Tu n’as pas répondu à cette manche.</p>
+              return (
+                <div className="tally__row tally__row--in" key={mine.author}>
+                  <div className="tally__head">
+                    <PlayerName
+                      name={mine.author}
+                      isMe={true}
+                      className="board__name board__name--me"
+                    />
+                    <span className="tally__round num">
+                      {fr(mine.round_score)}
+                      <span className="tally__roundden">/ 10</span>
+                    </span>
                   </div>
-                  <span className="tally__fig">
-                    <b className="num">{fr(row.quality_peers)}</b>
-                    <span>moyenne des pairs</span>
-                  </span>
+                  <pre className="slot tally__prompt">{mine.prompt}</pre>
+                  <details className="tally__more">
+                    <summary className="tally__morebtn">Voir la réponse du modèle</summary>
+                    <ModelOutput text={mine.output} />
+                  </details>
                 </div>
-                {/* Behind a disclosure rather than below the fold. Nine of these and the wall of
-                    preformatted output is unreadable, and what a class discusses out loud is the
-                    prompt; the answer is what the prompt got, so it stays one tap away instead of
-                    pushing every other row off a phone screen. */}
-                <details className="tally__more">
-                  <summary className="tally__morebtn">Voir la réponse du modèle</summary>
-                  <ModelOutput text={row.output} />
-                </details>
-              </div>
-            ))}
-            <p className="prose prose--sm prose--cool">
-              La qualité retenue est la moyenne des pairs, tenue à 3 points de la note du modèle.
-              Le modèle arbitre, les pairs corrigent.
-            </p>
+              )
+            })()}
           </section>
         )}
 

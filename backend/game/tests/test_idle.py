@@ -444,3 +444,31 @@ class PlayedRoomDeletionTests(IdleBase):
         with mock.patch.dict(os.environ, {}, clear=True):
             apps.get_app_config("game").ready()
         self.assertEqual([t.name for t in threading.enumerate() if t.name == "room-sweep"], [])
+
+class ThirtyMinuteExpiryTests(IdleBase):
+    """Thirty minutes idle deletes, a live beat spares."""
+
+    def test_idle_thirty_minutes_is_purged_while_active_survives(self) -> None:
+        from game.views import ROOM_KEEP_TTL
+
+        # Both rooms are built first: `_beat` prunes entries older than `PRESENCE_TTL`,
+        # so ageing idle before beating live would wipe the aged beats, not test them.
+        idle = self._room()
+        idle_player = self._join(idle, "ana")
+        self._beat(idle, idle_player)
+        self._start(idle)
+        live = self._room()
+        live_player = self._join(live, "bob")
+        self._beat(live, live_player)
+        self._start(live)
+
+        self._idle_for(idle, IDLE)
+        Room.objects.filter(code=idle.code).update(
+            last_activity_at=timezone.now() - timedelta(seconds=ROOM_KEEP_TTL + 60)
+        )
+
+        entries = self._entries()
+        self.assertFalse(Room.objects.filter(code=idle.code).exists())
+        self.assertNotIn(idle.code, entries)
+        self.assertTrue(Room.objects.filter(code=live.code).exists())
+        self.assertIn(live.code, entries)

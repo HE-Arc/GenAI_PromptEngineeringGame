@@ -57,7 +57,7 @@ class Room(models.Model):
     #
     # THIS IS THE ONLY THING THAT SURVIVES A RESTART for the deletion policy. `_presence` is in
     # memory, so after a restart a played game's idle instant fell back to `_BOOT_INSTANT`, the
-    # one-hour threshold became unreachable, and the table grew anyway — the policy would have
+    # thirty-minute threshold became unreachable, and the table grew anyway — the policy would have
     # existed without ever being applied.
     last_activity_at = models.DateTimeField(null=True, blank=True)
     # WHICH didacticiel question the room is on, 0-based, and when its answering window closes.
@@ -230,8 +230,8 @@ class Player(models.Model):
     def quiz_score(self) -> int:
         """How many didacticiel questions this player got right. An integer, never None: the
         snapshot formats it as "3 sur 8" and the frontend should not carry a null branch that
-        only a player who never answered would ever take. Deliberately NOT part of the final
-        ranking — a gate you must pass must not also be points you can farm."""
+        only a player who never answered would ever take. Carried into the game total raw: one
+        correct answer is one point, on top of the rounds."""
         return self.quiz_attempts.filter(correct=True).count()
 
 

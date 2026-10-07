@@ -143,8 +143,8 @@ export type Player = {
   // someone whose screen locked is still in the roster and still counted in the score, and
   // only stops being `online`.
   online: boolean
-  // The didacticiel's score. It never reaches the final ranking, which is why it is a separate
-  // field rather than folded into `score`.
+  // The didacticiel's score. Carried into `score` raw — one correct answer is one point —
+  // and kept as a separate field so screens can show the two halves apart.
   quiz_score: number | null
   quiz_done: boolean
   // The two dimensions behind `score`, summed over the rounds that have been settled. Null
