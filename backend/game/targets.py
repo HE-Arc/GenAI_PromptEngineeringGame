@@ -8,7 +8,7 @@ Categories stay backend-internal.
 
 import random
 
-ROUNDS_PER_GAME = 10
+ROUNDS_PER_GAME: int = 10
 
 # Category -> target texts. Only store; flat views are built at use sites.
 TARGETS_BY_CATEGORY: dict[str, list[str]] = {
@@ -53,28 +53,28 @@ TARGETS_BY_CATEGORY: dict[str, list[str]] = {
 }
 
 # Caps resampling so pick() terminates even if one category dominates the bank.
-_MAX_PICK_ATTEMPTS = 100
+_MAX_PICK_ATTEMPTS: int = 100
 
 
 def pick(n: int = ROUNDS_PER_GAME) -> list[str]:
     """Return n distinct targets with no two consecutive targets of the same category."""
-    bank = [t for texts in TARGETS_BY_CATEGORY.values() for t in texts]
-    category = {t: cat for cat, texts in TARGETS_BY_CATEGORY.items() for t in texts}
+    bank: list[str] = [t for texts in TARGETS_BY_CATEGORY.values() for t in texts]
+    category: dict[str, str] = {t: cat for cat, texts in TARGETS_BY_CATEGORY.items() for t in texts}
     if n > len(bank):
         raise ValueError(f"cannot draw {n} distinct targets from {len(bank)}")
     if n <= 1:
         return random.sample(bank, n)
     for _ in range(_MAX_PICK_ATTEMPTS):
-        drawn = random.sample(bank, n)
+        drawn: list[str] = random.sample(bank, n)
         if all(
             category[a] != category[b] for a, b in zip(drawn, drawn[1:])
         ):
             return drawn
-    pool = bank[:]
+    pool: list[str] = bank[:]
     random.shuffle(pool)
     ordered: list[str] = [pool.pop()]
     while len(ordered) < n:
-        nxt = next(
+        nxt: str | None = next(
             (t for t in pool if category[t] != category[ordered[-1]]),
             None,
         )
