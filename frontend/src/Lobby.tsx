@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ConsoleBar, Readout, ReadyBar, Roster } from './ui'
+import { ConsoleBar, PresenceDots, Readout, ReadyBar, Roster } from './ui'
 import { describe, getName, getToken, postReady, type State } from './api'
 import type { Link } from './useRoom'
 
@@ -199,6 +199,10 @@ export default function Lobby({
           {/* The number is the one on the stream, not the size of the roster — a phone asleep
               in a pocket is a player who is in the game and not in the room. */}
           <Roster players={state.players} online={state.online_count} myName={getName(state.code)} />
+          {/* Anonymous lobby presence from the ready votes already in room_state. */}
+          {state.ready && state.ready.count > 0 && state.ready.count < state.ready.needed && (
+            <PresenceDots label={`${state.ready.count} sur ${state.ready.needed} prêts…`} />
+          )}
 
           <div className="foot">
             {/* The one line on this screen that names who starts the game, and it now names two

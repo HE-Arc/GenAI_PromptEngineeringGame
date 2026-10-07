@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, PlayerName, Readout, ReadyBar, ScoreScale, Section, Step } from './ui'
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
+import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, Readout, ReadyBar, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
   absent,
@@ -347,8 +347,15 @@ export default function Game({
         {scored && state.summary && (
           <section className="tally">
             <h2 className="label">Les notes de la manche {state.summary.round + 1}</h2>
-            {state.summary.rows.map((row) => (
-              <div className="tally__row" key={row.author}>
+            {state.summary.rows.map((row, i) => (
+              // Staged reveal, visual only: every row stays in the DOM so assistive tech and
+              // search keep the full table. The delay runs last-first so the top rows land
+              // last. Driven by a CSS var, disabled under prefers-reduced-motion.
+              <div
+                className="tally__row tally__row--in"
+                key={row.author}
+                style={{ '--d': `${(state.summary!.rows.length - 1 - i) * 400}ms` } as CSSProperties}
+              >
                 <div className="tally__head">
                   <PlayerName
                     name={row.author}
@@ -533,6 +540,11 @@ export default function Game({
             now means "this person is on the stream", so the sodium one has to say "that one is
             me" whether or not I have hit send, and the fill still carries the answer. */}
         <AnswerMeter lit={lit} total={here.length} mine={mine} caption={caption} />
+        {/* Anonymous presence derived from the meter itself: no names, no backend field.
+            Shown only while some answered and some are still writing. */}
+        {!scored && lit.length > 0 && left > 0 && (
+          <PresenceDots label={`${noun(left, 'joueur écrit', 'joueurs écrivent')}…`} />
+        )}
 
         {/* Stated plainly and without alarm, because it is usually a lock screen and not a
             problem. The second half is the part that matters: a round closes on the answers of

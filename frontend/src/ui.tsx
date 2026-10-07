@@ -113,15 +113,32 @@ function Lamps({
   total: number
   mine: number
 }) {
+  // The newest lamp pops. Only the last lit index carries `--new`, so earlier segments keep
+  // their state without re-animating on every frame. No sound: a classroom of blips is noise.
+  const last = lit.length ? lit[lit.length - 1] : -1
   return (
     <div className="meter" aria-hidden="true">
       {Array.from({ length: total }, (_, i) => (
         <span
           key={i}
-          className={`meter__seg${i === mine ? ' meter__seg--me' : lit.includes(i) ? ' meter__seg--on' : ''}`}
+          className={`meter__seg${i === mine ? ' meter__seg--me' : lit.includes(i) ? ' meter__seg--on' : ''}${i === last ? ' meter__seg--new' : ''}`}
         />
       ))}
     </div>
+  )
+}
+
+// Anonymous presence dots. Purely presentational: callers derive counts from room_state.
+export function PresenceDots({ label }: { label: string }) {
+  return (
+    <p className="presence" aria-hidden="true">
+      <span>{label}</span>
+      <span className="presence__dots">
+        <i />
+        <i />
+        <i />
+      </span>
+    </p>
   )
 }
 
@@ -391,10 +408,14 @@ export function Board({
   players,
   myName,
   columns = [],
+  badges = {},
 }: {
   players: Player[]
   myName: string
   columns?: BoardColumn[]
+  // Presentational nicknames keyed by player name. Computed by callers from data already on
+  // screen, never a score.
+  badges?: Record<string, string>
 }) {
   const top = Math.max(...players.map((p) => p.score ?? 0), 0)
   return (
@@ -428,6 +449,7 @@ export function Board({
             isMe={p.name === myName}
             className={p.name === myName ? 'board__name board__name--me' : 'board__name'}
           />
+          {badges[p.name] && <span className="board__tag board__tag--fun">{badges[p.name]}</span>}
           {/* The dimension columns, through the same formatter as the total. `proximity_total`
               and `quality_total` are sums over settled rounds, and a round is a mean of two
               out-of-ten numbers, so both are as fractional as the rounds that made them. */}

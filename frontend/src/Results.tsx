@@ -46,6 +46,31 @@ export default function Results({
   // The count is printed by `fr` and the noun asked of `nounOf`, because these are the two
   // sentences that already own the count in another shape: it is a real division and reads
   // with a comma, and `noun` would print the raw number beside it.
+  // Fun badges, presentational only. Heuristics over totals already on screen, never a
+  // score: highest quality reads as most original, best quality-minus-proximity gap as most
+  // improved, smallest gap between the two dimensions as fairest rater proxy. Hidden when
+  // the totals are absent. French labels, one player per badge.
+  const badges: Record<string, string> = {}
+  const withTotals = state.players.filter((p) => p.proximity_total !== null && p.quality_total !== null)
+  if (withTotals.length > 1) {
+    const by = (f: (p: (typeof withTotals)[number]) => number) =>
+      withTotals.reduce((a, b) => (f(b) > f(a) ? b : a)).name
+    const original = by((p) => p.quality_total ?? 0)
+    const progressed = by((p) => (p.quality_total ?? 0) - (p.proximity_total ?? 0))
+    const fair = withTotals.reduce((a, b) =>
+      Math.abs((b.quality_total ?? 0) - (b.proximity_total ?? 0)) <
+      Math.abs((a.quality_total ?? 0) - (a.proximity_total ?? 0))
+        ? b
+        : a,
+    ).name
+    badges[original] = 'plus original'
+    if (progressed !== original) badges[progressed] = 'plus progressé'
+    if (fair !== original && fair !== progressed) badges[fair] = 'notateur le plus juste'
+  }
+  const badgeLine = Object.entries(badges)
+    .map(([name, label]) => `${name}, ${label}`)
+    .join(' · ')
+
   const point = nounOf(points, 'point', 'points')
   const verdict =
     points === 0
@@ -75,8 +100,9 @@ export default function Results({
             they sit side by side with the board given a column of its own to stretch into. */}
         <div className="railcol">
           <Section title="Classement final">
-            <Board players={state.players} myName={getName(state.code)} columns={COLUMNS} />
+            <Board players={state.players} myName={getName(state.code)} columns={COLUMNS} badges={badges} />
           </Section>
+          {badgeLine && <p className="prose prose--sm prose--cool">{badgeLine}</p>}
         </div>
 
         <div className="foot">
