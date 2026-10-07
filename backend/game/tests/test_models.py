@@ -16,7 +16,7 @@ from game.models import (
     Round,
 )
 from game.quiz import QUESTIONS, QUIZ_SECONDS
-from game.targets import ROUNDS_PER_GAME, TARGETS, pick
+from game.targets import ROUNDS_PER_GAME, TARGETS_BY_CATEGORY, pick
 
 
 def _quiz_fixture() -> tuple[Room, Player, list[QuizQuestion]]:
@@ -470,30 +470,45 @@ class SettlementColumnTests(TestCase):
 
 
 class TargetsTest(TestCase):
+    def _bank(self) -> list[str]:
+        return [t for texts in TARGETS_BY_CATEGORY.values() for t in texts]
+
+    def _categories(self) -> dict[str, str]:
+        return {t: cat for cat, texts in TARGETS_BY_CATEGORY.items() for t in texts}
+
     def test_pick_returns_distinct_targets(self) -> None:
         picked = pick()
         self.assertEqual(len(picked), ROUNDS_PER_GAME)
         self.assertEqual(len(set(picked)), ROUNDS_PER_GAME)
-        self.assertTrue(set(picked) <= set(TARGETS))
+        self.assertTrue(set(picked) <= set(self._bank()))
+
+    def test_pick_never_repeats_category(self) -> None:
+        category = self._categories()
+        for _ in range(20):
+            picked = pick()
+            self.assertTrue(
+                all(category[a] != category[b] for a, b in zip(picked, picked[1:]))
+            )
 
     def test_bank_size_is_pinned(self) -> None:
-        # A floor, not an exact count: the bank grew from 24 when the targets became long-form,
-        # and what must not regress is that it is comfortably larger than a game so `pick` never
-        # runs the same targets twice in a row for a player. Pinning the exact number would make
-        # every addition a test edit for no gain; dropping below ROUNDS_PER_GAME would break it.
-        self.assertGreaterEqual(len(TARGETS), 24)
-        self.assertEqual(len(set(TARGETS)), len(TARGETS))  # no duplicates to draw
+        # A floor, not an exact count: the bank is intentionally 20 classroom targets in
+        # categorized dict storage, comfortably larger than a game so `pick` never runs
+        # the same targets twice in a row for a player. Pinning the exact number would
+        # make every addition a test edit for no gain; dropping below ROUNDS_PER_GAME
+        # would break it.
+        self.assertGreaterEqual(len(self._bank()), 20)
+        self.assertEqual(len(set(self._bank())), len(self._bank()))  # no duplicates to draw
         self.assertEqual(ROUNDS_PER_GAME, 10)
 
     def test_every_target_is_long_form_text(self) -> None:
         # The point of the change: a target has to be a paragraph, not a noun phrase, or the
         # judge's proximity scale has nothing to be proximal to. The threshold is well under the
         # shortest entry in the bank, so it fails on a reintroduced two-word target.
-        self.assertTrue(all(len(t) > 200 for t in TARGETS))
+        self.assertTrue(all(len(t) > 200 for t in self._bank()))
 
     def test_every_target_fits_the_target_column(self) -> None:
         # A `max_length` raised past the content is a length nothing enforces — and `admin_start`
         # writes rounds with `bulk_create`, which skips `full_clean()`, so nothing would reject a
         # target that outgrew the column. Asserted against the field itself, so shortening it
         # fails here rather than in production.
-        self.assertLessEqual(max(len(t) for t in TARGETS), Round._meta.get_field("target").max_length)
+        self.assertLessEqual(max(len(t) for t in self._bank()), Round._meta.get_field("target").max_length)
