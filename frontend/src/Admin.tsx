@@ -414,6 +414,9 @@ export default function Admin() {
   // so nothing jumps when the answer lands, and one line saying the question is being asked.
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const { state, link, retry } = useRoom(code)
+  // Set when the console drops a room on its own because the room is gone, and shown once
+  // on the list screen. Cleared on entry so a new room is never judged by the old one's end.
+  const [goneNotice, setGoneNotice] = useState('')
   // The same clock the players are watching, on the same terms: the server's deadline against the
   // server's clock, so the host's "12 secondes" and the class's twelve seconds are the same
   // twelve seconds. A host counting on their own phone is the one version of this that was always
@@ -489,8 +492,40 @@ export default function Admin() {
     }
   }, [code, signedIn])
 
+  // A dead stream cannot say whether the room was swept or the network dropped:
+  // EventSource never sees the status. So a failed stream is probed once against the room
+  // list, which the session already allows. Absent from a list that answered means the
+  // idle sweep took it, and the console walks back to the list on its own with one line
+  // saying so. Anything else — the room still listed, or the probe itself failing — keeps
+  // the retry screen below, which is the honest answer for a transient failure.
+  const probed = useRef<string | null>(null)
+  useEffect(() => {
+    if (!code || link !== 'failed' || probed.current === code) return
+    probed.current = code
+    let gone = false
+    void (async () => {
+      try {
+        const rooms = await listRooms()
+        if (gone) return
+        if (rooms.some((r) => r.code === code)) return
+        localStorage.removeItem(roomKey)
+        verified.current = false
+        setCode(null)
+        setErr('')
+        setArmed(null)
+        setGoneNotice('Cette partie a été supprimée après une période d’inactivité.')
+      } catch {
+        // Probe failed: leave the retry screen in place.
+      }
+    })()
+    return () => {
+      gone = true
+    }
+  }, [code, link])
+
   function enter(c: string) {
     verified.current = false
+    setGoneNotice('')
     setCode(c)
   }
 
@@ -630,6 +665,11 @@ export default function Admin() {
             Reprends une partie ouverte, ou crée la tienne. Le code sera affiché à l’écran pour
             que tu le donnes au groupe.
           </p>
+          {goneNotice && (
+            <p className="notice" role="status">
+              {goneNotice}
+            </p>
+          )}
 
           {/* Above the flags and above the button, not below them. A host arriving at a console
               with four games already on the server is looking for the one they left an hour
@@ -754,6 +794,11 @@ export default function Admin() {
   // whether the room is in the lobby or mid-game, and a disabled "Lancer la partie" would be
   // wrong half the time. `done` is the other null, and that one is honest.
   const advance = phase === 'connecting' ? null : advanceLabel(phase, quizState, quizClosed)
+  // Prompts submitted this round, read off the snapshot like every other figure on this
+  // screen. The server refuses the advance on an empty round, so the button stays disabled
+  // rather than offering a press that cannot work.
+  const submitted = players.filter((p) => p.answered).length
+  const advanceBlocked = phase === 'playing' && submitted === 0
 
   // Where the game is, in one block. Every figure is read off the snapshot and nothing is stored,
   // so the block cannot disagree with the instruments below it — which is the failure it is
@@ -1039,7 +1084,7 @@ export default function Admin() {
                 <button
                   type="button"
                   className="btn btn--signal btn--wide"
-                  disabled={busy}
+                  disabled={busy || advanceBlocked}
                   onClick={() =>
                     void run(async () => {
                       // `start` for an empty room and `next` for everything after it. The lobby
@@ -1055,6 +1100,11 @@ export default function Admin() {
                 >
                   {advance}
                 </button>
+              )}
+              {advanceBlocked && (
+                <p className="prose prose--sm prose--dim" role="status">
+                  En attente d’au moins un prompt pour ouvrir la notation.
+                </p>
               )}
 
               {/* Until the first frame lands the console cannot know whether the room is in the

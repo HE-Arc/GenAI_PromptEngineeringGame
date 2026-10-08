@@ -468,10 +468,26 @@ class AdminTest(TransactionTestCase):
 
     def test_next_from_playing_opens_the_rating(self) -> None:
         room = self._started(tutorial=False)
+        rnd = room.rounds.get(order=0)
+        rnd.answers.create(
+            player=Player.objects.create(room=room, name="ana"),
+            prompt="prompt",
+            output="reponse",
+            score=5,
+        )
         self._next(room)
         room.refresh_from_db()
         self.assertEqual(room.phase, Room.Phase.RATING)
         self.assertEqual(room.rounds.get(order=0).revealed, 0)
+
+    def test_next_from_playing_with_no_answers_is_refused(self) -> None:
+        # Opening the rating on an empty round would strand the room on a reveal with no
+        # prompt to show, so the advance is refused and the phase does not move.
+        room = self._started(tutorial=False)
+        r = self._next(room)
+        self.assertEqual(r.status_code, 409)
+        room.refresh_from_db()
+        self.assertEqual(room.phase, Room.Phase.PLAYING)
 
     def test_opening_the_rating_resets_a_stale_reveal_cursor(self) -> None:
         # `revealed` is per round, and a round that was rated once would otherwise open the
@@ -525,15 +541,28 @@ class AdminTest(TransactionTestCase):
         # The admin screen polls `room_state` and posts `next`; it must not have to guess which
         # of the six it just triggered.
         room = self._started(tutorial=False)
+        rnd = room.rounds.get(order=0)
+        rnd.answers.create(
+            player=Player.objects.create(room=room, name="ana"),
+            prompt="prompt",
+            output="reponse",
+            score=5,
+        )
         self.assertEqual(json.loads(self._next(room).content), {"ok": True, "phase": "rating"})
 
     def test_twelve_rounds_walk_to_done(self) -> None:
         # A round is now several admin actions, not one. Ten rounds must still end at `done`,
         # and the eleventh advance must be a 409 rather than an eleventh round.
         room = self._started(tutorial=False)
+        ana = Player.objects.create(room=room, name="ana")
         for _ in range(40):
             if room.phase == Room.Phase.DONE:
                 break
+            # The advance out of `playing` is refused on an empty round, so each round gets
+            # its prompt before the button is pressed.
+            if room.phase == Room.Phase.PLAYING:
+                rnd = room.rounds.get(order=room.current)
+                rnd.answers.create(player=ana, prompt="p", output="o", score=5)
             self._next(room)
             room.refresh_from_db()
         self.assertEqual(room.phase, Room.Phase.DONE)
@@ -543,9 +572,13 @@ class AdminTest(TransactionTestCase):
         # Same walk, one phase longer: the didacticiel is one advance on top of the ten rounds,
         # so it must not be the thing that pushes the game past `done`.
         room = self._started(tutorial=True)
+        ana = Player.objects.create(room=room, name="ana")
         for _ in range(40):
             if room.phase == Room.Phase.DONE:
                 break
+            if room.phase == Room.Phase.PLAYING:
+                rnd = room.rounds.get(order=room.current)
+                rnd.answers.create(player=ana, prompt="p", output="o", score=5)
             self._next(room)
             room.refresh_from_db()
         self.assertEqual(room.phase, Room.Phase.DONE)
@@ -578,7 +611,15 @@ class AdminTest(TransactionTestCase):
         self._join(code, "ana")
         self._post(f"/api/admin/rooms/{code}/start")
         url = f"/api/admin/rooms/{code}/next"
+        ana = Player.objects.get(room__code=code, name="ana")
         for _ in range(40):
+            # The advance out of `playing` is refused on an empty round; the only 409 this
+            # walk may meet is the one past `done`.
+            room = Room.objects.get(code=code)
+            if room.phase == Room.Phase.PLAYING:
+                rnd = room.rounds.get(order=room.current)
+                if not rnd.answers.exists():
+                    rnd.answers.create(player=ana, prompt="p", output="o", score=5)
             if self._post(url).status_code == 409:
                 break
         self.assertEqual(Room.objects.get(code=code).phase, Room.Phase.DONE)

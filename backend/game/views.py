@@ -781,6 +781,11 @@ def admin_next(request: HttpRequest, code: str) -> JsonResponse:
     advance = _PHASE_ADVANCE.get(room.phase)
     if advance is None:
         return json_error(f"no advance from {room.phase}", 409)
+    # Rating an empty round would strand the room on a reveal with no prompt to show.
+    if room.phase == Room.Phase.PLAYING:
+        rnd = room.current_round()
+        if rnd is None or not rnd.answers.exists():
+            return json_error("Notation impossible : aucun prompt envoyé pour cette manche.", 409)
     advance(room)
     return JsonResponse({"ok": True, "phase": room.phase})
 
