@@ -587,7 +587,7 @@ class RatingPlayTests(TransactionTestCase):
             frozenset(
                 {
                     "code", "phase", "current", "total", "target", "target_image", "timer", "anonymous",
-                    "players", "online_count", "quiz", "reveal", "summary", "ready",
+                    "players", "online_count", "quiz", "reveal", "summary", "ready", "error",
                 }
             ),
         )
@@ -622,6 +622,44 @@ class RatingPlayTests(TransactionTestCase):
         reveal = room_state(room.code)["reveal"]
         self.assertEqual(reveal["author"], players[0].name)
         self.assertEqual(reveal["author_label"], players[0].name)
+
+    def test_reveal_mine_is_true_only_for_the_author_anonymous(self) -> None:
+        # The whole feature, and the case that motivated it: under anonymity the name is hidden,
+        # so ONLY a per-viewer flag can tell the author their own prompt is not ratable before the
+        # 409. The author of reveal index 0 is `players[0]`; nobody else, in either mode, is told
+        # this prompt is theirs.
+        room, players, _rows = self._rating_room(answers=2, anonymous=True)
+        reveal = room_state(room.code, players[0])["reveal"]
+        self.assertTrue(reveal["mine"])
+        self.assertIsNone(reveal["author"])  # anonymity is preserved: the flag does not name
+        self.assertFalse(room_state(room.code, players[1])["reveal"]["mine"])
+
+    def test_reveal_mine_is_true_only_for_the_author_named(self) -> None:
+        # The named mode, pinned separately so a fix that only reasoned about anonymity — the
+        # reported bug — cannot regress the mode that already worked.
+        room, players, _rows = self._rating_room(answers=2, anonymous=False)
+        self.assertTrue(room_state(room.code, players[0])["reveal"]["mine"])
+        self.assertFalse(room_state(room.code, players[1])["reveal"]["mine"])
+
+    def test_reveal_mine_is_false_for_a_tokenless_viewer(self) -> None:
+        # The admin and any spectator read `/events` with no token, so `player is None`. They own
+        # nothing in the room: False is the correct answer, not a fallback, or the console would
+        # be told the prompt on screen is its own and showed the "not ratable" panel.
+        room, _players, _rows = self._rating_room(answers=2)
+        self.assertFalse(room_state(room.code)["reveal"]["mine"])
+
+    def test_reveal_mine_follows_the_reveal_cursor(self) -> None:
+        # The flag is about the prompt ON SCREEN, not about the reader in the abstract: a player
+        # owns exactly one prompt of the round, so it is True on their own reveal and False on the
+        # others as the cursor walks.
+        room, players, _rows = self._rating_room(answers=3, names=("ana", "bob", "clea"), anonymous=True)
+        rnd = room.rounds.get(order=0)
+        for index, owner in enumerate(players):
+            with self.subTest(index=index):
+                rnd.revealed = index
+                rnd.save(update_fields=["revealed"])
+                # The reader is `players[1]`, so only index 1 is theirs.
+                self.assertEqual(room_state(room.code, players[1])["reveal"]["mine"], index == 1)
 
     def test_the_pseudonym_counts_arrival_order_not_the_alphabet(self) -> None:
         # "Joueur N" is a stable handle, so N has to come from something the room agrees on: who

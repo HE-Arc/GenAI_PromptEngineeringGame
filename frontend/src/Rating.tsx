@@ -67,18 +67,24 @@ export default function Rating({
   // drops it inside the callback. One name for the prompt on screen, used by both.
   const { index: promptAt } = reveal
 
-  // Rule three, known in advance. When the game is not anonymous the server names the author, so
-  // the client can say "this one is yours" instead of letting the player spend a tap on a
-  // button the server will refuse.
-  const named = reveal.author !== null && reveal.author === myName
-  const mine = named || refused
+  // Rule three, decided by the server. `reveal.mine` is the exact answer for the prompt on
+  // screen and it works under anonymity, where the author's name is null and the client cannot
+  // tell which reveal is its own. So the panel replaces the scale on the first frame, before the
+  // player can spend a tap on a button the server would refuse. `refused` stays as the backstop
+  // for a stale frame — an old snapshot that predates the server learning this player answered.
+  const mine = reveal.mine || refused
 
   // Rule three, when the game IS anonymous. Nobody can be named, so the client cannot say *which*
-// prompt is the player's — but it can say that one of them is, and that is derived rather than
-// guessed: a player who wrote a prompt this round owns exactly one of the round's prompts, and
-// nobody rates their own. So a player who has sent one is told, every time, that one line of
-// this round is going to be refused. A player who has not sent one owns nothing in this round
-// and is not told anything.
+  // prompt is the player's — but it can say that one of them is, and that is derived rather than
+  // guessed: a player who wrote a prompt this round owns exactly one of the round's prompts, and
+  // nobody rates their own. So a player who has sent one is told, every time, that one line of
+  // this round is going to be refused. A player who has not sent one owns nothing in this round
+  // and is not told anything.
+  //
+  // Kept even though `reveal.mine` now flags the exact prompt: this notice is the ADVANCE warning
+  // that appears on every prompt of the round, including the ones before the player's own. It
+  // tells them a refusal is coming before they see it, rather than only when it arrives.
+  const named = reveal.author !== null && reveal.author === myName
   const iWrote = state.players.some((p) => p.name === myName && p.answered)
   const oneIsMine = !named && iWrote
 

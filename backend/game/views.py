@@ -255,6 +255,39 @@ def _sweep_plan(
     return hide, dead, active
 
 
+# The room-scoped FAILURE notice: room_code -> (monotonic expiry, French message). Written by the
+# `answer` worker when a billed call blows up, read by every `/events` snapshot so the whole room
+# learns a submit failed instead of waiting on it forever.
+#
+# PROCESS-LOCAL and TRANSIENT, for the same two reasons `_presence` above is: one threaded
+# `runserver` serves both the writer and every reader, and a failure notice that outlived its
+# round would be a scar on a room that has moved on. Expiry rather than an explicit clear, so a
+# phone that reconnects inside the window still learns what happened with no second writer to race.
+# Room-scoped, not player-scoped: the facilitator's console watches `/events` with no token, and
+# the whole class is stuck when a round cannot close, so the notice belongs to the room.
+_room_error: dict[str, tuple[float, str]] = {}
+ROOM_ERROR_TTL = 15.0
+
+
+def _note_room_error(code: str, message: str) -> None:
+    with _presence_lock:
+        _room_error[code] = (time.monotonic() + ROOM_ERROR_TTL, message)
+
+
+def _room_error_for(code: str) -> str | None:
+    """The live failure notice for this room, or None. Prunes its own expired entry."""
+    now = time.monotonic()
+    with _presence_lock:
+        entry = _room_error.get(code)
+        if entry is None:
+            return None
+        expiry, message = entry
+        if now >= expiry:
+            del _room_error[code]
+            return None
+        return message
+
+
 def _delete_rooms(codes: list[str]) -> None:
     """Delete these rooms, or nothing at all when the list is empty.
 
@@ -269,6 +302,7 @@ def _delete_rooms(codes: list[str]) -> None:
         with _presence_lock:
             for code in codes:
                 _opened.pop(code, None)
+                _room_error.pop(code, None)
 
 
 def _sweep_idle_rooms(rooms: list[dict]) -> set[str]:
@@ -1050,7 +1084,7 @@ def _roster_labels(room: Room) -> dict[int, str]:
     }
 
 
-def _reveal_state(room: Room, rnd, labels: dict[int, str]) -> dict | None:
+def _reveal_state(room: Room, rnd, labels: dict[int, str], player: Player | None = None) -> dict | None:
     """The one prompt on screen: which one, who wrote it, and how many have rated it so far.
 
     None when the cursor has nothing behind it, which is a rating phase on a round nobody answered
@@ -1061,6 +1095,13 @@ def _reveal_state(room: Room, rnd, labels: dict[int, str]) -> dict | None:
     `rated` counts the raters of the CURRENT prompt, not the notes given so far this round: it is
     the numerator of the "3 notés" the player is waiting on, and summing every rating of the round
     would show a number that jumps from 2 to 7 as the reveal walks the prompts.
+
+    `mine` is the ONE per-viewer field, and it is why this function takes the reader. Anonymity
+    hides the AUTHOR from everyone, but the author still has to be told their own prompt is not
+    ratable BEFORE they tap a button the server will refuse — and under anonymity the name cannot
+    carry that fact. So the comparison is made server-side, where the reader's id is known, and
+    travels as a boolean. The admin and any spectator read with no token (`player is None`) and
+    get False: they own nothing in this room, which is correct and not merely a default.
     """
     answers = list(rnd.answers.order_by("id"))
     if rnd.revealed >= len(answers):
@@ -1076,6 +1117,7 @@ def _reveal_state(room: Room, rnd, labels: dict[int, str]) -> dict | None:
         "author": None if room.anonymous else target.player.name,
         "author_label": labels[target.player_id],
         "rated": target.ratings.count(),
+        "mine": player is not None and target.player_id == player.pk,
     }
 
 
@@ -1309,7 +1351,7 @@ def room_state(code: str, player=None) -> dict:
         # still a summary.
         "quiz": _quiz_state(room, online) if room.phase == Room.Phase.QUIZ else None,
         "reveal": (
-            _reveal_state(room, rnd, _roster_labels(room))
+            _reveal_state(room, rnd, _roster_labels(room), player)
             if room.phase == Room.Phase.RATING and rnd is not None
             else None
         ),
@@ -1317,6 +1359,14 @@ def room_state(code: str, player=None) -> dict:
             _summary_state(room, rnd) if room.phase == Room.Phase.SUMMARY and rnd is not None else None
         ),
         "ready": _ready_state(room, player, online),
+        # THE TRANSIENT FAILURE NOTICE, a string or None, in EVERY phase like the three blocks
+        # above — a screen reads one shape rather than testing a key's existence. It carries a
+        # French sentence when a submit in this room just failed at the worker level and nothing
+        # else: the notice lives `ROOM_ERROR_TTL` seconds, so it appears on the next tick and is
+        # gone without a second write, and a snapshot taken outside that window is byte-identical
+        # to one from before the failure. Room-scoped, so the facilitator's token-less console
+        # sees it too — the console is the screen that can actually act on it.
+        "error": _room_error_for(room.code),
     }
     return state
 
@@ -1707,6 +1757,7 @@ def answer(request: HttpRequest, code: str) -> HttpResponse:
         """
         try:
             parts: list[str] = []
+            output = ""
             stream = llm.answer_stream(prompt)
             for delta in stream:
                 parts.append(delta)
@@ -1774,11 +1825,39 @@ def answer(request: HttpRequest, code: str) -> HttpResponse:
                 )
             )
         except Exception:  # noqa: BLE001 — one player's model call, reported to that player
-            # Nothing is written, so the player may send again: the composer stays usable on the
-            # client precisely because the row does not exist. Logged as well as streamed, because
-            # the player is only told that it broke, not why, and the animateur is the one who can
-            # do something about it.
+            # A FAILED SUBMIT MUST NOT STALL THE ROUND. The old path wrote nothing, so a phone
+            # whose jury call blew up stayed unanswered while every other player was told the round
+            # was still waiting on it — and when the round only advances on everyone having
+            # answered, « answered » included the player whose answer was never stored. The row is
+            # now written with the text streamed so far and a neutral verdict, so the round closes
+            # and the class moves on; the player is told what happened through the error frame, the
+            # room error notice below, and the stored comment on the summary screen.
+            #
+            # The write is wrapped: a failure here — the durable unique_together race the comment
+            # above names — must still reach the `finally` and release the claim, and must not
+            # raise a second traceback out of a thread nobody reads.
+            marker = "La partie a planté côté serveur. Préviens l'animateur."
+            try:
+                with transaction.atomic():
+                    rnd.answers.create(
+                        player=player,
+                        prompt=prompt,
+                        output=output,
+                        score=0,
+                        comment=marker,
+                        quality_llm=0,
+                        quality_comment=marker,
+                    )
+                maybe_advance_phase(room)
+            except Exception:  # noqa: BLE001 — the fallback write itself, already logged below
+                logger.exception("fallback answer write failed in room %s", room.code)
             logger.exception("answer failed in room %s", room.code)
+            # Room-scoped AND player-scoped: the error frame tells this phone, whose request it
+            # was, to retry or wait; the notice tells the facilitator's console and every other
+            # phone that a submit failed here, which is the difference between a visible incident
+            # and a class staring at a round that will not end. `_note_room_error` logs nothing —
+            # the traceback above is the server-side record; this is only the user-visible notice.
+            _note_room_error(room.code, marker)
             out.put(frame("error", error="La partie a planté côté serveur. Préviens l'animateur."))
         finally:
             _inflight.discard(claim)

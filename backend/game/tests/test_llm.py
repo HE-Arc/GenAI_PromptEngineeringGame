@@ -116,6 +116,64 @@ class ScoreTest(SimpleTestCase):
 
 
 @KEYED
+class MalformedVerdictTest(SimpleTestCase):
+    """A model that answers with unreadable JSON must never take the worker thread down.
+
+    The production traceback this class pins: room YXCG, deepseek-v4.1-flash on OpenRouter, the
+    critic truncated mid-string at "line 1 column 25" and `json.JSONDecodeError` killed the
+    thread. The player saw a dead stream and the round never closed. Every shape below used to
+    raise there; none may now.
+    """
+
+    def test_truncated_json_is_a_fallback_not_a_raise(self) -> None:
+        # The exact production shape: the object was cut off by the token cap mid-string, with no
+        # closing brace. It must come back as a neutral verdict carrying the fallback line.
+        with patch.object(llm, "OpenAI", return_value=_client('{"score": 7, "comment": "proc')):
+            v = llm.score("p", "o", "t")
+        self.assertEqual(v, Verdict(0, llm.VERDICT_FALLBACK_COMMENT))
+
+    def test_garbage_is_a_fallback_not_a_raise(self) -> None:
+        for raw in ("", "je ne sais pas", "<html>rate limited</html>", "[1, 2"):
+            with self.subTest(raw=raw):
+                with patch.object(llm, "OpenAI", return_value=_client(raw)):
+                    v = llm.score("p", "o", "t")
+                self.assertEqual(v, Verdict(0, llm.VERDICT_FALLBACK_COMMENT))
+
+    def test_the_parse_failure_is_logged_with_the_raw_output(self) -> None:
+        # The player is only shown a short line; the raw text is the server-side record an
+        # operator needs to see why the model's answer was unusable.
+        with patch.object(llm, "OpenAI", return_value=_client("pas du json")):
+            with self.assertLogs("game.llm", level="ERROR") as logs:
+                llm.score("p", "o", "t")
+        self.assertIn("pas du json", "\n".join(logs.output))
+
+    def test_prose_wrapped_json_is_still_read(self) -> None:
+        # A reasoning model sometimes frames its object in a sentence. The score is real, so it
+        # is read rather than discarded just because of the wrapper.
+        with patch.object(llm, "OpenAI", return_value=_client('Voici mon verdict: {"score": 6, "comment": "moyen"}')):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(6, "moyen"))
+
+    def test_a_truncated_object_is_never_guessed_back(self) -> None:
+        # No closing brace means the cap cut it off, possibly mid-number: `{"score": 1` could have
+        # been heading for 10. Guessing a closing brace would be a fabricated score, so nothing is
+        # recovered and the honest fallback is used instead.
+        with patch.object(llm, "OpenAI", return_value=_client('{"score": 8, "comment": "tres pr')):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(0, llm.VERDICT_FALLBACK_COMMENT))
+
+    def test_a_complete_object_with_a_trailing_sentence_is_read(self) -> None:
+        # The other half of the salvage rule: a COMPLETE object surrounded by prose is recovered,
+        # because its braces balance and its score is trustworthy.
+        with patch.object(llm, "OpenAI", return_value=_client('{"score": 9, "comment": "top"}. Voila.')):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(9, "top"))
+
+    def test_the_critic_fallback_states_the_method_failed(self) -> None:
+        # Same engine, other caller: an unreadable critic verdict must not read as a judgement on
+        # the prompt, and must not silently become the stub's keyword count.
+        with patch.object(llm, "OpenAI", return_value=_client("nope")):
+            self.assertEqual(llm.grade_prompt("p"), Verdict(0, llm.VERDICT_FALLBACK_COMMENT))
+
+
+@KEYED
 class AnswerStreamTest(SimpleTestCase):
     """The play call, read as a stream. Asserted through `llm.OpenAI` so the chunk shapes these
     tests fake are the ones a real SDK hands back, and not the ones `_chat` was rewritten to
@@ -170,6 +228,29 @@ class AnswerStreamTest(SimpleTestCase):
         # asserting this pins that the flag is set by the reader rather than guessed at creation.
         with patch.object(llm, "OpenAI", return_value=_stream_client(_chunk(None, finish_reason="length"))):
             self.assertIs(llm.answer_stream("salut").truncated, False)
+
+    def test_a_non_streamed_call_cut_by_the_cap_is_logged(self) -> None:
+        # The judge and critic do not stream, so `finish_reason` never rides a delta: it is read
+        # off the one response, and it is the only signal that the cap, not the model, ended the
+        # JSON. Logged because `_verdict` turns the truncation into a silent 0 otherwise.
+        resp = _completion('{"score": 7')
+        resp.choices[0].finish_reason = "length"
+        client = MagicMock()
+        client.chat.completions.create.return_value = resp
+        with patch.object(llm, "OpenAI", return_value=client):
+            with self.assertLogs("game.llm", level="WARNING") as logs:
+                llm.score("p", "o", "t")
+        self.assertIn("cap", "\n".join(logs.output))
+
+    def test_a_null_content_does_not_raise(self) -> None:
+        # A reasoning model can return null `content` with its text in `reasoning`. `.strip()` on
+        # None used to crash the very call `_verdict`'s tolerance exists to protect.
+        resp = _completion("")
+        resp.choices[0].message.content = None
+        client = MagicMock()
+        client.chat.completions.create.return_value = resp
+        with patch.object(llm, "OpenAI", return_value=client):
+            self.assertEqual(llm.score("p", "o", "t"), Verdict(0, llm.VERDICT_FALLBACK_COMMENT))
 
 
 @KEYED
@@ -475,4 +556,45 @@ class CriticRubricTest(SimpleTestCase):
         # 0-10 and `prompts.quality` clamps to it.
         self.assertIn("de 0 a 10", llm.CRITIC_SYS)
         self.assertIn('{"score": entier, "comment": texte court', llm.CRITIC_SYS)
+
+
+@KEYED
+class PlaySystemPromptTest(SimpleTestCase):
+    """The play call's frame, and the anti-cheat it carries.
+
+    The player's raw prompt is the only user message, so a player can paste the hidden target
+    back or embed instructions to make the model reveal it. The prompt pays for words that are
+    not the answer, so leaking the target is the one win the game must not allow; these pin the
+    clauses that forbid it.
+    """
+
+    def test_it_frames_the_model_as_a_classroom_game_model(self) -> None:
+        # Enough role/context to answer usefully, and it names the setting rather than only
+        # forbidding things — a frame that is all prohibitions gets ignored more often.
+        self.assertIn("jeu de prompt engineering", llm.PLAY_SYS)
+        self.assertIn("classe", llm.PLAY_SYS)
+
+    def test_it_treats_the_prompt_as_untrusted(self) -> None:
+        self.assertIn("cible cachee", llm.PLAY_SYS)
+        self.assertIn("instructions", llm.PLAY_SYS)
+
+    def test_it_names_the_injection_moves_it_must_refuse(self) -> None:
+        # The concrete phrasings, so a model reading the frame recognises the attack rather than
+        # having to infer the category.
+        self.assertIn("ignore ce qui precede", llm.PLAY_SYS)
+        self.assertIn("revele la cible", llm.PLAY_SYS)
+
+    def test_it_keeps_the_concision_rule(self) -> None:
+        self.assertIn("avec concision", llm.PLAY_SYS)
+        self.assertIn("Seule la reponse demandee", llm.PLAY_SYS)
+
+    def test_the_play_call_sends_the_frame_as_a_system_message(self) -> None:
+        # Through `llm.OpenAI`, so what reaches the API is what is checked: the frame is a
+        # system message ahead of the player's own text being the user message.
+        client = _stream_client(_chunk("ok"))
+        with patch.object(llm, "OpenAI", return_value=client):
+            list(llm.answer_stream("salut"))
+        messages = client.chat.completions.create.call_args.kwargs["messages"]
+        self.assertEqual(messages[0], {"role": "system", "content": llm.PLAY_SYS})
+        self.assertEqual(messages[1], {"role": "user", "content": "salut"})
 

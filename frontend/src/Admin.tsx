@@ -1062,6 +1062,16 @@ export default function Admin() {
               {note.hint && <p className="runshow__hint">{note.hint}</p>}
             </div>
 
+            {/* A submit failed at the worker level somewhere in this room. The console is the
+                screen that can act on it, so it is told here — right under the state block —
+                rather than only on the phone whose request it was. Transient: the server expires
+                it, so this clears itself and needs no dismiss. */}
+            {state?.error && (
+              <p className="notice" role="status">
+                {state.error}
+              </p>
+            )}
+
             <Readout label="Code de la partie" value={code} code />
 
             <Roster players={players} online={state?.online_count ?? 0} myName="" />

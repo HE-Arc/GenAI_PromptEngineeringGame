@@ -670,11 +670,15 @@
   align-items: baseline;
   gap: 0.6rem;
 }
+/* The final note, inline in the sentence that names it. In the display face at the size the old
+ * score-only header used, because it is the one figure the player is asked to carry out of the
+ * round; the two scores it is bound from stay in the body face, so the sentence reads as prose
+ * with a number in it rather than as three competing headlines. */
 .tally__round {
-  margin-left: auto;
   color: var(--signal);
   font-size: 1.75rem;
   line-height: 1;
+  white-space: nowrap;
 }
 .tally__roundden {
   margin-left: 0.25rem;

@@ -146,12 +146,16 @@ export default function Game({
   // One notice, never two, and the most specific thing we know wins. Both cases are the same
   // thing to a player — what you are reading may not be the room as it is now — so they share
   // one place on the screen, directly under the round, which is where someone who has just
-  // woken up looks first.
-  const notice = missed
-    ? `La manche est passée de ${missed.from + 1} à ${missed.to + 1} pendant que l’écran était éteint. Ton prompt n’a pas été envoyé.`
-    : stale
-      ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
-      : ''
+  // woken up looks first. The server's room error is the most specific of the three and takes
+  // the slot: it names a submit that just failed for the whole room, and the other two only say
+  // what the screen may be showing.
+  const notice = state.error
+    ? state.error
+    : missed
+      ? `La manche est passée de ${missed.from + 1} à ${missed.to + 1} pendant que l’écran était éteint. Ton prompt n’a pas été envoyé.`
+      : stale
+        ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
+        : ''
 
   // The server refuses anything past 500 characters, so the composer enforces the same
   // bound before the POST: a submit the server would reject is a billed round-trip for nothing.
@@ -344,16 +348,15 @@ export default function Game({
             on a screen of its own. It stays here because the player is still in the middle of
             writing ten prompts: what came of the last one is the reading they do while the next
             one waits, not a different activity that deserves its own tab.
-            Every figure is drawn, including the two the bound is made of. The critic's score and
-            the peers' average are the only reason the retained quality is the number it is, and
-            a round synthesis that printed the verdict without its inputs would be asking a class
-            to accept an arithmetic result they cannot check.
-             *
-             * Every figure goes through `fr`, because §7's note_tour is a real division and the
-             * server stopped pretending otherwise: a round of proximity 7 and quality 6 is 6,5, and
-             * a board that printed "6.5" would be the only Americanism in a French room. `fr` also
-             * prints the em-dash for an absent `quality_peers` — a round where nobody rated — so a
-             * cell never shows a zero that nobody earned. */}
+            It is one sentence rather than a grid of cells because the three numbers only mean
+            anything together: the critic's score and the peers' average are the two inputs the
+            final note is made of, and a note stated without them asks a class to accept an
+            arithmetic result they cannot check.
+            Every figure goes through `fr`, because §7's note_tour is a real division and the
+            server stopped pretending otherwise: a round of proximity 7 and quality 6 is 6,5, and
+            a sentence that printed "6.5" would be the only Americanism in a French room.
+            The peer half is dropped for a plain sentence when `quality_peers` is null — a round
+            where nobody rated — so the note never names a peer score nobody gave. */}
         {scored && state.summary && (
           <section className="tally">
             <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
@@ -368,11 +371,24 @@ export default function Game({
                       isMe={true}
                       className="board__name board__name--me"
                     />
-                    <span className="tally__round num">
-                      {fr(mine.round_score)}
-                      <span className="tally__roundden">/ 10</span>
-                    </span>
                   </div>
+                  {/* The score as the sentence it is. The two figures the bound is made of are
+                      named by who gave them, because a note a player cannot trace back to a
+                      source is a verdict rather than a score. `role="status"` is the pattern the
+                      rest of the screen already uses for text that changes with the phase. */}
+                  <p className="prose" role="status">
+                    Le LLM t’a mis la note de <span className="num">{fr(mine.quality_llm)}</span>
+                    {mine.quality_peers === null ? (
+                      '. Les joueurs n’ont pas noté.'
+                    ) : (
+                      <>
+                        {' '}
+                        et les joueurs la note de <span className="num">{fr(mine.quality_peers)}</span>.
+                      </>
+                    )}{' '}
+                    Ta note finale : <span className="num tally__round">{fr(mine.round_score)}</span>
+                    <span className="tally__roundden">sur 10</span>.
+                  </p>
                   <pre className="slot tally__prompt">{mine.prompt}</pre>
                   <details className="tally__more">
                     <summary className="tally__morebtn">Voir la réponse du modèle</summary>
