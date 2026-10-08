@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, ConsoleBar, ReadyBar, RoundTrack, ScoreScale } from './ui'
+import { AnswerMeter, ConsoleBar, PhaseClock, ReadyBar, RoundTrack, ScoreScale } from './ui'
 import { ApiError, describe, getName, getToken, post, postReady, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
 
@@ -146,12 +146,17 @@ export default function Rating({
             this screen is a sequence, and this is the only thing on it that moves. */}
         <RoundTrack current={reveal.index + 1} total={reveal.count} />
 
+        <PhaseClock timer={state.timer} what="pour noter ce prompt" />
+
         {/* The target, read-only, above the prompt it is being judged against. It is not
             decoration: you cannot tell whether a prompt asks for the right thing without knowing
             what was asked, and the panel is the console's own way of drawing a fixed fact. */}
         <div className="ratehead">
           <p className="label">La cible du tour</p>
           <p className="ratehead__target">{state.target ?? '—'}</p>
+          {state.target_image && (
+            <img className="ratehead__image" src={state.target_image} alt="Image de l’exercice" />
+          )}
         </div>
 
         <div className="rateline">

@@ -18,14 +18,26 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from game import llm, prompts
-from game.models import Player, QuizAttempt, QuizQuestion, Rating, Ready, Room, Round
+from game.models import (
+    RATE_SECONDS,
+    RATE_SECONDS_RANGE,
+    ROUND_SECONDS,
+    ROUND_SECONDS_RANGE,
+    Player,
+    QuizAttempt,
+    QuizQuestion,
+    Rating,
+    Ready,
+    Room,
+    Round,
+)
 # Named `pick_questions`, not `pick`, and imported as a name rather than as the `game.quiz`
 # module: the didacticiel's draw is a PERMUTATION of a bank exactly one quiz long, and a reader
 # who sees two things called `pick` in this header has to go and check which bank each is on.
 # It is also the seam a test patches (`game.views.pick_questions`) for the same reason
 # `game.views.pick` is: patched where it is USED.
 from game.quiz import pick as pick_questions
-from game.targets import ROUNDS_PER_GAME, pick
+from game.targets import ROUNDS_PER_GAME, image_for, pick
 
 _ALPHABET = string.ascii_uppercase.replace("O", "").replace("I", "")
 
@@ -118,6 +130,17 @@ _BOOT_INSTANT = time.monotonic()
 _presence: dict[tuple[str, int], float] = {}
 _presence_lock = threading.Lock()
 
+# When each room was created or relaunched, on the monotonic clock, under `_presence_lock`. It is
+# the idle clock's starting point for a lobby no phone has streamed yet: without it the sweep fell
+# back to `_BOOT_INSTANT`, so on a server up for more than `ROOM_IDLE_TTL` a room created a second
+# ago already looked ten minutes idle and was deleted before anyone could join it.
+_opened: dict[str, float] = {}
+
+
+def _mark_opened(code: str) -> None:
+    with _presence_lock:
+        _opened[code] = time.monotonic()
+
 
 def _beat(code: str, player_id: int) -> None:
     """Record a heartbeat and drop entries that have aged out.
@@ -157,7 +180,9 @@ def _last_beats() -> dict[str, float]:
     mapping, so the caller applies the floor and the two decisions stay apart.
     """
     with _presence_lock:
-        last: dict[str, float] = {}
+        # The opening instant counts as the room's first beat, so a fresh lobby has its whole
+        # grace period; any later player beat supersedes it.
+        last: dict[str, float] = dict(_opened)
         for (room_code, _pid), seen in _presence.items():
             if room_code not in last or seen > last[room_code]:
                 last[room_code] = seen
@@ -241,6 +266,9 @@ def _delete_rooms(codes: list[str]) -> None:
     """
     if codes:
         Room.objects.filter(code__in=codes).delete()
+        with _presence_lock:
+            for code in codes:
+                _opened.pop(code, None)
 
 
 def _sweep_idle_rooms(rooms: list[dict]) -> set[str]:
@@ -389,6 +417,17 @@ def admin_login(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"ok": True})
 
 
+def _seconds(value, default: int, bounds: tuple[int, int]) -> int:
+    """A time limit from the admin's form: the default when absent or unreadable, and held
+    inside `bounds` otherwise, so a typo cannot make a round last a second or a day."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    lo, hi = bounds
+    return max(lo, min(hi, n))
+
+
 @require_POST
 def admin_create_room(request: HttpRequest) -> JsonResponse:
     if (err := require_admin(request)):
@@ -422,6 +461,8 @@ def admin_create_room(request: HttpRequest) -> JsonResponse:
         code=code,
         tutorial=bool(data.get("tutorial", True)),
         anonymous=bool(data.get("anonymous", True)),
+        round_seconds=_seconds(data.get("round_seconds"), ROUND_SECONDS, ROUND_SECONDS_RANGE),
+        rate_seconds=_seconds(data.get("rate_seconds"), RATE_SECONDS, RATE_SECONDS_RANGE),
     )
     # `bulk_create` goes straight to INSERT and skips `full_clean()`, exactly like
     # `admin_start`'s rounds: nothing here is validated by Django, only by the database. Safe for
@@ -443,6 +484,7 @@ def admin_create_room(request: HttpRequest) -> JsonResponse:
             for i, q in enumerate(pick_questions())
         ]
     )
+    _mark_opened(code)
     return JsonResponse({"code": code})
 
 
@@ -881,10 +923,13 @@ def admin_restart(request: HttpRequest, code: str) -> JsonResponse:
         # the phase: no question, no window, nothing to resume.
         room.quiz_index = 0
         room.quiz_deadline = None
+        room.phase_deadline = None
         room.phase = Room.Phase.WAITING
         room.save(
-            update_fields=["current", "phase", "tutorial", "quiz_index", "quiz_deadline"]
+            update_fields=["current", "phase", "tutorial", "quiz_index", "quiz_deadline", "phase_deadline"]
         )
+    # Back in the lobby: its idle clock starts again from now, as for a new room.
+    _mark_opened(room.code)
     return JsonResponse({"ok": True, "phase": room.phase})
 
 
@@ -1234,6 +1279,14 @@ def room_state(code: str, player=None) -> dict:
         "current": room.current,
         "total": room.rounds.count(),
         "target": rnd.target if rnd else None,
+        "target_image": image_for(rnd.target) if rnd else None,
+        # The clock of the phase on screen (writing a prompt, rating one), or None when nothing is
+        # timed. `server_ms` lets a phone measure its own clock's skew, as `quiz` does.
+        "timer": (
+            {"deadline_ms": _epoch_ms(room.phase_deadline), "server_ms": _epoch_ms(timezone.now())}
+            if room.phase_deadline is not None
+            else None
+        ),
         # Fixed for the whole game, so a screen reads it once instead of inferring anonymity from
         # whether a name happens to be present in `reveal.author`.
         "anonymous": room.anonymous,
@@ -1287,12 +1340,7 @@ def _maybe_advance_reveal(room: Room, rnd, online: set[int]) -> None:
     voted = set(target.ratings.filter(rater_id__in=raters).values_list("rater_id", flat=True))
     if voted != raters:
         return
-    if rnd.revealed + 1 < len(answers):
-        rnd.revealed += 1
-        rnd.save(update_fields=["revealed"])
-    else:
-        room._go(Room.Phase.SUMMARY)
-        settle_round(room)
+    _advance_reveal_and_settle(room)
 
 
 def _maybe_close_quiz_window(room: Room) -> None:
@@ -1338,59 +1386,28 @@ def _maybe_close_quiz_window(room: Room) -> None:
     room._close_quiz()
 
 
-def _quiz_is_revealed(room: Room) -> bool:
-    """Whether the question on screen has had its answer shown yet.
-
-    THE REVEAL IS A CLOCK COMPARISON AND NOTHING ELSE — `now >= quiz_deadline` — and this is
-    that comparison, factored out so `current_step` and `_quiz_state` cannot disagree about it.
-    A second copy of the rule here would be a second place for the ready bar and the snapshot's
-    `revealed` flag to say opposite things on the same frame.
-
-    It exists because the ready bar MUST NOT EXIST DURING THE ANSWERING WINDOW, and the reason is
-    a bug this module had: `current_step` named a step for the whole `quiz` phase, so a class
-    could press « prêt » on question 3 while question 3 was still being asked, and the majority
-    would move the room on before anyone had read the answer. Asking and discussing are two
-    different moments and the button belongs to the second one only.
-    """
-    return room.quiz_deadline is not None and timezone.now() >= room.quiz_deadline
-
-
 def current_step(room: Room) -> str | None:
     """The step the room is in, named, or None when it is not discussing anything.
 
-    FOUR STEPS, one per place the class talks: the lobby before the game opens, after a didacticiel
-    question is revealed, after a prompt has been rated, and after a round is summarised. `playing`
-    is not one of them — that phase closes on the answers themselves, and adding a button there
-    would ask twenty students to press something that says nothing they have not already said with a
-    prompt.
+    TWO STEPS, the lobby before the game opens and a prompt being rated. `playing` is not one —
+    that phase closes on the answers themselves — and neither are a revealed didacticiel question
+    nor a round summary: going on to the next question is the admin's decision alone, so the class
+    has no vote there.
 
-    THE LOBBY IS A STEP AND NOT THE ABSENCE OF ONE. It used to be: `waiting` named nothing, so the
-    only thing that opened the game was `admin_start` and a class could not start its own game from
-    the screen every member of it was already looking at. The lobby is the one moment where the bar
-    costs nothing to be strict on — everybody has just arrived — so it is exactly the step that was
-    missing, and `prompts.threshold` is what makes it ask for all of them rather than half.
+    THE LOBBY IS A STEP AND NOT THE ABSENCE OF ONE. The lobby is the one moment where the bar
+    costs nothing to be strict on — everybody has just arrived — and `prompts.threshold` is what
+    makes it ask for all of them rather than half.
 
-    THE QUIZ STEP ONLY EXISTS AFTER THE REVEAL, through `_quiz_is_revealed`. The phase stays
-    `quiz` after the window closes — the phase is where the room IS, not what it is doing — so
-    keying the step off the phase alone offers « prêt » while the question is still open, and a
-    majority pressing it would advance past a question whose answer nobody had seen. Asking and
-    discussing are separate moments; only the second one gets a button.
-
-    `None` IS THE ANSWER for the phases that discuss nothing — `playing` and `done`, an unasked
-    `quiz` question, a `summary` with no round behind it — and it is why this returns an option
-    rather than a default: a client that renders a ready bar for a step that does not exist shows a
+    `None` IS THE ANSWER for every other phase — `playing`, `quiz`, `summary` and `done` — and
+    it is why this returns an option rather than a default: a client that renders a ready bar for a step that does not exist shows a
     button that goes nowhere.
     """
     if room.phase == Room.Phase.WAITING:
         return prompts.LOBBY_STEP
-    if room.phase == Room.Phase.QUIZ:
-        return f"quiz:{room.quiz_index}" if _quiz_is_revealed(room) else None
     if room.phase == Room.Phase.RATING:
         rnd = room.current_round()
         return None if rnd is None else f"rating:{rnd.order}:{rnd.revealed}"
-    if room.phase == Room.Phase.SUMMARY:
-        rnd = room.current_round()
-        return None if rnd is None else f"summary:{rnd.order}"
+    # QUIZ and SUMMARY have no step: moving on to the next question is the admin's button alone.
     return None
 
 
@@ -1472,6 +1489,43 @@ def maybe_advance_by_votes(room: Room) -> None:
     advance = _PHASE_ADVANCE.get(room.phase)
     if advance is not None:
         advance(room)
+
+
+def expire_phase(code: str) -> None:
+    """Move the room on when the clock of its phase has run out. Called on every SSE tick.
+
+    `playing` out of time opens the rating, or goes straight to the summary when nobody wrote a
+    prompt — but only once the prompts already sent have finished generating, so an answer that
+    beat the clock is never lost. `rating` out of time puts the next prompt on screen, exactly as
+    if every rater had voted.
+
+    THE DEADLINE IS CLAIMED BEFORE ANYTHING MOVES. Every phone's stream calls this, so several can
+    see the same expired deadline on the same tick; the conditional UPDATE lets exactly one of
+    them through, and the transition it then runs arms the next deadline.
+    """
+    room = Room.objects.filter(code=code).first()
+    if room is None or room.phase_deadline is None or timezone.now() < room.phase_deadline:
+        return
+    if room.phase not in (Room.Phase.PLAYING, Room.Phase.RATING):
+        return
+    rnd = room.current_round()
+    if rnd is None:
+        return
+    if room.phase == Room.Phase.PLAYING and any(rid == rnd.pk for rid, _ in list(_inflight)):
+        return
+    claimed = Room.objects.filter(
+        code=code, phase=room.phase, phase_deadline=room.phase_deadline
+    ).update(phase_deadline=None)
+    if claimed != 1:
+        return
+    room.phase_deadline = None
+    if room.phase == Room.Phase.RATING:
+        _advance_reveal_and_settle(room)
+    elif rnd.answers.exists():
+        room._open_rating()
+    else:
+        room._go(Room.Phase.SUMMARY)
+        settle_round(room)
 
 
 def maybe_advance_phase(room: Room) -> None:
@@ -1560,6 +1614,8 @@ def events(request: HttpRequest, code: str) -> StreamingHttpResponse:
             # Before the snapshot, so the first frame a player ever sees already shows them online.
             if player is not None:
                 _beat(code, player.pk)
+            # Before the snapshot too, so the frame that follows already shows the next phase.
+            expire_phase(code)
             try:
                 # The player goes IN, because `ready.mine` is the one field of the snapshot that
                 # is about the reader rather than the room: without it every phone would be told
@@ -1606,6 +1662,8 @@ def answer(request: HttpRequest, code: str) -> HttpResponse:
         return json_error("no round", 409)
     if rnd.answers.filter(player=player).exists():
         return json_error("already answered", 409)
+    if room.phase_deadline is not None and timezone.now() >= room.phase_deadline:
+        return json_error("Temps écoulé : la manche est fermée.", 409)
     prompt = str(data.get("prompt", "")).strip()[:2000]
     if not prompt:
         return json_error("prompt required")

@@ -167,6 +167,11 @@ export type State = {
   current: number
   total: number
   target: string | null
+  // The picture an exercise refers to ("générez cette image"), or null.
+  target_image: string | null
+  // The clock of the phase on screen — writing a prompt, rating one — or null when nothing is
+  // timed. Same two clocks as `QuizState`, read through `useQuizWindow`.
+  timer: { deadline_ms: number; server_ms: number } | null
   // Fixed for the whole game, so a screen can read it once instead of inferring anonymity from
   // whether a name happens to be present.
   anonymous: boolean

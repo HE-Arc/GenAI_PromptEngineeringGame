@@ -8,6 +8,13 @@ from django.utils import timezone
 from game import prompts
 from game.quiz import QUIZ_SECONDS
 
+# The default time limits of a game, in seconds: writing a prompt, and rating one prompt. The
+# admin picks other values when creating the room, inside the bounds below.
+ROUND_SECONDS = 60
+RATE_SECONDS = 20
+ROUND_SECONDS_RANGE = (10, 600)
+RATE_SECONDS_RANGE = (5, 300)
+
 
 def _token() -> str:
     return secrets.token_urlsafe(12)
@@ -78,6 +85,13 @@ class Room(models.Model):
     # within half a second of the deadline.
     quiz_index = models.IntegerField(default=0)
     quiz_deadline = models.DateTimeField(null=True, blank=True)
+    # The room's two time limits, set once at creation, and the instant the current one runs out.
+    # `phase_deadline` is armed on entering `playing` (round_seconds) and on putting each prompt on
+    # screen in `rating` (rate_seconds), and is NULL in every other phase. Like `quiz_deadline` it
+    # is a comparison, not a timer: the SSE loop checks it on every tick (`views.expire_phase`).
+    round_seconds = models.PositiveIntegerField(default=ROUND_SECONDS)
+    rate_seconds = models.PositiveIntegerField(default=RATE_SECONDS)
+    phase_deadline = models.DateTimeField(null=True, blank=True)
 
     def current_round(self):
         """The round being played, or None before the game starts. None is a real answer: in
@@ -90,6 +104,14 @@ class Room(models.Model):
         a round reset says so in the method that owns the transition, not here."""
         self.phase = phase
         self.save(update_fields=["phase"])
+        self._arm()
+
+    def _arm(self) -> None:
+        """Start the clock of the phase the room is in: the round's time in `playing`, one prompt's
+        time in `rating`, and no clock anywhere else."""
+        seconds = {self.Phase.PLAYING: self.round_seconds, self.Phase.RATING: self.rate_seconds}.get(self.phase)
+        self.phase_deadline = timezone.now() + timedelta(seconds=seconds) if seconds else None
+        self.save(update_fields=["phase_deadline"])
 
     def _open_quiz(self, index: int = 0) -> None:
         """Put question `index` on screen and open its answering window.
@@ -183,6 +205,8 @@ class Room(models.Model):
         if rnd.revealed + 1 < rnd.answers.count():
             rnd.revealed += 1
             rnd.save(update_fields=["revealed"])
+            # A new prompt on screen gets its own full rating time.
+            self._arm()
         else:
             self._go(self.Phase.SUMMARY)
 
@@ -194,21 +218,22 @@ class Room(models.Model):
         else:
             self.phase = self.Phase.DONE
         self.save(update_fields=["current", "phase"])
+        self._arm()
 
 
 class Round(models.Model):
     room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name="rounds")
     order = models.IntegerField()
-    # Targets are long-form text now — a recipe, a description, a riddle — so 200 characters
-    # no longer holds one. 1000 leaves about 3x the longest entry in `targets.py` and room for
-    # the list to be edited without a second migration.
+    # Targets are whole exercises now — an email to summarise, a pseudo-code, a list of
+    # notions — so 1000 characters no longer holds one. 4000 leaves about 2.5x the longest
+    # entry in `targets.py` and room for the list to be edited without another migration.
     #
     # WHY THIS WAS NEVER CAUGHT: `views.admin_start` writes rounds with `bulk_create`, which goes
     # straight to INSERT and never calls `full_clean()`. Django's `max_length` is a validation
     # rule, not a database constraint, so an over-long target used to be accepted silently — the
     # column is `varchar` and SQLite does not enforce the length. A 300-character target would
     # have been stored fine and nobody would have found out from this line.
-    target = models.CharField(max_length=1000)
+    target = models.CharField(max_length=4000)
     # Which of this round's prompts is on screen. An index into the round's answers ordered
     # by id, NOT a player id: the reveal order is the order the answers landed, which is
     # join order, and a rating is a rate against a specific revealed line.

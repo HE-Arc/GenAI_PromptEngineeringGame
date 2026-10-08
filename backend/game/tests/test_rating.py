@@ -586,7 +586,7 @@ class RatingPlayTests(TransactionTestCase):
             shapes.pop(),
             frozenset(
                 {
-                    "code", "phase", "current", "total", "target", "anonymous",
+                    "code", "phase", "current", "total", "target", "target_image", "timer", "anonymous",
                     "players", "online_count", "quiz", "reveal", "summary", "ready",
                 }
             ),

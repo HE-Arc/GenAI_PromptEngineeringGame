@@ -193,6 +193,8 @@
   letter-spacing: 0.01em;
   max-width: 26rem;
   text-wrap: pretty;
+  /* An exercise carries its own layout — an email's paragraphs, a pseudo-code's indentation. */
+  white-space: pre-wrap;
 }
 
 /* The one thing allowed to grow on a wide screen. Everywhere else the wide layout only
@@ -783,6 +785,18 @@
   font-size: 0.9375rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+/* The exercise's picture, in the target panel and above the prompt being rated. Full width of
+ * its box, never wider; the white of the figure is kept, it is part of the figure. */
+.readout__image,
+.ratehead__image {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 0.75rem;
+  border-radius: var(--radius);
+  background: #fff;
 }
 .rateline {
   display: flex;

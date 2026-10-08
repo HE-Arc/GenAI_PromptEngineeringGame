@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, Readout, ReadyBar, ScoreScale, Section, Step } from './ui'
+import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
   absent,
@@ -7,7 +7,6 @@ import {
   getName,
   getToken,
   isAbort,
-  postReady,
   present,
   StreamError,
   streamAnswer,
@@ -262,7 +261,9 @@ export default function Game({
       <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className={`screen screen--split${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
-        <Step current={state.current} total={state.total} />
+        <Step current={state.current} total={state.total}>
+          {!scored && <PhaseClock timer={state.timer} what="pour écrire ton prompt" />}
+        </Step>
 
         {/* The only heading on this screen, and the target a route change moves focus to. The
             round track above says the same thing visibly, so this one says what the *screen*
@@ -374,34 +375,12 @@ export default function Game({
           </section>
         )}
 
-        {/* The end of the round's discussion, directly under the table it is about. Directly,
-            because the numbers are what the room is arguing about and the bar says whether the
-            room is finished arguing — it is the summary's own conclusion, not a control parked at
-            the bottom of the screen.
-            It only ever appears on a summary: `state.ready` is null while a round is open, so the
-            playing phase below keeps its composer and never grows a second submit — and the
-            failure is reported through this screen's own `setErr`, the same line the composer
-            uses. */}
-        <ReadyBar
-          ready={state.ready}
-          onReady={async () => {
-            try {
-              await postReady(code, getToken(code) ?? '')
-              // `true` means the server has the vote. The bar cannot tell a success from a
-              // refusal on its own — the screens report a refusal by writing to `setErr` and
-              // RESOLVING — so this answer is what lets it close its own double-tap window
-              // instead of painting a refusal under a vote the room already holds.
-              return true
-            } catch (e) {
-              // `describe`, not a fixed sentence: the refusals are two different facts with two
-              // different repairs, and « the vote failed » is neither of them. A vote the server
-              // already had, and a phone that woke up on the next round, both arrive here as a
-              // 409 with a reason attached.
-              setErr(describe(e))
-              return false
-            }
-          }}
-        />
+        {/* The next round is the admin's button alone: the class has no vote on a summary. */}
+        {scored && (
+          <p className="prose prose--sm prose--dim" role="status">
+            L’admin lance la manche suivante.
+          </p>
+        )}
 
         {/* The target and the field it is written against, kept as one block: on a phone
             turned sideways they sit side by side, on a phone held upright they are the first
@@ -424,6 +403,7 @@ export default function Game({
                 : 'Le modèle doit répondre'
             }
             value={state.target ?? '—'}
+            image={state.target_image}
           />
 
           {!scored && (

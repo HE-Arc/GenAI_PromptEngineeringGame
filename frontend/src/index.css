@@ -787,6 +787,12 @@ figure {
   padding-top: var(--pad);
   border-top: 1px solid var(--rail);
 }
+/* The two time limits, side by side when there is room for both labels. */
+.timers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+}
 .check {
   /* 48px, the floor every other control in the console holds: this label is the whole target,
    * and a checkbox in the corner of a line of text is not a target a thumb can be aimed at on

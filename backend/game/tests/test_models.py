@@ -16,7 +16,7 @@ from game.models import (
     Round,
 )
 from game.quiz import QUESTIONS, QUIZ_SECONDS
-from game.targets import ROUNDS_PER_GAME, TARGETS_BY_CATEGORY, pick
+from game.targets import IMAGES_BY_CATEGORY, ROUNDS_PER_GAME, TARGETS_BY_CATEGORY, image_for, pick
 
 
 def _quiz_fixture() -> tuple[Room, Player, list[QuizQuestion]]:
@@ -482,29 +482,30 @@ class TargetsTest(TestCase):
         self.assertEqual(len(set(picked)), ROUNDS_PER_GAME)
         self.assertTrue(set(picked) <= set(self._bank()))
 
-    def test_pick_never_repeats_category(self) -> None:
+    def test_pick_keeps_the_handout_order(self) -> None:
+        # The rounds follow the numbered exercises: file order, every game.
+        self.assertEqual(pick(), self._bank()[:ROUNDS_PER_GAME])
+        self.assertEqual(pick(), pick())
+
+    def test_only_the_image_exercises_carry_an_image(self) -> None:
         category = self._categories()
-        for _ in range(20):
-            picked = pick()
-            self.assertTrue(
-                all(category[a] != category[b] for a, b in zip(picked, picked[1:]))
-            )
+        for t in self._bank():
+            self.assertEqual(image_for(t), IMAGES_BY_CATEGORY.get(category[t]))
+        self.assertEqual(set(IMAGES_BY_CATEGORY), {"generer_image", "graphique_donnees"})
+        self.assertIsNone(image_for(None))
+        self.assertIsNone(image_for("une cible qui n'est pas dans la banque"))
 
     def test_bank_size_is_pinned(self) -> None:
-        # A floor, not an exact count: the bank is intentionally 20 classroom targets in
-        # categorized dict storage, comfortably larger than a game so `pick` never runs
-        # the same targets twice in a row for a player. Pinning the exact number would
-        # make every addition a test edit for no gain; dropping below ROUNDS_PER_GAME
-        # would break it.
-        self.assertGreaterEqual(len(self._bank()), 20)
+        # A floor, not an exact count: the bank must hold at least one game's worth of
+        # distinct exercises, or `pick` cannot draw a full game. Pinning the exact number
+        # would make every addition a test edit for no gain.
+        self.assertGreaterEqual(len(self._bank()), ROUNDS_PER_GAME)
         self.assertEqual(len(set(self._bank())), len(self._bank()))  # no duplicates to draw
         self.assertEqual(ROUNDS_PER_GAME, 10)
 
-    def test_every_target_is_long_form_text(self) -> None:
-        # The point of the change: a target has to be a paragraph, not a noun phrase, or the
-        # judge's proximity scale has nothing to be proximal to. The threshold is well under the
-        # shortest entry in the bank, so it fails on a reintroduced two-word target.
-        self.assertTrue(all(len(t) > 200 for t in self._bank()))
+    def test_every_target_is_a_written_exercise(self) -> None:
+        # An exercise is at least a full sentence of instruction, never a blank entry.
+        self.assertTrue(all(len(t.strip()) > 30 for t in self._bank()))
 
     def test_every_target_fits_the_target_column(self) -> None:
         # A `max_length` raised past the content is a length nothing enforces — and `admin_start`

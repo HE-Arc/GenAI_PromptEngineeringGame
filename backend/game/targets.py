@@ -1,85 +1,169 @@
-"""Seed bank of hidden target answers. One game draws ROUNDS_PER_GAME of them at random.
+"""Seed bank of the round exercises. A game plays the first ROUNDS_PER_GAME of them, in order.
 
-Long-form classroom scenarios only; the 0-10 scale is calibrated for those
-(see `llm.JUDGE_SYS`). Each entry carries a hidden category used only to vary
-consecutive rounds: pick() never returns two of the same category back to back.
-Categories stay backend-internal.
+The ten "Exercices de prompting", one per category, in the order of the handout: the file
+order IS the round order. Categories stay backend-internal.
+
+Plain text, shown as-is with its line breaks: no Markdown is rendered on the game screen.
 """
-
-import random
 
 ROUNDS_PER_GAME: int = 10
 
 # Category -> target texts. Only store; flat views are built at use sites.
 TARGETS_BY_CATEGORY: dict[str, list[str]] = {
-    "mail_confidentiel": [
-        "Au cabinet medical du docteur Lefevre, un mail d'un patient melange demande de rendez-vous et details confidentiels : resume-le en trois phrases pour la secretaire, sans jamais reprendre ni le nom de la maladie, ni le traitement, ni le numero de telephone. Ne garde que le motif general, l'urgence percue et le creneau souhaite, et termine par ce qu'il manque pour rappeler.",
-        "Sur un site industriel classe, un rapport d'incident cite des noms d'operateurs et des codes d'acces : resume-le pour le bulletin interne en masquant toute donnee confidentielle, noms, matricules et zones sensibles. Garde seulement la nature de l'incident, l'heure, les mesures prises, et conclus par la consigne de securite a rappeler a tous.",
+    "resume_email": [
+        """Vous avez reçu un email. Faites un prompt pour résumer ce mail.
+
+Bonjour Monsieur Jean Dupont,
+
+Nous vous faisons parvenir ce message afin de confirmer votre rendez-vous auprès du Centre Médical des Tilleuls.
+
+Votre consultation est prévue le 14 octobre 2026 à 10h30 au service de médecine interne. Dossier : MT-2026-1047.
+
+Cette consultation concerne l'évaluation d'un syndrome neurovasculaire idiopathique à manifestations céphalalgiques intermittentes, nécessitant un bilan complémentaire.
+
+Merci de vous présenter 15 minutes avant le rendez-vous avec vos éventuels documents médicaux récents.
+
+Cordialement,
+
+Dr Éléonore Montferrand
+Centre Médical des Tilleuls
+Tél. : +41 81 000 00 00
+secretariat@medical.ch""",
     ],
-    "maths": [
-        "Un eleve de quatrieme bloque sur une equation du premier degre : explique la resolution pas a pas, une operation par etape, en justifiant chaque passage sans jamais lacher le resultat avant la fin. Verifie ton resultat en le reinjectant dans l'equation de depart, et signale l'erreur classique a eviter sur le changement de signe.",
-        "Un eleve de troisieme doit prouver que deux droites sont paralleles avec la reciproque de Thales : guide-le etape par etape, fais-lui calculer chaque rapport lui-meme, et ne donne la conclusion qu'une fois les calculs poses. Termine par une question qui verifie qu'il a compris quand la reciproque s'applique vraiment.",
+    "maths_fourier": [
+        r"""Faites un prompt afin de vous aider pour cet exercice de math.
+
+Problème
+On considère la fonction périodique f(x) définie sur [−π, π] par :
+f(x) = x
+et prolongée périodiquement avec une période 2π.
+
+1. Montrer que sa série de Fourier ne contient que des termes en sinus.
+2. Déterminer les coefficients bₙ.
+3. En déduire que :
+   x = 2 \sum_{n=1}^{\infty} (-1)^{n+1} \, \frac{\sin(nx)}{n}
+4. Utiliser cette série pour obtenir une approximation de π.
+
+Notions utilisées : intégrales, fonctions périodiques, coefficients de Fourier et séries infinies.""",
     ],
-    "revue_scientifique": [
-        "Reformule ce paragraphe de memoire pour une revue scientifique : ton neutre et impersonnel, termes precis, chiffres avec unites, et deux references formatees nom-annee entre parentheses. Supprime les formules vagues comme tres ou beaucoup, signale d'une phrase ce qui reste a prouver, et propose un titre informatif de moins de douze mots.",
-        "Reecris cette conclusion de TP de physique pour un compte rendu exigeant : phrases courtes au present, incertitudes de mesure explicites, un tableau decrit en texte avec unites, et aucune affirmation sans condition. Distingue ce que les mesures montrent de ce qu'elles suggerent, et clos par la prochaine experience a mener.",
+    "reformuler_ingenieur": [
+        """Reformulez ce texte pour correspondre aux attentes d'un ingénieur.
+
+La lumiere va super vite, elle peut faire environ 300 000 kilometres en une seconde.
+
+On veut savoir combien de temp elle met pour parcourir une certaine distance. Par exemple, si elle doit parcourir 600 kilometres entre deux villes.
+
+Vu que la lumiere très vite, le temp que sa prend est vraiment tres petit.
+
+Apres on peut essayer de calculer le temp exact et voir ce que sa donne si on augmente la distance.
+
+Ref : Wikipédia, « Vitesse de la lumière »
+
+Notions : notation scientifique des nombres, référence plus explicite, format scientifique.""",
     ],
     "pseudo_code": [
-        "Voici un pseudo-code de tri qui contient exactement trois erreurs : signale chaque ligne fautive par son numero, explique l'effet du bug en une phrase, puis propose la correction minimale sans reecrire tout le programme. Garde la structure et les noms de variables d'origine, et verifie ta version corrigee sur un exemple de cinq nombres.",
-        'Voici un pseudo-code qui calcule une moyenne de notes mais se trompe sur les bornes et la division : localise les deux erreurs, explique pourquoi chacune fausse le resultat, et corrige uniquement ces lignes. Conserve le style et les commentaires existants, puis teste ton correctif sur trois notes simples dont tu detailles le calcul attendu.',
+        """Il y a un problème dans ce pseudo-code. Aidez-vous d'un prompt pour résoudre le problème.
+
+DEBUT
+
+distance = 600
+vitesse = 300000
+secondes = 60
+facteur = 2
+
+temps = distance / vitesse
+afficher "Temps :", temps
+
+secondes = secondes - (30 * facteur)
+
+si secondes >= 0 alors
+    vitesse = vitesse * secondes
+    temps = distance / vitesse
+    afficher "Nouveau temps :", temps
+sinon
+    afficher "Valeur invalide"
+fin si
+
+distance = distance + 200
+temps = distance / vitesse
+
+afficher "Temps final :", temps
+
+FIN""",
     ],
     "comptage": [
-        "Compte les lettres r dans le mot fraise des bois, une par une, en numerotant chaque occurrence et sa position avant de donner le total. Ne te fie ni a l'impression visuelle ni a ce que l'interlocuteur semble attendre : seule ta verification lettre a lettre compte, et si ton premier total differe du second comptage, recommence et explique l'ecart.",
-        "Compte les lettres s dans le mot aspic de poissons, position par position, en listant chaque rang examine y compris ceux sans s. N'essaie pas de faire plaisir en repondant vite : montre ton decompte complet, recalcule une seconde fois dans l'autre sens, et ne valide le total que si les deux passages concordent.",
-    ],
-    "schema_graphique": [
-        "Decris en texte seul la figure imposee pour le cahier : un graphique avec l'axe des x en mois de janvier a juin, l'axe des y en millimetres de pluie de zero a cent vingt, une courbe bleue qui culmine en avril et une legende en bas a droite. Donne le titre exact, les unites de chaque axe, et une phrase de lecture qui cite deux valeurs precises.",
-        "Decris en texte seul le schema impose pour l'expose : un diagramme en barres de quatre matieres avec effectifs sur l'axe vertical, des barres verte, jaune, orange et rouge, et la legende placee sous le titre. Indique l'ordre des barres de gauche a droite, l'echelle de l'axe, et la barre la plus haute avec sa valeur exacte.",
-        "Reproduis en texte le graphique decrit : un camembert a trois parts rouge, bleue et verte avec legende et pourcentages, d'abord a l'identique sans rien changer, puis, dans un second temps separe, remplace uniquement la part verte par du violet. Montre les deux versions l'une apres l'autre, et confirme que seul ce changement differe.",
-        "Reproduis en texte la courbe decrite : deux courbes rouge et orange sur les memes axes avec titre et legende, d'abord fidelement, puis dans un second temps clairement separe, passe seulement la courbe orange en bleu. Affiche les deux etats successivement, et precise que les valeurs et le titre sont restes identiques.",
+        "À l'aide d'un prompt, comptez le nombre de « é » dans le mot suivant :\n\ncélestéiale",
     ],
     "meta_prompt": [
-        "Tu es face a un eleve qui n'a jamais entendu parler de la superposition quantique : annonce d'abord un plan en trois points, explique avec une analogie du quotidien puis ses limites, et termine par un mini-test de trois questions avec reponses. Reste honnete sur ce que l'analogie trahit, et propose une image plus juste pour aller plus loin.",
-        "Un eleve decouvre l'intrication quantique sans aucune base : structure ta reponse en plan affiche d'avance, pars d'un exemple concret a deux pieces, puis verifie la comprehension par deux questions pieges corrigees. Admets ce que l'exemple simplifie a l'exces, et indique le point precis ou s'arreter avant de se tromper.",
+        "Vous voulez comprendre la physique quantique, mais vous n'êtes pas expert. "
+        "Faites un méta-prompt pour comprendre le domaine.",
     ],
-    "donnees_quiz": [
-        "A partir de ces donnees brutes sur la photosynthese, produis d'abord un resume structure en trois idees cles d'une phrase chacune, puis, sans ajouter d'info nouvelle, genere un quiz d'auto-evaluation de cinq questions avec reponses cachees. Chaque question doit porter sur une idee du resume, et la derniere doit demander d'expliquer avec ses propres mots.",
-        "A partir de ces dates brutes sur la Revolution francaise, ecris d'abord une synthese en quatre phrases dans l'ordre chronologique, puis un quiz de quatre questions croisees avec corrige separe. Les questions doivent melanger causes et consequences, et la correction doit rappeler la date exacte et pourquoi elle compte.",
+    "preparer_examen": [
+        """Vous devez vous préparer pour un examen. Quels prompts faites-vous pour vous préparer à partir des notions ci-dessous ?
+
+Nombres
+- Nombre rationnel : nombre qui peut être écrit comme une fraction de deux nombres entiers. Par exemple, 3/4, −2 ou 0,5.
+- Nombre irrationnel : nombre qui ne peut pas être écrit exactement sous forme de fraction. Par exemple, √2 ou π.
+- Nombre réel : ensemble comprenant les nombres rationnels et irrationnels. Tous les nombres réels peuvent être représentés sur une droite graduée.
+- Valeur absolue : représente la distance entre un nombre et zéro, sans tenir compte de son signe. Ainsi, ∣−5∣ = 5.
+
+Calculs
+- Puissance : permet d'écrire plus simplement une multiplication répétée. Par exemple, 2³ signifie 2 × 2 × 2.
+- Racine carrée : opération qui permet de trouver le nombre qui, multiplié par lui-même, donne le nombre de départ. Par exemple, √25 = 5.
+
+Algèbre
+- Équation : égalité mathématique dans laquelle une ou plusieurs valeurs peuvent être inconnues. Le but est généralement de trouver ces valeurs.
+- Inconnue : valeur que l'on cherche dans une équation. Elle est souvent représentée par une lettre comme x.
+- Fonction : relation mathématique qui associe généralement une valeur d'entrée à une valeur de sortie.
+- Variable : quantité dont la valeur peut changer. Elle est souvent représentée par une lettre.
+- Coefficient : nombre placé devant une variable et qui la multiplie. Dans 5x, 5 est le coefficient de x.
+- Constante : valeur qui reste fixe dans une expression ou un problème. Dans 3x + 7, 7 est une constante.""",
     ],
-    "traduction_biais": [
-        "Traduis ce texte anglais ou un boss donne des ordres a his secretary : choisis un contexte neutre et inclusif en francais, evite les stereotypes de genre sur les roles, et signale en deux phrases le biais de l'original que ta traduction refuse de reconduire. Justifie ton choix de pronoms et de titres de poste en une phrase.",
-        "Traduis ce passage ou un chairman felicite his nurse : rends-le en francais sans assigner un genre aux metiers, propose une formulation inclusive et lisible, et alerte en fin de reponse sur le stereotype que l'original vehiculait. Explique brievement pourquoi ta version preserve le sens sans reconduire le cliche.",
+    "faire_deviner": [
+        "Faites deviner à l'IA « Où est Charlie ? », sans donner le nom du jeu dans aucune langue.",
+    ],
+    "generer_image": [
+        "Générez cette image à l'aide d'un prompt.",
+    ],
+    "graphique_donnees": [
+        """À partir des données ci-dessous, générez ce graphique à l'aide d'un prompt. Les données sont fictives.
+
+Mois : Précipitations (mm)
+Janvier : 68
+Février : 61
+Mars : 66
+Avril : 72
+Mai : 98
+Juin : 104
+Juillet : 96
+Août : 102
+Septembre : 88
+Octobre : 82
+Novembre : 79
+Décembre : 81""",
     ],
 }
 
-# Caps resampling so pick() terminates even if one category dominates the bank.
-_MAX_PICK_ATTEMPTS: int = 100
+# Category -> image shown under the exercise, as a path served by the frontend (`public/`).
+IMAGES_BY_CATEGORY: dict[str, str] = {
+    "generer_image": "/exercices/trapeze.png",
+    "graphique_donnees": "/exercices/precipitations.png",
+}
+
+
+def image_for(target: str | None) -> str | None:
+    """The image that goes with this exercise, or None. Looked up by text, since a round
+    stores only its target: an exercise whose text was edited after the game started loses
+    its image, never gets someone else's."""
+    for cat, texts in TARGETS_BY_CATEGORY.items():
+        if target in texts:
+            return IMAGES_BY_CATEGORY.get(cat)
+    return None
 
 
 def pick(n: int = ROUNDS_PER_GAME) -> list[str]:
-    """Return n distinct targets with no two consecutive targets of the same category."""
+    """Return the first n targets, in file order."""
     bank: list[str] = [t for texts in TARGETS_BY_CATEGORY.values() for t in texts]
-    category: dict[str, str] = {t: cat for cat, texts in TARGETS_BY_CATEGORY.items() for t in texts}
     if n > len(bank):
         raise ValueError(f"cannot draw {n} distinct targets from {len(bank)}")
-    if n <= 1:
-        return random.sample(bank, n)
-    for _ in range(_MAX_PICK_ATTEMPTS):
-        drawn: list[str] = random.sample(bank, n)
-        if all(
-            category[a] != category[b] for a, b in zip(drawn, drawn[1:])
-        ):
-            return drawn
-    pool: list[str] = bank[:]
-    random.shuffle(pool)
-    ordered: list[str] = [pool.pop()]
-    while len(ordered) < n:
-        nxt: str | None = next(
-            (t for t in pool if category[t] != category[ordered[-1]]),
-            None,
-        )
-        if nxt is None:  # dominated remainder: accept the adjacency break
-            nxt = pool[0]
-        pool.remove(nxt)
-        ordered.append(nxt)
-    return ordered
+    return bank[:n]

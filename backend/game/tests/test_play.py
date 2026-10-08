@@ -413,7 +413,7 @@ class PlayTest(TransactionTestCase):
         self.assertEqual(
             set(st),
             {
-                "code", "phase", "current", "total", "target", "anonymous",
+                "code", "phase", "current", "total", "target", "target_image", "timer", "anonymous",
                 "players", "online_count", "quiz", "reveal", "summary", "ready",
             },
         )
@@ -670,7 +670,7 @@ class PlayTest(TransactionTestCase):
         self.assertEqual(
             set(payload),
             {
-                "code", "phase", "current", "total", "target", "anonymous",
+                "code", "phase", "current", "total", "target", "target_image", "timer", "anonymous",
                 "players", "online_count", "quiz", "reveal", "summary", "ready",
             },
         )
@@ -682,6 +682,8 @@ class PlayTest(TransactionTestCase):
                 "current": 0,
                 "total": 2,
                 "target": "42",
+                "target_image": None,
+                "timer": None,
                 "anonymous": True,  # the `Room` default, read through the snapshot
                 "players": [
                     {
