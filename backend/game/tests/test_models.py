@@ -373,20 +373,21 @@ class SettlementColumnTests(TestCase):
             with self.subTest(field=name):
                 self.assertIsInstance(Answer._meta.get_field(name), models.IntegerField)
 
-    def test_the_round_score_is_a_float_because_the_specs_mean_is_one(self) -> None:
-        # §7: `note_tour = (proximité + qualité) / 2`. The two halves are integers, so the mean is
-        # a whole number only half the time, and an `IntegerField` can only store a FLOOR of it.
-        # The floor was the schema rather than the rule, so it was invisible at the line that
-        # computed it: ten rounds of proximity 7 and quality 6 settled to 60 on a scale the final
-        # screen still calls « sur 100 », where the spec's arithmetic gives 65. Pinned as a type
-        # because that is where the truncation lived, and then by a value that has to survive the
-        # round trip: 6.5 in, 6.5 out, which an integer column could not do on SQLite either.
+    def test_the_round_score_is_a_float_because_the_weighted_mean_is_one(self) -> None:
+        # `note_tour = (proximité + 2 * qualité) / 3` — a deliberate departure from §7's 50/50,
+        # because the game teaches prompting and a lucky output must not outweigh a well-written
+        # prompt. The two halves are integers, so the weighted mean is a whole number only when the
+        # numerator divides by three, and an `IntegerField` can only store a FLOOR of it. The floor
+        # was the schema rather than the rule, so it was invisible at the line that computed it:
+        # the exact division is the point, and the column has to be a float to hold it. Pinned as a
+        # type because that is where the truncation lived, and then by a value that has to survive
+        # the round trip: 6.5 in, 6.5 out, which an integer column could not do on SQLite either.
         self.assertIsInstance(Answer._meta.get_field("round_score"), models.FloatField)
         answer, _raters = _rating_fixture()
         Answer.objects.filter(pk=answer.pk).update(round_score=6.5)
         self.assertEqual(Answer.objects.get(pk=answer.pk).round_score, 6.5)
-        # And the sum the ranking is built on keeps the half: this one round reads 6.5, and ten
-        # such rounds would be the 65 the spec's arithmetic gives, where a floored column said 60.
+        # And the sum the ranking is built on keeps the fraction: this one round reads 6.5, and a
+        # value with a third (e.g. 22/3) would be dropped by a floored column.
         self.assertEqual(
             answer.player.answers.aggregate(total=Sum("round_score"))["total"],
             6.5,

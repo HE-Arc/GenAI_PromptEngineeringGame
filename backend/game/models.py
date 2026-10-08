@@ -312,14 +312,14 @@ class Answer(models.Model):
     # `prompts.quality(quality_llm, peers)`: the peers' mean held inside ±QUALITY_BAND of the
     # critic. What the ranking actually uses.
     quality = models.IntegerField(null=True, blank=True)
-    # `(score + quality) / 2` — §7 of the spec, EXACTLY: "la note d'un tour est la moyenne des
-    # deux dimensions". A float, not an integer, because a mean of two integers that do not
-    # divide evenly has to BE one: floor-dividing it was the implementation's own idea, and it
-    # cost every game up to half a point per round off a scale the final screen still calls
-    # "sur 100" — ten rounds of proximity 7 and quality 6 settled to 60 where the spec's
-    # arithmetic gives 65. The two halves are still integers, so only this column is a float, and
-    # the payload carries `6.5` where a player has to be able to read the division they were
-    # taught.
+    # `(score + 2 * quality) / 3` — a deliberate departure from §7's 50/50 mean, and the user's
+    # decision that the PROMPT's construction must weigh more than the answer it happened to
+    # produce: at 50/50 a lucky output could outrank a well-written prompt, which inverts what the
+    # game teaches. Weights are 1/3 proximity, 2/3 quality. A float, not an integer, and the
+    # division is exact (`/`, never `//`): most combinations repeat (8 and 7 give 7.333…) and
+    # rounding per round would compound across the ten rounds the final total sums, while ten
+    # perfect rounds of 10 still total 100 — the spec's « sur 100 » stands. The payload carries
+    # the repeating value so a player can check the division they were taught.
     round_score = models.FloatField(null=True, blank=True)
 
     class Meta:

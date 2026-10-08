@@ -670,10 +670,11 @@
   align-items: baseline;
   gap: 0.6rem;
 }
-/* The final note, inline in the sentence that names it. In the display face at the size the old
- * score-only header used, because it is the one figure the player is asked to carry out of the
- * round; the two scores it is bound from stay in the body face, so the sentence reads as prose
- * with a number in it rather than as three competing headlines. */
+/* The final note and its unit as one nowrap unit, at the size the old score-only header used:
+ * it is the one figure the player is asked to carry out of the round. The two inputs above it
+ * stay in the body face, so the sentence reads as prose with a number in it rather than as three
+ * competing headlines. The unit keeps its own smaller size and takes a real space from the JSX —
+ * the margin that used to separate the two spans is gone, because it read as "6sur 10". */
 .tally__round {
   color: var(--signal);
   font-size: 1.75rem;
@@ -681,7 +682,6 @@
   white-space: nowrap;
 }
 .tally__roundden {
-  margin-left: 0.25rem;
   color: var(--ink-dim);
   font-size: 0.8125rem;
   font-weight: 600;

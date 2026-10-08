@@ -780,13 +780,22 @@ def settle_round(room: Room) -> None:
         scores = list(a.ratings.values_list("score", flat=True))
         a.quality_peers = prompts.half_up(sum(scores) / len(scores)) if scores else None
         a.quality = prompts.quality(a.quality_llm, scores)
-        # THE SPEC'S MEAN, EXACTLY: §7 says `note_tour = (proximité + qualité) / 2`, and the `/`
-        # is a real division, not an integer one. The `// 2` that used to stand here was the
-        # implementation quietly deciding a mean of two out-of-ten integers is a whole number, and
-        # it charged every game for it: ten rounds of proximity 7 and quality 6 settled to 60 on a
-        # scale the final screen still calls « sur 100 », where the spec's own arithmetic gives 65.
-        # The column is a FloatField for this one line.
-        a.round_score = (a.score + a.quality) / 2
+        # THE WEIGHTED MEAN IS A DELIBERATE DEPARTURE FROM SPEC §7, and the reason is pedagogical.
+        # §7 said `note_tour = (proximité + qualité) / 2`, but a 50/50 split lets a LUCKY OUTPUT
+        # outrank a WELL-WRITTEN PROMPT: a player whose prose happened to reproduce the target
+        # scored as high as a player who wrote a careful prompt, and the game exists to teach the
+        # second skill. The user's decision was to weight the prompt's construction over the
+        # answer it happened to produce, so the coefficient here is 1/3 proximity, 2/3 quality.
+        #
+        # THE DIVISION IS EXACT AND THE COLUMN IS A FLOAT. `(score + 2 * quality) / 3` is a true
+        # division, never `// 3`: a round of proximity 4 and quality 7 is exactly 6.0, but most
+        # combinations repeat (e.g. 8 and 7 give 7.333…), and rounding each round to an integer
+        # would compound a half-point error across the ten rounds the final screen sums. Those ten
+        # perfect rounds of 10 still total 100 — the spec's « sur 100 » stands — but the partial
+        # totals stay exact, and the payload carries the repeating value the way a player who was
+        # taught to mean can check it. The `// 2` that once stood here was the earlier version of
+        # this same mistake.
+        a.round_score = (a.score + 2 * a.quality) / 3
         a.save(update_fields=["quality_peers", "quality", "round_score"])
 
 
@@ -1240,11 +1249,13 @@ def room_state(code: str, player=None) -> dict:
         # THE RANKING TOTAL. Three cases, and getting this wrong deletes the game.
         #
         # `Answer.score` is the judge's proximity on the output alone. `Answer.round_score` is
-        # `(proximity + quality) / 2`, written once `settle_round` closes the round's rating.
-        # The spec says the final ranking "additionne les dix tours" where a tour is the second
-        # one — so summing `score` alone, which is what this used to do, drops the quality
-        # dimension entirely and lets a player whose prompts are badly built but whose output
-        # happened to land tie with a player who writes carefully.
+        # the WEIGHTED mean `(proximity + 2 * quality) / 3` — 1/3 proximity, 2/3 quality — written
+        # once `settle_round` closes the round's rating. It deliberately departs from spec §7's
+        # 50/50, because the game teaches PROMPTING: a lucky output must not outweigh a
+        # well-written prompt. The spec says the final ranking "additionne les dix tours" where a
+        # tour is the second one — so summing `score` alone, which is what this used to do, drops
+        # the quality dimension entirely and lets a player whose prompts are badly built but whose
+        # output happened to land tie with a player who writes carefully.
         #
         # But `round_score` is NULL until the class has rated the round, and the spec also says
         # the board is "mis à jour en direct pendant la rédaction". Summing settled rounds alone

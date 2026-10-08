@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import sys
 from collections.abc import Iterable, Iterator
 from typing import Any, NamedTuple
 
@@ -179,9 +180,33 @@ def _api_key() -> str:
     return os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
 
 
+def _is_test_run() -> bool:
+    """True when this process is the Django test runner. Read live, never cached.
+
+    THE HAZARD THIS EXISTS FOR: `manage.py test` reads `os.environ` directly — there is no
+    python-dotenv here — so a developer with LLM_API_KEY exported in their shell would have the
+    suite hit the billed provider on every run. `patch.dict` cannot save us either: the test
+    decorators blank `OPENAI_API_KEY`, but `_api_key` prefers `LLM_API_KEY` and that is the var a
+    `.env`-driving shell actually exports, so a real key survives the blank and reaches the wire.
+    Detecting the runner is the only place that guarantees no test can bill, whatever the shell.
+
+    `sys.argv` is the signal rather than a settings flag because `manage.py test` is the one entry
+    point that sets it, and it is checked per call so a test that patches `sys.argv` is honoured
+    without a stale import-time value. A real `runserver`/WSGI process never carries a `test` argv
+    token, so live gameplay is unchanged.
+    """
+    return "test" in sys.argv
+
+
 def _has_key() -> bool:
-    """True when a real model is reachable. An empty value counts as absent."""
-    return bool(_api_key())
+    """True when a real model is reachable — a key is present AND this is not the test runner.
+
+    THE TEST CHECK IS FOLDED IN HERE, at the single gate every billed call passes through, so
+    there is exactly one rule ("reachable") and no caller can be keyed while another is not. It is
+    NOT in `_api_key`, which still reports the raw key: only the decision to reach the network is
+    suppressed under test. An empty value counts as absent either way.
+    """
+    return bool(_api_key()) and not _is_test_run()
 
 
 def get_client() -> OpenAI:

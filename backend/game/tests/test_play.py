@@ -542,13 +542,14 @@ class PlayTest(TransactionTestCase):
             self.room.save(update_fields=["current"])
             settle_round(self.room)  # nobody rated, so `quality` stands on the critic's own score
         view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
-        # `score` is the sum of `round_score` over the settled rounds, each of which is
-        # `(proximité + qualité) / 2` exactly: (8 + 8) / 2 == 8 and (4 + 4) / 2 == 4, so 12 here.
-        # The three numbers still describe the SAME two rounds, which is the property that makes
-        # them readable as one row.
+        # `score` is the sum of `round_score` over the settled rounds, each of which is the
+        # WEIGHTED mean `(proximité + 2 * qualité) / 3`: here quality equals proximity, so each
+        # round is (8 + 16) / 3 == 8 and (4 + 8) / 3 == 4, and the sum is 12. The three numbers
+        # still describe the SAME two rounds, which is the property that makes them readable as
+        # one row.
         self.assertEqual(view["proximity_total"], 12)
         self.assertEqual(view["quality_total"], 12)
-        self.assertEqual(view["score"], (8 + 8) / 2 + (4 + 4) / 2)
+        self.assertEqual(view["score"], (8 + 2 * 8) / 3 + (4 + 2 * 4) / 3)
         self.assertTrue(view["answered"])  # the cursor is on round 1, the last one she wrote
         # The two halves are not forced to be equal by the payload: a room that agreed with the
         # critic on one round and not the other still gets two distinct columns, and that gap is
@@ -560,17 +561,19 @@ class PlayTest(TransactionTestCase):
         )
 
     def test_score_is_the_sum_of_the_settled_round_scores(self) -> None:
-        # The ranking sums the SETTLED `round_score`, which is `(proximité + qualité) / 2` — §7 of
-        # the cahier says the final ranking "additionne les dix tours", and `models.py` says the
-        # same in its comment on `round_score`. It does NOT sum `Answer.score`, which is the
-        # judge's proximity on the output alone.
+        # The ranking sums the SETTLED `round_score`, which is the WEIGHTED mean
+        # `(proximité + 2 * qualité) / 3` — the prompt's construction weighs twice the answer it
+        # produced. The cahier says the final ranking "additionne les dix tours", and `models.py`
+        # says the same in its comment on `round_score`. It does NOT sum `Answer.score`, which is
+        # the judge's proximity on the output alone.
         #
         # The two totals are built so they cannot be confused: a round of proximity 10 with a
         # quality of 10 settles to 10, and a round of proximity 10 with a quality of 2 settles to
-        # 6. The spec's total is therefore 16, while the proximities alone add up to 20. A player
-        # whose prompts are badly written but whose output happens to land would otherwise tie
-        # with a player who writes carefully — in a game whose only question is whether the prompt
-        # was any good.
+        # 14/3. The weighted total is therefore 44/3, while the proximities alone add up to 20. A
+        # player whose prompts are badly written but whose output happens to land would otherwise
+        # tie with a player who writes carefully — in a game whose only question is whether the
+        # prompt was any good. The same fixture under the OLD 50/50 mean gave 16, so this value
+        # pins the weight change and not merely "some mean".
         ana = Player.objects.create(room=self.room, name="ana")
         self._play()
         for order, (proximity, quality_llm) in enumerate(((10, 10), (10, 2))):
@@ -584,10 +587,14 @@ class PlayTest(TransactionTestCase):
         self.assertEqual(view["proximity_total"], 20)
         self.assertEqual(view["quality_total"], 12)
         # The two dimensions are visible next to the total, and the total is not their sum. The
-        # spec's own arithmetic, not a floor of it: (10 + 10) / 2 == 10 and (10 + 2) / 2 == 6.
-        spec_total = (10 + 10) / 2 + (10 + 2) / 2
-        self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], spec_total)
-        self.assertEqual(view["score"], spec_total)
+        # weighted arithmetic, not a floor of it: (10 + 2 * 10) / 3 == 10 and (10 + 2 * 2) / 3 ==
+        # 14/3. The old 50/50 mean would have read 16 here; the prompt-weighted formula gives less,
+        # because round two's careful dimensions are dragged down by its low-quality output.
+        weighted_total = (10 + 2 * 10) / 3 + (10 + 2 * 2) / 3
+        self.assertAlmostEqual(weighted_total, 44 / 3)
+        self.assertNotEqual(weighted_total, (10 + 10) / 2 + (10 + 2) / 2)  # != the old /2 total
+        self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], weighted_total)
+        self.assertEqual(view["score"], weighted_total)
 
     def test_an_unsettled_round_counts_provisionally_then_gets_corrected(self) -> None:
         # `round_score` is NULL until the class has rated the round, and a `Sum` skips NULLs. So
@@ -614,13 +621,13 @@ class PlayTest(TransactionTestCase):
         self.assertIsNone(view["proximity_total"])
         self.assertIsNone(view["quality_total"])
 
-        # Settled: (9 + 2) / 2 = 5.5, so the total moves DOWN by 3.5 once the class has rated.
-        # The half is the spec's arithmetic and not a rounding decision: `note_tour` is a mean, and
-        # a floor here would quietly take half a point off every odd round of a game that is still
-        # presented as « sur 100 ».
+        # Settled: (9 + 2 * 2) / 3 = 13/3 ≈ 4.33, so the total moves DOWN once the class has
+        # rated. The fraction is the weighted arithmetic and not a rounding decision: `note_tour`
+        # weighs quality twice over, and a floor here would quietly take a fraction of a point off
+        # every round of a game that is still presented as « sur 100 ».
         settle_round(self.room)
         view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
-        self.assertEqual(view["score"], 5.5)
+        self.assertAlmostEqual(view["score"], 13 / 3)
         self.assertEqual(view["proximity_total"], 9)
         self.assertEqual(view["quality_total"], 2)
 
@@ -655,7 +662,7 @@ class PlayTest(TransactionTestCase):
         rnd.answers.create(player=bob, prompt="p", output="o", score=9, quality_llm=9)
         settle_round(self.room)
         self.room.refresh_from_db()
-        # The score is now the fused (proximité + qualité) / 2 of the settled round, so bob's 9
+        # The score is now the fused (proximité + 2 * qualité) / 3 of the settled round, so bob's 9
         # and ana's 3 are what the sort reads — and the rating phase has passed, so they are
         # visible again.
         self.assertEqual([p["name"] for p in room_state("ABCD")["players"]], ["bob", "ana"])

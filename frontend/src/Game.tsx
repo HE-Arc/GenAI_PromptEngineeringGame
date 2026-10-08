@@ -348,14 +348,17 @@ export default function Game({
             on a screen of its own. It stays here because the player is still in the middle of
             writing ten prompts: what came of the last one is the reading they do while the next
             one waits, not a different activity that deserves its own tab.
-            It is one sentence rather than a grid of cells because the three numbers only mean
-            anything together: the critic's score and the peers' average are the two inputs the
-            final note is made of, and a note stated without them asks a class to accept an
-            arithmetic result they cannot check.
-            Every figure goes through `fr`, because §7's note_tour is a real division and the
-            server stopped pretending otherwise: a round of proximity 7 and quality 6 is 6,5, and
-            a sentence that printed "6.5" would be the only Americanism in a French room.
-            The peer half is dropped for a plain sentence when `quality_peers` is null — a round
+            It prints every term the note is made of, in one sentence, because the numbers only
+            mean anything together: proximity and the retained quality are the two inputs, and
+            the critic's score and the peers' average are the two the quality itself is made of.
+            A note stated alone asks a class to accept an arithmetic result they cannot check.
+            The weights are named because the note is no longer an even split — proximity counts
+            for a third and quality for two thirds — so the same two inputs give a different note
+            than the old mean did, and a player comparing rounds deserves to know why.
+            Every figure goes through `fr`, because the note is a real division and the server
+            stopped pretending otherwise: a round of proximity 7 and quality 6 is 5, and a
+            sentence that printed "5.0" would be the only Americanism in a French room.
+            The peer half is dropped for a plain clause when `quality_peers` is null — a round
             where nobody rated — so the note never names a peer score nobody gave. */}
         {scored && state.summary && (
           <section className="tally">
@@ -372,22 +375,31 @@ export default function Game({
                       className="board__name board__name--me"
                     />
                   </div>
-                  {/* The score as the sentence it is. The two figures the bound is made of are
-                      named by who gave them, because a note a player cannot trace back to a
-                      source is a verdict rather than a score. `role="status"` is the pattern the
-                      rest of the screen already uses for text that changes with the phase. */}
+                  {/* The score as the sentence it is, with all four numbers and their weights.
+                      `role="status"` is the pattern the rest of the screen already uses for text
+                      that changes with the phase. */}
                   <p className="prose" role="status">
-                    Le LLM t’a mis la note de <span className="num">{fr(mine.quality_llm)}</span>
+                    Proximité (poids 1/3) : <span className="num">{fr(mine.proximity)}</span>/10
+                    {' · '}
+                    Qualité retenue (poids 2/3) : <span className="num">{fr(mine.quality)}</span>/10
+                    {' ('}le LLM <span className="num">{fr(mine.quality_llm)}</span>
                     {mine.quality_peers === null ? (
-                      '. Les joueurs n’ont pas noté.'
+                      ', les joueurs n’ont pas noté'
                     ) : (
                       <>
-                        {' '}
-                        et les joueurs la note de <span className="num">{fr(mine.quality_peers)}</span>.
+                        , les joueurs <span className="num">{fr(mine.quality_peers)}</span>
                       </>
-                    )}{' '}
-                    Ta note finale : <span className="num tally__round">{fr(mine.round_score)}</span>
-                    <span className="tally__roundden">sur 10</span>.
+                    )}
+                    {') → '}
+                    Ta note finale :{' '}
+                    {/* The number and its unit are one nowrap unit, and the space between them
+                        is a real text node: JSX drops whitespace that sits between two tags on
+                        different lines, which is what rendered "6sur 10". */}
+                    <span className="num tally__round">
+                      {fr(mine.round_score)}
+                      <span className="tally__roundden">{' '}sur 10</span>
+                    </span>
+                    .
                   </p>
                   <pre className="slot tally__prompt">{mine.prompt}</pre>
                   <details className="tally__more">

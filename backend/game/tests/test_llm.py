@@ -11,8 +11,27 @@ from game.llm import Verdict
 # `answer_stream`, `score` and `grade_prompt` fall back to a local stub when no key is present,
 # so the real-path tests pin one. The stub tests blank it instead, which holds whether or not the
 # machine running the suite happens to have a real key in its environment.
-KEYED = patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
-UNKEYED = patch.dict(os.environ, {"OPENAI_API_KEY": ""})
+#
+# `KEYED` ALSO OPTS OUT OF THE TEST-RUNNER GUARD. `_has_key` returns False under `manage.py test`
+# whatever the environment, which is the whole point of the safety fix — so a test that means to
+# exercise the keyed path has to say so. Every class decorated with `KEYED` mocks `OpenAI` (or
+# `_chat`), so opting back in cannot reach the network; the guard is what stops an UNKEYED test
+# from billing a developer's exported `LLM_API_KEY`, and this decorator is the deliberate
+# exception that proves the keyed branch still exists.
+#
+# `new=` on the `patch` is load-bearing: a bare `patch` used as a class decorator passes a fresh
+# mock as an extra argument to every test method, which the methods (taking only `self`) reject.
+# Replacing the target outright injects nothing.
+def _keyed(cls):
+    cls = patch("game.llm._is_test_run", new=lambda: False)(cls)
+    return patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})(cls)
+
+
+KEYED = _keyed
+# Blank BOTH variables, not just OPENAI_API_KEY: `_api_key` prefers LLM_API_KEY, so the old form
+# left a developer's real LLM_API_KEY in place and the "no key" tests were only safe because the
+# runner guard now suppresses them anyway. Clearing both makes the intent explicit.
+UNKEYED = patch.dict(os.environ, {"OPENAI_API_KEY": "", "LLM_API_KEY": ""})
 
 
 def _completion(content: str) -> MagicMock:
@@ -69,6 +88,48 @@ class ClientFactoryTest(SimpleTestCase):
         ) as factory:
             llm.score("p", "o", "t")
         self.assertEqual(factory.call_args.kwargs["base_url"], "https://commandcode.example/v1")
+
+
+class TestRunnerGuardTest(SimpleTestCase):
+    """No test may ever reach the billed provider, whatever key the shell exports.
+
+    The hazard is real and silent: `manage.py test` reads `os.environ` directly (no python-dotenv),
+    `_api_key` prefers `LLM_API_KEY`, and a developer with that var exported would have the whole
+    suite billing a real provider on every run. These pin the guard that stops it.
+    """
+
+    def test_test_runner_is_detected(self) -> None:
+        # Under the suite `sys.argv` carries the `test` subcommand, so the guard is active. This
+        # is also the assertion that would fail if someone moved the check to import time.
+        self.assertIn("test", __import__("sys").argv)
+        self.assertTrue(llm._is_test_run())
+
+    def test_a_real_key_in_the_environment_does_not_enable_calls(self) -> None:
+        # The exact hazard: a REAL key in `os.environ` (as an exported shell var would be) must
+        # not flip `_has_key` under the runner. `_api_key` still reports it; reachability does not.
+        with patch.dict(os.environ, {"LLM_API_KEY": "sk-real-looking"}):
+            self.assertEqual(llm._api_key(), "sk-real-looking")
+            self.assertFalse(llm._has_key())
+
+    def test_unkeyed_calls_build_no_client_under_the_runner(self) -> None:
+        # The strongest claim: client construction is impossible, so no network call can happen
+        # even if a key is present. `OpenAI` raising means any reach-through is a test failure.
+        with patch.dict(os.environ, {"LLM_API_KEY": "sk-real-looking"}), patch.object(
+            llm, "OpenAI", side_effect=AssertionError("client built during the test suite")
+        ):
+            self.assertEqual(llm.score("p", "o", "t").comment, llm.STUB_COMMENT)
+            self.assertEqual(llm.grade_prompt("p").comment, llm.STUB_COMMENT)
+            self.assertEqual("".join(llm.answer_stream("salut")), llm._stub_answer("salut"))
+
+    def test_not_a_test_run_restores_keyed_behaviour(self) -> None:
+        # The other direction, or the guard would just be "LLM is off in tests forever": with the
+        # runner signal removed and a key present, `_has_key` is True again. Deliberately does NOT
+        # reach the network — it only reads the gate — because proving the keyed path exists must
+        # not itself bill.
+        with patch.dict(os.environ, {"LLM_API_KEY": "sk-real-looking"}), patch(
+            "game.llm._is_test_run", new=lambda: False
+        ):
+            self.assertTrue(llm._has_key())
 
 
 @KEYED
