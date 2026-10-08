@@ -449,7 +449,7 @@ class PlayedRoomDeletionTests(IdleBase):
     def test_no_thread_starts_without_the_env_var(self) -> None:
         # THE GUARD IS THE THING UNDER TEST, not a detail: `AppConfig.ready()` also runs under
         # `manage.py test`, and a thread deleting rows under the suite is a suite that passes or
-        # fails depending on the wall clock. `run.sh` is the only thing that sets the variable.
+        # fails depending on the wall clock. Compose is the only thing that sets the variable.
         self.assertIsNone(os.environ.get("GENAI_SWEEP"))
         self.assertEqual(
             [t.name for t in threading.enumerate() if t.name == "room-sweep"],

@@ -9,7 +9,7 @@ class GameConfig(AppConfig):
     name = "game"
 
     def ready(self) -> None:
-        """Start the room sweeper, but only when `run.sh` says so.
+        """Start the room sweeper, but only when compose says so.
 
         THE ENV VAR IS THE GUARD AND NOT A CONVENIENCE: `ready()` also runs under
         `manage.py test`, and a thread deleting rows under the suite is a suite that passes or fails

@@ -42,7 +42,7 @@ from game.targets import ROUNDS_PER_GAME, image_for, pick
 _ALPHABET = string.ascii_uppercase.replace("O", "").replace("I", "")
 
 # In-flight (round, player) submits, claimed for the duration of the two billed model calls.
-# PROCESS-LOCAL, and that is sufficient for this deployment: `run.sh` starts one threaded
+# PROCESS-LOCAL, and that is sufficient for this deployment: compose starts one threaded
 # `runserver` on a LAN, so both copies of a double submit are served by this process and this
 # set. An entry lives only while a model call is in flight, so nothing leaks across a restart
 # and the process clearing it is the cleanup. Under a multi-process or multi-host deployment
