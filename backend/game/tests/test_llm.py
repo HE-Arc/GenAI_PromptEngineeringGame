@@ -62,6 +62,16 @@ def _stream_client(*chunks: MagicMock) -> MagicMock:
 
 
 @KEYED
+class ClientFactoryTest(SimpleTestCase):
+    def test_custom_base_url_reaches_the_client(self) -> None:
+        with patch.dict(os.environ, {"LLM_BASE_URL": "https://commandcode.example/v1"}), patch.object(
+            llm, "OpenAI", return_value=_client('{"score": 7, "comment": "proche"}')
+        ) as factory:
+            llm.score("p", "o", "t")
+        self.assertEqual(factory.call_args.kwargs["base_url"], "https://commandcode.example/v1")
+
+
+@KEYED
 class ScoreTest(SimpleTestCase):
     def test_parses_json_and_returns_a_verdict(self) -> None:
         with patch.object(llm, "OpenAI", return_value=_client('{"score": 7, "comment": "proche"}')):

@@ -359,6 +359,13 @@ def _sweep_forever() -> None:
         time.sleep(SWEEP_EVERY)
 
 
+# The longest prompt the play call accepts, in characters. Enforced on both halves: the
+# composer caps input at this length and the endpoint refuses anything past it, because a
+# client-side cap alone is a suggestion a hand-written POST can ignore — and the billed
+# generation prices length.
+MAX_PROMPT_CHARS = 500
+
+
 def body(request: HttpRequest) -> dict:
     """The parsed JSON object, or `{}` for anything that is not one.
 
@@ -1664,9 +1671,13 @@ def answer(request: HttpRequest, code: str) -> HttpResponse:
         return json_error("already answered", 409)
     if room.phase_deadline is not None and timezone.now() >= room.phase_deadline:
         return json_error("Temps écoulé : la manche est fermée.", 409)
-    prompt = str(data.get("prompt", "")).strip()[:2000]
+    prompt = str(data.get("prompt", "")).strip()
     if not prompt:
         return json_error("prompt required")
+    # Refused as JSON before the first byte, like every other refusal: once the 200 and its
+    # `text/event-stream` are out the status is spent, so this cannot be a stream.
+    if len(prompt) > MAX_PROMPT_CHARS:
+        return json_error("prompt too long", 413)
     # The duplicate check above cannot cover the ~5s the two billed calls take. Claimed here,
     # before the calls, so a second copy arriving in that window is refused without paying for
     # the model a second time. Released in the worker's `finally` however that block leaves.

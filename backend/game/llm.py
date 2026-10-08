@@ -15,6 +15,10 @@ from typing import Any, NamedTuple
 
 from openai import OpenAI
 
+# Any OpenAI-compatible endpoint works: only base URL and key differ, so no other
+# file builds a client and the provider switch stays one env var.
+# Read live (not at import) so tests and process managers can override per call.
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 PLAY_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gpt-4o-mini")
 # The critic gets its own env var for the same reason the judge does: arbitration is the
@@ -44,6 +48,17 @@ class Verdict(NamedTuple):
     comment: str
 
 
+# The play call carries the player's prompt as its only user message, so without a
+# system frame the model treats it as an open chat turn: preamble, follow-up questions,
+# extra sections. The game scores the ANSWER against a target, and every word outside
+# the task is a word the judge reads as invention.
+PLAY_SYS = (
+    "Tu reponds uniquement a la demande du joueur, avec concision : ni introduction "
+    "ni conclusion sur ce que tu fais, ni question en retour, ni section supplementaire. "
+    "Seule la reponse demandee."
+)
+
+
 JUDGE_SYS = (
     "Tu es le jury d'un jeu de prompt engineering. On te donne un prompt joue par "
     "un joueur, la reponse obtenue du modele, et la reponse cible cachee. "
@@ -61,6 +76,7 @@ JUDGE_SYS = (
     "0 a 2 = sans rapport, ou le joueur a seulement ecrit autre chose. "
     "Une reponse qui restitue la substance de la cible ne descend jamais sous 6, quels que soient "
     "les mots choisis et la longueur du texte. "
+    "Aucun texte hors du JSON : ni explication de la note, ni commentaire, ni prose. "
     "Reponds uniquement avec un objet JSON {\"score\": entier, \"comment\": texte court en francais}."
 )
 
@@ -96,6 +112,7 @@ CRITIC_SYS = (
     "0 a 2 = une consigne nue, sans role ni format ni contexte. "
     "Un critere absent ne se recompense pas par un autre : un prompt dont le role est "
     "excellent mais qui ne dit rien du format ne depasse pas 6. "
+    "Aucun texte hors du JSON : ni justification etendue, ni conseil, ni prose. "
     "Reponds uniquement avec un objet JSON {\"score\": entier, \"comment\": texte court en "
     "francais, portant sur la methode du prompt et non sur le resultat qu'il a produit}."
 )
@@ -124,9 +141,22 @@ JUDGE_MAX_TOKENS = 200
 CRITIC_MAX_TOKENS = 200
 
 
+def _api_key() -> str:
+    # LLM_API_KEY wins; OPENAI_API_KEY stays as the fallback so existing setups keep working.
+    return os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+
+
 def _has_key() -> bool:
     """True when a real model is reachable. An empty value counts as absent."""
-    return bool(os.environ.get("OPENAI_API_KEY"))
+    return bool(_api_key())
+
+
+def get_client() -> OpenAI:
+    # Sole constructor: keeps provider-specific kwargs (base_url, key) in one place.
+    return OpenAI(
+        api_key=_api_key(),
+        base_url=os.environ.get("LLM_BASE_URL", DEFAULT_BASE_URL),
+    )
 
 
 def _words(text: str) -> set[str]:
@@ -264,9 +294,8 @@ def _chat(
     max_tokens: int,
     stream: bool = False,
 ) -> AnswerStream | str:
-    # The client is built here, not at import: `views.py` imports this module on every
-    # request, and `OpenAI()` raises if OPENAI_API_KEY is missing. All three public entry points
-    # return before reaching this when there is no key, so the suite also runs with none.
+    # Built here, not at import: the SDK raises with no key, and all three entry
+    # points return before reaching this when there is none, so the suite runs keyless.
     #
     # `max_tokens` is a parameter, not a constant, because the callers want different caps —
     # see PLAY_MAX_TOKENS and JUDGE_MAX_TOKENS for why, and for why unifying them is the bug.
@@ -274,7 +303,7 @@ def _chat(
     # `stream=True` hands back the deltas as they arrive instead of one string at the end, and
     # only the play call wants that: the judge and the critic must have the WHOLE json before
     # they can parse it, so they keep the string.
-    client = OpenAI()
+    client = get_client()
     kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
@@ -312,7 +341,14 @@ def answer_stream(prompt: str) -> AnswerStream:
     """
     if not _has_key():
         return AnswerStream(_stub_chunks(prompt))
-    return _chat(PLAY_MODEL, [{"role": "user", "content": prompt}], 0.7, False, PLAY_MAX_TOKENS, stream=True)
+    return _chat(
+        PLAY_MODEL,
+        [{"role": "system", "content": PLAY_SYS}, {"role": "user", "content": prompt}],
+        0.7,
+        False,
+        PLAY_MAX_TOKENS,
+        stream=True,
+    )
 
 
 def score(prompt: str, output: str, target: str) -> Verdict:

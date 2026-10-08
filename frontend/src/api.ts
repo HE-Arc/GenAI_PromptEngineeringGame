@@ -433,6 +433,7 @@ const REASONS: Record<string, string> = {
   'you wrote this one': 'Ce prompt, c’est toi qui l’as écrit : personne ne note le sien.',
   'score 1-10': 'Choisis une note entre 1 et 10.',
   'prompt required': 'Écris un prompt avant de l’envoyer.',
+  'prompt too long': 'Ton prompt est trop long (500 caractères maximum).',
   'bad token': 'Cette partie a peut-être été relancée. Reprends le code depuis l’accueil.',
   'bad password': 'Mot de passe incorrect.',
   'admin only': 'Session expirée. Reconnecte-toi.',

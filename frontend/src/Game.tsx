@@ -153,6 +153,9 @@ export default function Game({
       ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
       : ''
 
+  // The server refuses anything past 500 characters, so the composer enforces the same
+  // bound before the POST: a submit the server would reject is a billed round-trip for nothing.
+  const tooLong = prompt.trim().length > 500
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
   // button telling the player the model is still working when it stopped two seconds ago.
@@ -169,13 +172,19 @@ export default function Game({
   function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
     // Same refusals as the button, so a shortcut can never send what a click would not.
-    if (busy || alreadyDone || stale || !prompt.trim()) return
+    if (busy || alreadyDone || stale || !prompt.trim() || tooLong) return
     e.preventDefault()
     e.currentTarget.requestSubmit()
   }
 
   async function send(e: FormEvent) {
     e.preventDefault()
+    // Re-checked here, not only on the button: the bound is also enforced by `maxLength`,
+    // but a value set past it must fail closed rather than ride a POST the server rejects.
+    if (tooLong) {
+      setErr('Ton prompt est trop long (500 caractères maximum).')
+      return
+    }
     setErr('')
     setBusy(true)
     setLive({ text: '', scoring: false })
@@ -425,7 +434,7 @@ export default function Game({
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                     placeholder="Décris la scène, le ton, la longueur…"
-                    maxLength={2000}
+                    maxLength={500}
                     // The prompt is a piece of instruction, not prose. Autocorrect and the
                     // spellchecker are both actively hostile to it: they "fix" the deliberate
                     // misspellings and the invented vocabulary that make a model produce
@@ -449,10 +458,13 @@ export default function Game({
                 <button
                   type="submit"
                   className="btn btn--signal btn--wide"
-                  disabled={busy || alreadyDone || stale || !prompt.trim()}
+                  disabled={busy || alreadyDone || stale || !prompt.trim() || tooLong}
                 >
                   {submitLabel}
                 </button>
+                <p className="hint">
+                  {prompt.length} / 500
+                </p>
                 <p className="hint">
                   <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
                 </p>

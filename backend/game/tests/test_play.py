@@ -322,6 +322,20 @@ class PlayTest(TransactionTestCase):
         play.assert_not_called()
         self.assertEqual(Answer.objects.count(), 0)
 
+    def test_answer_refused_when_prompt_is_too_long(self) -> None:
+        # The client caps input, but the client is not the boundary. Over-long input is JSON
+        # with its status, never a stream, and costs no billed call and no row.
+        play = answer_chunks("x")
+        _, t = self._join("ana")
+        self._play()
+        with patch("game.llm.answer_stream", new=play), patch("game.llm.score", return_value=Verdict(5, "moyen")):
+            r = self._answer(t, "a" * 501)
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(r["Content-Type"], "application/json")
+        self.assertEqual(json.loads(r.content), {"error": "prompt too long"})
+        play.assert_not_called()
+        self.assertEqual(Answer.objects.count(), 0)
+
     def test_token_is_scoped_to_its_room(self) -> None:
         # The lookup filters on `room` as well as `token`; dropping `room=room` lets a room-A
         # player submit into room B under a token the other room's state never shows.

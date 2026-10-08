@@ -5,7 +5,7 @@ Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/G
 ## Lancer avec Docker
 
 ```bash
-cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD et SECRET_KEY
+cp backend/.env.example backend/.env   # remplir OPENAI_API_KEY (ou LLM_BASE_URL + LLM_API_KEY), ADMIN_PASSWORD et SECRET_KEY
 docker compose up --build
 ```
 
