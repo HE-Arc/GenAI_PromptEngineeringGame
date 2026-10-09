@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from game.models import Player, QuizQuestion, Room
 from game.targets import ROUNDS_PER_GAME
-from game.views import ROOM_IDLE_TTL, ROOM_KEEP_TTL, _beat, _presence, _presence_lock, _sweep_tick
+from game.views import ROOM_IDLE_TTL, ROOM_KEEP_TTL, _beat, _opened, _presence, _presence_lock, _sweep_tick
 
 # HOW LONG AGO a room has to look to be idle, wherever a test means "well past ten minutes".
 # `ROOM_IDLE_TTL + 60` rather than a round number, so the boundary tests read as "one minute past"
@@ -42,6 +42,7 @@ class IdleBase(TestCase):
     def setUp(self) -> None:
         with _presence_lock:
             _presence.clear()
+            _opened.clear()
 
     def _post(self, url: str, data: dict | None = None):
         return self.client.post(url, data=json.dumps(data or {}), content_type="application/json")
@@ -97,6 +98,9 @@ class IdleBase(TestCase):
         with _presence_lock:
             for key in [k for k in _presence if k[0] == room.code]:
                 _presence[key] = time.monotonic() - seconds
+            # The opening instant counts as a beat too, so it ages with the rest of the room.
+            if room.code in _opened:
+                _opened[room.code] = time.monotonic() - seconds
 
     def _entries(self) -> dict[str, dict]:
         """The admin list, as `{code: entry}`, so a test about a room is not a test about an order.
@@ -211,12 +215,24 @@ class IdleSweepTests(IdleBase):
         self._join(room, "ana")
         with _presence_lock:
             self.assertEqual(len(_presence), 0, "this room must have no beats at all")
+            # A room from before a restart: this process never saw it opened.
+            _opened.pop(room.code)
         self.assertIn(room.code, self._entries())
         self.assertTrue(Room.objects.filter(code=room.code).exists())
 
         with mock.patch("game.views._BOOT_INSTANT", time.monotonic() - ROOM_IDLE_TTL - 1):
             self.assertNotIn(room.code, self._entries())
         self.assertFalse(Room.objects.filter(code=room.code).exists())
+
+    def test_a_new_room_on_a_long_running_server_survives(self):
+        # THE BUG THIS PINS: a server up for more than ten minutes deleted a lobby created a second
+        # ago, before anyone could join, because a room with no beats fell back to the boot floor.
+        # Its opening instant is its first beat now, so it gets its whole grace period.
+        with mock.patch("game.views._BOOT_INSTANT", time.monotonic() - ROOM_IDLE_TTL - 600):
+            room = self._room()
+            self.assertIn(room.code, self._entries())
+        self.assertTrue(Room.objects.filter(code=room.code).exists())
+        self.assertEqual(self._post(f"/api/rooms/{room.code}/join", {"name": "ana"}).status_code, 200)
 
     def test_the_boundary_is_ten_minutes(self):
         # 9 MINUTES IS LISTED, 11 IS NOT, and the two rooms differ in nothing else: same phase,
@@ -347,7 +363,7 @@ class PlayedRoomDeletionTests(IdleBase):
         self.assertEqual(self._entries()[room.code]["phase"], Room.Phase.QUIZ)
 
     def test_the_last_activity_survives_a_restart(self) -> None:
-        # `_presence` IS PROCESS-LOCAL and a restart empties it, so this test empties it by hand and
+        # `_presence` and `_opened` ARE PROCESS-LOCAL and a restart empties them, so this test empties them by hand and
         # moves the boot floor past the idle TTL — which is the state the server is in one minute
         # after being stopped and started. The durable column is the only reason the one-hour rule
         # is reachable on the SECOND run rather than never.
@@ -361,6 +377,7 @@ class PlayedRoomDeletionTests(IdleBase):
         self._last_seen(room, ROOM_KEEP_TTL + 60)
         with _presence_lock:
             _presence.clear()
+            _opened.clear()
         with mock.patch("game.views._BOOT_INSTANT", time.monotonic() - ROOM_IDLE_TTL - 60):
             self.assertNotIn(room.code, self._entries())
         self.assertFalse(Room.objects.filter(code=room.code).exists())
@@ -432,7 +449,7 @@ class PlayedRoomDeletionTests(IdleBase):
     def test_no_thread_starts_without_the_env_var(self) -> None:
         # THE GUARD IS THE THING UNDER TEST, not a detail: `AppConfig.ready()` also runs under
         # `manage.py test`, and a thread deleting rows under the suite is a suite that passes or
-        # fails depending on the wall clock. `run.sh` is the only thing that sets the variable.
+        # fails depending on the wall clock. Compose is the only thing that sets the variable.
         self.assertIsNone(os.environ.get("GENAI_SWEEP"))
         self.assertEqual(
             [t.name for t in threading.enumerate() if t.name == "room-sweep"],

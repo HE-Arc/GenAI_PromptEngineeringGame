@@ -1,5 +1,6 @@
 import { useId, useState, type CSSProperties, type ReactNode } from 'react'
-import { fr, noun, nounOf } from './format'
+import { countdown, fr, noun, nounOf } from './format'
+import { useQuizWindow, type ServerWindow } from './serverClock'
 import { linkWord, type Link } from './useRoom'
 import { SCALE_MAX, type Player, type ReadyState } from './api'
 
@@ -85,7 +86,9 @@ export function RoundTrack({ current, total }: { current: number; total: number 
   )
 }
 
-export function Step({ current, total }: { current: number; total: number }) {
+// `children` sits under the track: the round's clock, which belongs at the top of the screen
+// with the round it times.
+export function Step({ current, total, children }: { current: number; total: number; children?: ReactNode }) {
   return (
     <div className="stepwrap">
       <p className="step">
@@ -93,6 +96,7 @@ export function Step({ current, total }: { current: number; total: number }) {
         <span className="step__of">sur {total}</span>
       </p>
       <RoundTrack current={current} total={total} />
+      {children}
     </div>
   )
 }
@@ -345,7 +349,18 @@ const TIERS = [
   { max: Number.POSITIVE_INFINITY, size: 'text' },
 ]
 
-export function Readout({ label, value, code }: { label: string; value: string; code?: boolean }) {
+export function Readout({
+  label,
+  value,
+  code,
+  image,
+}: {
+  label: string
+  value: string
+  code?: boolean
+  // A picture the text refers to ("générez cette image"), shown under it.
+  image?: string | null
+}) {
   const size = TIERS.find((t) => value.length <= t.max)!.size
   return (
     // The tier rides on the panel, not on the text, so every rule below can be written as
@@ -354,6 +369,7 @@ export function Readout({ label, value, code }: { label: string; value: string; 
     <div className="readout" data-size={size}>
       <span className="readout__label">{label}</span>
       <p className={`readout__value${code ? ' readout__value--code' : ''}`}>{value}</p>
+      {image && <img className="readout__image" src={image} alt="Image de l’exercice" />}
     </div>
   )
 }
@@ -695,5 +711,28 @@ export function Section({ title, children }: { title: string; children: ReactNod
       <h2 className="label">{title}</h2>
       {children}
     </section>
+  )
+}
+
+// The clock of a timed phase — writing a prompt, rating one — drawn like the didacticiel's.
+// Read off the server's deadline and clock, so a phone that arrives late or runs fast counts the
+// same seconds as the rest of the room. Renders nothing when the phase has no clock.
+export function PhaseClock({ timer, what }: { timer: ServerWindow | null; what: string }) {
+  const { open, left } = useQuizWindow(timer)
+  if (!timer) return null
+  const secs = countdown(left)
+  return (
+    <p className="qclock" data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
+      {open ? (
+        <>
+          <span className="qclock__n num">{secs}</span>
+          <span className="qclock__t">
+            {secs > 1 ? 'secondes' : 'seconde'} {what}
+          </span>
+        </>
+      ) : (
+        <span className="qclock__t qclock__t--closed">Temps écoulé</span>
+      )}
+    </p>
   )
 }

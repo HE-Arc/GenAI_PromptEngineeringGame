@@ -193,6 +193,8 @@
   letter-spacing: 0.01em;
   max-width: 26rem;
   text-wrap: pretty;
+  /* An exercise carries its own layout — an email's paragraphs, a pseudo-code's indentation. */
+  white-space: pre-wrap;
 }
 
 /* The one thing allowed to grow on a wide screen. Everywhere else the wide layout only
@@ -668,14 +670,18 @@
   align-items: baseline;
   gap: 0.6rem;
 }
+/* The final note and its unit as one nowrap unit, at the size the old score-only header used:
+ * it is the one figure the player is asked to carry out of the round. The two inputs above it
+ * stay in the body face, so the sentence reads as prose with a number in it rather than as three
+ * competing headlines. The unit keeps its own smaller size and takes a real space from the JSX —
+ * the margin that used to separate the two spans is gone, because it read as "6sur 10". */
 .tally__round {
-  margin-left: auto;
   color: var(--signal);
   font-size: 1.75rem;
   line-height: 1;
+  white-space: nowrap;
 }
 .tally__roundden {
-  margin-left: 0.25rem;
   color: var(--ink-dim);
   font-size: 0.8125rem;
   font-weight: 600;
@@ -783,6 +789,18 @@
   font-size: 0.9375rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+/* The exercise's picture, in the target panel and above the prompt being rated. Full width of
+ * its box, never wider; the white of the figure is kept, it is part of the figure. */
+.readout__image,
+.ratehead__image {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 0.75rem;
+  border-radius: var(--radius);
+  background: #fff;
 }
 .rateline {
   display: flex;

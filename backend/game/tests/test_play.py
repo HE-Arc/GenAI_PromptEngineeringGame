@@ -10,7 +10,7 @@ from game import llm
 from game.llm import Verdict
 from game.models import Answer, Player, Room, Round
 from game.tests.support import answer_chunks, drain, read_frames, wait_for
-from game.views import _beat, _inflight, _presence, room_state, settle_round
+from game.views import _beat, _inflight, _presence, _room_error, room_state, settle_round
 
 
 class PlayTest(TransactionTestCase):
@@ -38,6 +38,7 @@ class PlayTest(TransactionTestCase):
         # online in a later one.
         _presence.clear()
         _inflight.clear()
+        _room_error.clear()
 
     def _play(self) -> None:
         self.room.phase = Room.Phase.PLAYING
@@ -215,10 +216,15 @@ class PlayTest(TransactionTestCase):
     @patch("game.llm.grade_prompt", return_value=Verdict(7, "prompt correct"))
     @patch("game.llm.score", side_effect=RuntimeError("le juge est tombe"))
     @patch("game.llm.answer_stream", new=answer_chunks("quarante-deux"))
-    def test_a_failed_jury_streams_an_error_and_saves_nothing(self, _m_score, _m_grade) -> None:
+    def test_a_failed_jury_streams_an_error_and_saves_a_fallback(self, _m_score, _m_grade) -> None:
         # A generator cannot `yield` inside an `except`, which is the whole reason the work is
         # not a generator: without a thread the client would see the text and then a closed
         # stream, and could not tell a crash from a phone that went to sleep.
+        #
+        # A FAILED CALL WRITES A FALLBACK, not nothing. Writing nothing left the round waiting on
+        # a player who could never answer it again, which is the hang this whole change exists to
+        # remove: the text streamed so far is now stored with a neutral verdict, so the round
+        # closes and the class moves on.
         _, ta = self._join("ana")
         self._play()
         self._online("ana")
@@ -230,14 +236,20 @@ class PlayTest(TransactionTestCase):
         # be able to hear "the jury is working" and then hear it failed, and the whole frame list
         # is pinned so neither of those two frames can quietly stop being sent.
         self.assertEqual([name for name, _ in frames], ["chunk", "scoring", "error"])
-        # Nothing persisted: the player is not credited with an answer nobody judged, and the
-        # round must not close on it. Their composer stays usable on the client precisely because
-        # the row does not exist.
-        self.assertEqual(Answer.objects.count(), 0)
+        # The fallback row: the streamed text is kept, and the neutral verdict says the engine
+        # failed rather than that the player's prompt was bad.
+        answer = Answer.objects.get()
+        self.assertEqual(answer.output, "quarante-deux")
+        self.assertEqual((answer.score, answer.comment), (0, "La partie a planté côté serveur. Préviens l'animateur."))
+        # And the room advanced: ana was the only online player and the fallback counts as her
+        # answer, so the round the crash would have frozen has opened its rating.
         self.room.refresh_from_db()
-        self.assertEqual((self.room.current, self.room.phase), (0, "playing"))
-        # And the claim is released, or the player is locked out of a round they may still answer.
+        self.assertEqual((self.room.current, self.room.phase), (0, "rating"))
+        # The claim is released, or the player is locked out of a round they may still answer.
         self.assertNotIn((Round.objects.get(room=self.room, order=0).pk, player.pk), _inflight)
+        # And the room carries the transient notice, so a console watching `/events` learns a
+        # submit failed here instead of reading a round that closed for no visible reason.
+        self.assertEqual(room_state("ABCD")["error"], "La partie a planté côté serveur. Préviens l'animateur.")
 
     @patch("game.llm.grade_prompt", return_value=Verdict(7, "prompt correct"))
     def test_a_client_that_walks_away_does_not_cancel_the_answer(self, _m_grade) -> None:
@@ -319,6 +331,20 @@ class PlayTest(TransactionTestCase):
         with patch("game.llm.answer_stream", new=play), patch("game.llm.score", return_value=Verdict(5, "moyen")):
             r = self._answer(t, "   \n ")
         self.assertEqual(r.status_code, 400)
+        play.assert_not_called()
+        self.assertEqual(Answer.objects.count(), 0)
+
+    def test_answer_refused_when_prompt_is_too_long(self) -> None:
+        # The client caps input, but the client is not the boundary. Over-long input is JSON
+        # with its status, never a stream, and costs no billed call and no row.
+        play = answer_chunks("x")
+        _, t = self._join("ana")
+        self._play()
+        with patch("game.llm.answer_stream", new=play), patch("game.llm.score", return_value=Verdict(5, "moyen")):
+            r = self._answer(t, "a" * 501)
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(r["Content-Type"], "application/json")
+        self.assertEqual(json.loads(r.content), {"error": "prompt too long"})
         play.assert_not_called()
         self.assertEqual(Answer.objects.count(), 0)
 
@@ -413,8 +439,8 @@ class PlayTest(TransactionTestCase):
         self.assertEqual(
             set(st),
             {
-                "code", "phase", "current", "total", "target", "anonymous",
-                "players", "online_count", "quiz", "reveal", "summary", "ready",
+                "code", "phase", "current", "total", "target", "target_image", "timer", "anonymous",
+                "players", "online_count", "quiz", "reveal", "summary", "ready", "error",
             },
         )
         # Still round 0, on its own target. The last player's answer opened the RATING, it did not
@@ -432,7 +458,7 @@ class PlayTest(TransactionTestCase):
         self.assertEqual(
             st["reveal"],
             {"index": 0, "count": 1, "prompt": "repete 42", "author": None,
-             "author_label": "Joueur 1", "rated": 0},
+             "author_label": "Joueur 1", "rated": 0, "mine": False},
         )
         self.assertIsNone(st["summary"])
         p = st["players"][0]
@@ -516,13 +542,14 @@ class PlayTest(TransactionTestCase):
             self.room.save(update_fields=["current"])
             settle_round(self.room)  # nobody rated, so `quality` stands on the critic's own score
         view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
-        # `score` is the sum of `round_score` over the settled rounds, each of which is
-        # `(proximité + qualité) / 2` exactly: (8 + 8) / 2 == 8 and (4 + 4) / 2 == 4, so 12 here.
-        # The three numbers still describe the SAME two rounds, which is the property that makes
-        # them readable as one row.
+        # `score` is the sum of `round_score` over the settled rounds, each of which is the
+        # WEIGHTED mean `(proximité + 2 * qualité) / 3`: here quality equals proximity, so each
+        # round is (8 + 16) / 3 == 8 and (4 + 8) / 3 == 4, and the sum is 12. The three numbers
+        # still describe the SAME two rounds, which is the property that makes them readable as
+        # one row.
         self.assertEqual(view["proximity_total"], 12)
         self.assertEqual(view["quality_total"], 12)
-        self.assertEqual(view["score"], (8 + 8) / 2 + (4 + 4) / 2)
+        self.assertEqual(view["score"], (8 + 2 * 8) / 3 + (4 + 2 * 4) / 3)
         self.assertTrue(view["answered"])  # the cursor is on round 1, the last one she wrote
         # The two halves are not forced to be equal by the payload: a room that agreed with the
         # critic on one round and not the other still gets two distinct columns, and that gap is
@@ -534,17 +561,19 @@ class PlayTest(TransactionTestCase):
         )
 
     def test_score_is_the_sum_of_the_settled_round_scores(self) -> None:
-        # The ranking sums the SETTLED `round_score`, which is `(proximité + qualité) / 2` — §7 of
-        # the cahier says the final ranking "additionne les dix tours", and `models.py` says the
-        # same in its comment on `round_score`. It does NOT sum `Answer.score`, which is the
-        # judge's proximity on the output alone.
+        # The ranking sums the SETTLED `round_score`, which is the WEIGHTED mean
+        # `(proximité + 2 * qualité) / 3` — the prompt's construction weighs twice the answer it
+        # produced. The cahier says the final ranking "additionne les dix tours", and `models.py`
+        # says the same in its comment on `round_score`. It does NOT sum `Answer.score`, which is
+        # the judge's proximity on the output alone.
         #
         # The two totals are built so they cannot be confused: a round of proximity 10 with a
         # quality of 10 settles to 10, and a round of proximity 10 with a quality of 2 settles to
-        # 6. The spec's total is therefore 16, while the proximities alone add up to 20. A player
-        # whose prompts are badly written but whose output happens to land would otherwise tie
-        # with a player who writes carefully — in a game whose only question is whether the prompt
-        # was any good.
+        # 14/3. The weighted total is therefore 44/3, while the proximities alone add up to 20. A
+        # player whose prompts are badly written but whose output happens to land would otherwise
+        # tie with a player who writes carefully — in a game whose only question is whether the
+        # prompt was any good. The same fixture under the OLD 50/50 mean gave 16, so this value
+        # pins the weight change and not merely "some mean".
         ana = Player.objects.create(room=self.room, name="ana")
         self._play()
         for order, (proximity, quality_llm) in enumerate(((10, 10), (10, 2))):
@@ -558,10 +587,14 @@ class PlayTest(TransactionTestCase):
         self.assertEqual(view["proximity_total"], 20)
         self.assertEqual(view["quality_total"], 12)
         # The two dimensions are visible next to the total, and the total is not their sum. The
-        # spec's own arithmetic, not a floor of it: (10 + 10) / 2 == 10 and (10 + 2) / 2 == 6.
-        spec_total = (10 + 10) / 2 + (10 + 2) / 2
-        self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], spec_total)
-        self.assertEqual(view["score"], spec_total)
+        # weighted arithmetic, not a floor of it: (10 + 2 * 10) / 3 == 10 and (10 + 2 * 2) / 3 ==
+        # 14/3. The old 50/50 mean would have read 16 here; the prompt-weighted formula gives less,
+        # because round two's careful dimensions are dragged down by its low-quality output.
+        weighted_total = (10 + 2 * 10) / 3 + (10 + 2 * 2) / 3
+        self.assertAlmostEqual(weighted_total, 44 / 3)
+        self.assertNotEqual(weighted_total, (10 + 10) / 2 + (10 + 2) / 2)  # != the old /2 total
+        self.assertEqual(Answer.objects.filter(player=ana).aggregate(s=Sum("round_score"))["s"], weighted_total)
+        self.assertEqual(view["score"], weighted_total)
 
     def test_an_unsettled_round_counts_provisionally_then_gets_corrected(self) -> None:
         # `round_score` is NULL until the class has rated the round, and a `Sum` skips NULLs. So
@@ -588,13 +621,13 @@ class PlayTest(TransactionTestCase):
         self.assertIsNone(view["proximity_total"])
         self.assertIsNone(view["quality_total"])
 
-        # Settled: (9 + 2) / 2 = 5.5, so the total moves DOWN by 3.5 once the class has rated.
-        # The half is the spec's arithmetic and not a rounding decision: `note_tour` is a mean, and
-        # a floor here would quietly take half a point off every odd round of a game that is still
-        # presented as « sur 100 ».
+        # Settled: (9 + 2 * 2) / 3 = 13/3 ≈ 4.33, so the total moves DOWN once the class has
+        # rated. The fraction is the weighted arithmetic and not a rounding decision: `note_tour`
+        # weighs quality twice over, and a floor here would quietly take a fraction of a point off
+        # every round of a game that is still presented as « sur 100 ».
         settle_round(self.room)
         view = next(p for p in room_state("ABCD")["players"] if p["name"] == "ana")
-        self.assertEqual(view["score"], 5.5)
+        self.assertAlmostEqual(view["score"], 13 / 3)
         self.assertEqual(view["proximity_total"], 9)
         self.assertEqual(view["quality_total"], 2)
 
@@ -629,7 +662,7 @@ class PlayTest(TransactionTestCase):
         rnd.answers.create(player=bob, prompt="p", output="o", score=9, quality_llm=9)
         settle_round(self.room)
         self.room.refresh_from_db()
-        # The score is now the fused (proximité + qualité) / 2 of the settled round, so bob's 9
+        # The score is now the fused (proximité + 2 * qualité) / 3 of the settled round, so bob's 9
         # and ana's 3 are what the sort reads — and the rating phase has passed, so they are
         # visible again.
         self.assertEqual([p["name"] for p in room_state("ABCD")["players"]], ["bob", "ana"])
@@ -670,8 +703,8 @@ class PlayTest(TransactionTestCase):
         self.assertEqual(
             set(payload),
             {
-                "code", "phase", "current", "total", "target", "anonymous",
-                "players", "online_count", "quiz", "reveal", "summary", "ready",
+                "code", "phase", "current", "total", "target", "target_image", "timer", "anonymous",
+                "players", "online_count", "quiz", "reveal", "summary", "ready", "error",
             },
         )
         self.assertEqual(
@@ -682,6 +715,8 @@ class PlayTest(TransactionTestCase):
                 "current": 0,
                 "total": 2,
                 "target": "42",
+                "target_image": None,
+                "timer": None,
                 "anonymous": True,  # the `Room` default, read through the snapshot
                 "players": [
                     {
@@ -715,6 +750,10 @@ class PlayTest(TransactionTestCase):
                 "reveal": None,
                 "summary": None,
                 "ready": None,
+                # No submit has failed in this room, so the transient notice is null. Written out
+                # rather than left to the key-set test above: the whole payload is pinned here
+                # because these are the bytes the phones parse.
+                "error": None,
             },
         )
         r.close()
@@ -728,3 +767,30 @@ class PlayTest(TransactionTestCase):
             with self.subTest(anonymous=flag):
                 Room.objects.filter(code="ABCD").update(anonymous=flag)
                 self.assertIs(room_state("ABCD")["anonymous"], flag)
+
+    def test_room_error_is_absent_until_a_submit_fails_and_transient_after(self) -> None:
+        # The notice is a room-wide signal, not a per-request one: it rides the snapshot every
+        # `/events` reader gets, so the facilitator's console sees it too. It is null by default,
+        # carries the French line once noted, and expires on its own with no second writer.
+        from game.views import ROOM_ERROR_TTL, _note_room_error, _room_error
+
+        self.assertIsNone(room_state("ABCD")["error"])
+        _note_room_error("ABCD", "Panne du modele.")
+        self.assertEqual(room_state("ABCD")["error"], "Panne du modele.")
+        # Expire it by rewinding the stored instant past the TTL, which is what a wall-clock wait
+        # would do only after the game had moved on.
+        expiry, message = _room_error["ABCD"]
+        _room_error["ABCD"] = (expiry - 2 * ROOM_ERROR_TTL, message)
+        self.assertIsNone(room_state("ABCD")["error"])
+        self.assertNotIn("ABCD", _room_error)  # the read pruned its own expired entry
+
+    def test_the_room_error_reaches_the_events_stream(self) -> None:
+        # Pinned on the wire, not only on the dict: `/events` is the channel the console and the
+        # phones actually read, and a key that never reaches it is invisible to every screen.
+        from game.views import _note_room_error
+
+        self._answered_state()
+        _note_room_error("ABCD", "Panne du modele.")
+        frame = next(self.c.get("/api/rooms/ABCD/events").streaming_content)
+        payload = json.loads(frame[len(b"data: ") : -2])
+        self.assertEqual(payload["error"], "Panne du modele.")

@@ -29,14 +29,13 @@ export default function Join({
   const [bad, setBad] = useState<'code' | 'name' | null>(null)
   const [busy, setBusy] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
-  const codeRef = useRef<HTMLInputElement>(null)
 
   // Deliberately not on mount. This screen is typed on a phone held in one hand, and
   // raising the keyboard at load hides the field you are typing into and the button you are
-  // about to press. Focus is taken on the first thing this form can actually accept instead.
-  function start() {
-    if (code) nameRef.current?.focus()
-    else codeRef.current?.focus()
+  // about to press. Only a code read off the address is skipped, because it cannot be edited:
+  // a code the player typed stays theirs to correct, and the name can be typed first.
+  function skipPresetCode() {
+    if (preset !== undefined) nameRef.current?.focus()
   }
 
   async function go(e: FormEvent) {
@@ -77,11 +76,10 @@ export default function Join({
                 asked for explicitly rather than left to guess from the input type. */}
             <input
               id="join-code"
-              ref={codeRef}
               className="input input--code"
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
-              onFocus={start}
+              onFocus={skipPresetCode}
               maxLength={4}
               placeholder="K7TQ"
               inputMode="text"
@@ -108,7 +106,6 @@ export default function Join({
               className="input"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              onFocus={start}
               maxLength={32}
               placeholder="Ana"
               autoComplete="nickname"

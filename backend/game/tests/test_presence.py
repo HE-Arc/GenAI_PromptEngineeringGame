@@ -330,14 +330,14 @@ class PresenceTest(TransactionTestCase):
 
     @patch("game.llm.score", side_effect=RuntimeError("model call failed"))
     @patch("game.llm.answer_stream", new=answer_chunks("42"))
-    def test_a_failed_submit_rolls_back_completely(self, _m_score) -> None:
-        """The all-or-nothing claim, from the client's point of view.
+    def test_a_failed_submit_keeps_the_round_moving_with_a_fallback(self, _m_score) -> None:
+        """A failed model call must not strand the round.
 
-        `llm.score` raising is the model call blowing up after the text already streamed. The
-        `create` is never reached, so no row exists; the worker's `finally` still discards the
-        claim, so the player is not locked out of the round by a submit that failed. A row
-        written before the second call returned would be the bug this guards: bob would
-        reconnect to a round showing `answered: true` for a submission that never completed.
+        `llm.score` raising is the model call blowing up after the text already streamed. Writing
+        nothing used to leave bob perpetually unanswered, so a round that only advances on
+        everyone having answered froze for the whole class. The streamed text is now stored with a
+        neutral verdict, the player is still told through the error frame, and the claim is
+        released so the round is not held by a submit that already resolved.
         """
         bob = self._player("bob")
         _beat("ABCD", bob.pk)
@@ -346,9 +346,11 @@ class PresenceTest(TransactionTestCase):
         # A closed stream rather than an exception: the work is not the request, so its failure
         # cannot be raised into the client, and the error frame is how it is reported instead.
         self.assertEqual(frames[-1][0], "error")
-        self.assertEqual(Answer.objects.filter(player=bob).count(), 0)
+        # The fallback row exists, carrying the text that streamed and a neutral verdict.
+        answer = Answer.objects.get(player=bob)
+        self.assertEqual((answer.output, answer.score), ("42", 0))
         self.assertEqual(len(_inflight), 0)  # the claim was released despite the exception
-        self.assertFalse(room_state("ABCD")["players"][0]["answered"])
+        self.assertTrue(room_state("ABCD")["players"][0]["answered"])
 
     def _answer(self, player: Player, prompt: str):
         r = self._answer_raw(player, prompt)

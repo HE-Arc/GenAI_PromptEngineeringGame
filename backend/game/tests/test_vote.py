@@ -142,21 +142,13 @@ class ReadyModelTests(TransactionTestCase):
 
     def test_a_vote_on_a_previous_step_is_never_counted_again(self):
         # THE INVARIANT THAT MAKES THE WHOLE THING SAFE, and the reason nothing in this codebase
-        # clears votes when the room moves on. `step` is part of the key, so a vote on `quiz:0`
-        # cannot match the count for `quiz:1` — there is no window in which a stale vote is
-        # visible. Clearing instead would add three call sites and a failure mode (a forgotten
-        # clear is a room that opens its next question already holding enough votes to skip it)
-        # to solve a problem the key already solved.
+        # clears votes when the room moves on. `step` is part of the key, so a vote on the first
+        # prompt of a rating cannot match the count for the second.
         room, player = _one_player_room()
-        Ready.objects.create(room=room, player=player, step="quiz:0")
-        room._open_quiz(1)
-        room._close_quiz()
-        room.refresh_from_db()
-        from game.views import current_step
-        self.assertEqual(current_step(room), "quiz:1")
-        self.assertEqual(Ready.objects.filter(room=room, step=current_step(room)).count(), 0)
+        Ready.objects.create(room=room, player=player, step="rating:0:0")
+        self.assertEqual(Ready.objects.filter(room=room, step="rating:0:1").count(), 0)
         # The row is still there, and that is deliberate: it is inert, not gone.
-        self.assertEqual(Ready.objects.filter(room=room, step="quiz:0").count(), 1)
+        self.assertEqual(Ready.objects.filter(room=room, step="rating:0:0").count(), 1)
 
 
 class VoteBase(TransactionTestCase):
@@ -358,14 +350,6 @@ class VoteBase(TransactionTestCase):
                 continue
             self._post(f"/api/rooms/{room.code}/rate", {"token": p.token, "score": score})
 
-    def _skip_to_summary(self, room: Room, players: list[Player]) -> None:
-        """Rating through every prompt and landed on the summary, rating each one as it appears."""
-        self._to_rating(room, players)
-        while room.phase == Room.Phase.RATING:
-            self._rate_all(room, players, players[0])
-            self._post(f"/api/admin/rooms/{room.code}/next")
-            room.refresh_from_db()
-
 
 class VoteAdvanceTests(VoteBase):
     def test_nothing_moves_on_an_empty_room(self):
@@ -384,57 +368,53 @@ class VoteAdvanceTests(VoteBase):
         room.refresh_from_db()
         self.assertEqual(room.quiz_index, 0)
 
-    def test_two_ready_players_out_of_three_move_the_room_on(self):
-        # 3 // 2 + 1 == 2. This is the whole feature: the room moves on itself.
+    def test_a_majority_on_a_revealed_quiz_question_does_not_move_the_room(self):
+        # Going on to the next question is the admin's button alone: a revealed didacticiel
+        # question has no step, so the votes are refused and the cursor stays put.
         room, players = self._room_with(3)
-        self._ready(room, players[0])
-        self._ready(room, players[1])
-        maybe_advance_by_votes(room)
+        self.assertIsNone(current_step(room))
+        self.assertIsNone(room_state(room.code)["ready"])
+        for p in players[:2]:
+            r = self._post(f"/api/rooms/{room.code}/ready", {"token": p.token})
+            self.assertEqual((r.status_code, r.json()["error"]), (409, "nothing to discuss"))
         room.refresh_from_db()
-        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 1))
-        self.assertGreater(room.quiz_deadline, timezone.now())
+        self.assertEqual((room.phase, room.quiz_index), (Room.Phase.QUIZ, 0))
+        self.assertEqual(Ready.objects.filter(room=room).count(), 0)
 
     def test_the_votes_of_the_step_that_just_closed_are_inert(self):
         # NOT DELETED, INERT — and the assertion is on the count for the NEW step, not on the
-        # table. `quiz:0` votes cannot be counted against `quiz:1`, so a room that moved on is
-        # not a room holding a stale majority. A test asserting `Ready.objects.count() == 0` here
-        # would pin a deletion the design no longer does.
+        # table. The votes on the first prompt cannot be counted against the second.
         room, players = self._room_with(3)
-        for p in players[:2]:
+        self._to_rating(room, players)
+        for p in players[1:]:
             self._ready(room, p)
-        maybe_advance_by_votes(room)
         room.refresh_from_db()
-        self.assertEqual(room.quiz_index, 1)
-        # The room MOVED, so the votes that carried it are behind the cursor. The step name is
-        # asserted on the row rather than through `current_step`, because advancing opens a fresh
-        # thirty-second window on question 1 and a question still being asked is deliberately not
-        # a discussion — so `current_step` is None here, which is the withholding rule and not a
-        # claim about these rows. What is under test is that the old votes cannot match the new
-        # step, and that is a property of the table whatever the room is doing.
-        self._reveal_now(room)
-        self.assertEqual(current_step(room), "quiz:1")
-        self.assertEqual(Ready.objects.filter(room=room, step="quiz:1").count(), 0)
+        self.assertEqual(room.rounds.get(order=0).revealed, 1)
+        self.assertEqual(current_step(room), "rating:0:1")
+        self.assertEqual(Ready.objects.filter(room=room, step="rating:0:1").count(), 0)
+        self.assertEqual(Ready.objects.filter(room=room, step="rating:0:0").count(), 2)
 
     def test_a_disconnected_player_does_not_count_in_the_bar(self):
-        # Three connected, one of them sleeps: the bar is 2 of 2 among the two awake, not 2 of 3.
-        # This is why the rule counts `online` and not `room.players` — a phone in a bag would
-        # otherwise hold the class on every question for the rest of the game.
+        # Two may vote on the first prompt (its author may not), one of them sleeps: the bar is
+        # 1 of 1 among the awake, not 1 of 2. This is why the rule counts `online` and not
+        # `room.players` — a phone in a bag would otherwise hold the class on every prompt.
         room, players = self._room_with(3)
+        self._to_rating(room, players)
         self._age_out(players[2])
-        self._ready(room, players[0])
         self._ready(room, players[1])
-        maybe_advance_by_votes(room)
         room.refresh_from_db()
-        self.assertEqual(room.quiz_index, 1)
+        self.assertEqual(room.rounds.get(order=0).revealed, 1)
 
     def test_a_vote_from_a_disconnected_player_does_not_count_either(self):
-        room, players = self._room_with(3)
-        self._ready(room, players[0])
-        self._age_out(players[0])
+        # Three may vote on the first prompt. One votes and then sleeps: the bar is now a
+        # majority of the two awake, and the sleeper's vote is not one of them.
+        room, players = self._room_with(4)
+        self._to_rating(room, players)
         self._ready(room, players[1])
-        maybe_advance_by_votes(room)
+        self._age_out(players[1])
+        self._ready(room, players[2])
         room.refresh_from_db()
-        self.assertEqual(room.quiz_index, 0)
+        self.assertEqual(room.rounds.get(order=0).revealed, 0)
 
     def test_the_rating_phase_advances_on_a_majority_of_ready_players(self):
         # The prompt on screen is rated, then discussed. The bar is the players who may RATE it:
@@ -447,12 +427,22 @@ class VoteAdvanceTests(VoteBase):
         room.refresh_from_db()
         self.assertEqual(room.rounds.get(order=0).revealed, 1)
 
-    def test_the_summary_advances_the_round_on_a_majority(self):
+    def test_the_summary_does_not_advance_on_votes(self):
+        # The next round is the admin's button alone, however many players say they are ready.
         room, players = self._room_with(3)
-        self._skip_to_summary(room, players)
-        for p in players[:2]:
-            self._ready(room, p, step="summary:0")
-        maybe_advance_by_votes(room)
+        self._to_rating(room, players)
+        # Rated through, prompt by prompt, until the last rating lands the room on the summary.
+        while room.phase == Room.Phase.RATING:
+            self._rate_all(room, players, players[0])
+            room.refresh_from_db()
+        self.assertEqual((room.phase, room.current), (Room.Phase.SUMMARY, 0))
+        self.assertIsNone(current_step(room))
+        for p in players:
+            r = self._post(f"/api/rooms/{room.code}/ready", {"token": p.token})
+            self.assertEqual(r.status_code, 409)
+        room.refresh_from_db()
+        self.assertEqual((room.phase, room.current), (Room.Phase.SUMMARY, 0))
+        self._post(f"/api/admin/rooms/{room.code}/next")
         room.refresh_from_db()
         self.assertEqual((room.phase, room.current), (Room.Phase.PLAYING, 1))
 
@@ -469,24 +459,27 @@ class VoteAdvanceTests(VoteBase):
         # on a tap advances on that tap. Polling for it would make the last vote's effect land up
         # to half a second late for no reason.
         room, players = self._room_with(3)
-        for p in players[:2]:
+        self._to_rating(room, players)
+        for p in players[1:]:
             self.assertEqual(self._post(f"/api/rooms/{room.code}/ready", {"token": p.token}).status_code, 200)
         room.refresh_from_db()
-        self.assertEqual(room.quiz_index, 1)
+        self.assertEqual(room.rounds.get(order=0).revealed, 1)
 
 
 class ReadyEndpointTests(VoteBase):
     def test_a_vote_is_recorded_and_reported_back(self):
-        room, players = self._room_with(2)
-        r = self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token})
+        room, players = self._room_with(3)
+        self._to_rating(room, players)
+        r = self._post(f"/api/rooms/{room.code}/ready", {"token": players[1].token})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["ready"]["count"], 1)
 
     def test_voting_twice_is_refused(self):
-        room, players = self._room_with(2)
-        self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token})
+        room, players = self._room_with(4)
+        self._to_rating(room, players)
+        self._post(f"/api/rooms/{room.code}/ready", {"token": players[1].token})
         self.assertEqual(
-            self._post(f"/api/rooms/{room.code}/ready", {"token": players[0].token}).status_code, 409
+            self._post(f"/api/rooms/{room.code}/ready", {"token": players[1].token}).status_code, 409
         )
 
     def test_a_bad_token_is_refused(self):
@@ -513,52 +506,36 @@ class ReadyEndpointTests(VoteBase):
         self.assertEqual(Ready.objects.filter(room=room).count(), 0)
 
     def test_the_snapshot_reports_the_bar_and_whether_this_player_is_ready(self):
-        room, players = self._room_with(3)
-        self._ready(room, players[0])
+        room, players = self._room_with(4)
+        self._to_rating(room, players)
+        self._ready(room, players[1])
         ready = room_state(room.code)["ready"]
         self.assertEqual((ready["count"], ready["needed"], ready["mine"]), (1, 2, False))
+
 
 class ReadyEdgeCaseTests(VoteBase):
     """The three ways the ready bar used to be wrong, each pinned so the bug cannot come back."""
 
-    def test_a_vote_during_the_answering_window_is_refused(self):
-        # THE BUG THIS WHOLE CLASS EXISTS FOR. `current_step` used to name a `quiz:<n>` step for
-        # the whole quiz phase, so the ready bar was on screen DURING the thirty seconds the
-        # question was being asked. Two players out of three could then press « prêt » on
-        # question 3 and move the room on to question 4 before anybody had read question 3's
-        # answer — a question skipped, never seen, with the reveal to explain it happening to a
-        # class that had already left it.
-        #
-        # Asking and discussing are two different moments. The step exists only once the window
-        # has closed, which is the comparison `_quiz_state` already makes and which
-        # `_quiz_is_revealed` now shares, so the bar and the snapshot's `revealed` flag cannot
-        # disagree about whether the answer is out.
+    def test_a_vote_on_the_didacticiel_is_refused_open_or_revealed(self):
+        # A didacticiel question has no step at all now: not while it is being asked, which was
+        # the original bug (a majority skipping a question nobody had seen the answer to), and
+        # not once it is revealed either, since the next question is the admin's button alone.
         room, players = self._room_with(3)
         Room.objects.filter(code=room.code).update(
             quiz_deadline=timezone.now() + timedelta(seconds=30)
         )
         room.refresh_from_db()
-        # The window is open: the room is in `quiz`, on a question nobody has been told the answer
-        # to, and `quiz.revealed` says so independently of the ready bar.
         self.assertFalse(room_state(room.code)["quiz"]["revealed"])
-        self.assertIsNone(current_step(room))
-        # No bar for a phase that is not discussing anything.
-        self.assertIsNone(room_state(room.code)["ready"])
-        # And a majority pressing anyway is refused outright, twice over — by the phase check and
-        # by the fact that nothing was recorded.
-        for p in players[:2]:
-            self.assertEqual(self._post(f"/api/rooms/{room.code}/ready", {"token": p.token}).status_code, 409)
+        for revealed in (False, True):
+            if revealed:
+                self._reveal_now(room)
+            self.assertIsNone(current_step(room))
+            self.assertIsNone(room_state(room.code)["ready"])
+            for p in players[:2]:
+                self.assertEqual(self._post(f"/api/rooms/{room.code}/ready", {"token": p.token}).status_code, 409)
         room.refresh_from_db()
         self.assertEqual(room.quiz_index, 0)
         self.assertEqual(Ready.objects.filter(room=room).count(), 0)
-        # Once the window closes, the same room is ready to discuss and the same bar works.
-        self._reveal_now(room)
-        self.assertEqual(current_step(room), "quiz:0")
-        self.assertIsNotNone(room_state(room.code)["ready"])
-        for p in players[:2]:
-            self.assertEqual(self._post(f"/api/rooms/{room.code}/ready", {"token": p.token}).status_code, 200)
-        room.refresh_from_db()
-        self.assertEqual(room.quiz_index, 1)
 
     def test_the_bar_in_a_two_player_room_counts_the_players_who_may_vote(self):
         # THE BAR AND THE COUNT WERE MEASURED OVER DIFFERENT POPULATIONS, and in a room of two
@@ -607,29 +584,23 @@ class ReadyEdgeCaseTests(VoteBase):
         self.assertEqual(room.rounds.get(order=0).revealed, 1)
 
     def test_a_restart_wipes_the_votes_of_the_previous_game(self):
-        # The one place a wipe IS needed: a restart replays `quiz:0`, so this is the single case
-        # where a stale step name comes back round and would otherwise count.
+        # The one place a wipe IS needed: a restart replays `rating:0:0`, so this is the single
+        # case where a stale step name comes back round and would otherwise count.
         #
         # It goes through the endpoint, so it needs the room helpers, and that is why it lives
         # here rather than beside the other model tests: a test that deletes the rows itself and
         # then finds them gone has asserted that `delete()` works.
-        #
-        # THE REPLAY IS WHAT MAKES IT NECESSARY. Everywhere else the votes survive the room moving
-        # on, because `step` is part of their key. A restart is the one transition that brings a
-        # step name BACK, so without the wipe the two players' votes from the previous game would
-        # still be sitting on `quiz:0` and the relaunched room would open its first question
-        # already holding enough votes to skip it.
-        room, players = self._room_with(3)
-        for p in players[:2]:
-            self._ready(room, p)
-        self.assertEqual(Ready.objects.filter(room=room, step="quiz:0").count(), 2)
+        room, players = self._room_with(4)
+        self._to_rating(room, players)
+        self._ready(room, players[1])
+        self.assertEqual(Ready.objects.filter(room=room, step="rating:0:0").count(), 1)
 
         self._post(f"/api/admin/rooms/{room.code}/restart", {"tutorial": True})
         room.refresh_from_db()
         self.assertEqual(room.phase, Room.Phase.WAITING)
         # The players and their tokens survive the restart, so the assertion above is about the
         # votes and nothing else.
-        self.assertEqual(room.players.count(), 3)
+        self.assertEqual(room.players.count(), 4)
         self.assertEqual(Ready.objects.filter(room=room).count(), 0)
 
 

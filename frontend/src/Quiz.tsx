@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ConsoleBar, PlayerName, Readout, ReadyBar, RoundTrack, Section } from './ui'
+import { ConsoleBar, PlayerName, Readout, RoundTrack, Section } from './ui'
 import { countdown, fr, noun } from './format'
 import { useQuizWindow } from './serverClock'
 import {
@@ -8,7 +8,6 @@ import {
   getName,
   getToken,
   post,
-  postReady,
   type QuizAnswered,
   type QuizBank,
   type State,
@@ -491,34 +490,12 @@ export default function Quiz({
               </p>
             )}
 
-            {/* The end of the discussion about this question, and the end of the didacticiel for
-                the eighth: the same bar the other two screens draw, mounted here rather than
-                anywhere else because the whole point of it is that the class — not an admin, not
-                a clock — says the question has been talked about. It carries the screen's own
-                `setErr`, so a refused vote is reported by the same line that reports a refused
-                answer rather than by a second kind of message on the same screen.
-                Nothing here tests `revealed`: the bar renders itself away when `state.ready` is
-                null, and which steps exist is the server's decision, not this screen's. */}
-            <ReadyBar
-              ready={state.ready}
-              onReady={async () => {
-                try {
-                  await postReady(code, getToken(code) ?? '')
-                  // `true` means the server has the vote. The bar cannot tell a success from a
-                  // refusal on its own — the screens report a refusal by writing to `setErr` and
-                  // RESOLVING — so this answer is what lets it close its own double-tap window
-                  // instead of painting a refusal under a vote the room already holds.
-                  return true
-                } catch (e) {
-                  // `describe`, not a fixed sentence: the refusals are two different facts with
-                  // two different repairs, and « the vote failed » is neither of them. A vote the
-                  // server already had, and a phone that woke up on the next question, both
-                  // arrive here as a 409 with a reason attached.
-                  setErr(describe(e))
-                  return false
-                }
-              }}
-            />
+            {/* The next question is the admin's button alone: the class has no vote here. */}
+            {revealed && (
+              <p className="prose prose--sm prose--dim" role="status">
+                L’admin passe à la suite quand la classe est prête.
+              </p>
+            )}
           </>
         )}
 

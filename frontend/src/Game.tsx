@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, Readout, ReadyBar, ScoreScale, Section, Step } from './ui'
+import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
   absent,
@@ -7,7 +7,6 @@ import {
   getName,
   getToken,
   isAbort,
-  postReady,
   present,
   StreamError,
   streamAnswer,
@@ -147,13 +146,20 @@ export default function Game({
   // One notice, never two, and the most specific thing we know wins. Both cases are the same
   // thing to a player — what you are reading may not be the room as it is now — so they share
   // one place on the screen, directly under the round, which is where someone who has just
-  // woken up looks first.
-  const notice = missed
-    ? `La manche est passée de ${missed.from + 1} à ${missed.to + 1} pendant que l’écran était éteint. Ton prompt n’a pas été envoyé.`
-    : stale
-      ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
-      : ''
+  // woken up looks first. The server's room error is the most specific of the three and takes
+  // the slot: it names a submit that just failed for the whole room, and the other two only say
+  // what the screen may be showing.
+  const notice = state.error
+    ? state.error
+    : missed
+      ? `La manche est passée de ${missed.from + 1} à ${missed.to + 1} pendant que l’écran était éteint. Ton prompt n’a pas été envoyé.`
+      : stale
+        ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
+        : ''
 
+  // The server refuses anything past 500 characters, so the composer enforces the same
+  // bound before the POST: a submit the server would reject is a billed round-trip for nothing.
+  const tooLong = prompt.trim().length > 500
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
   // button telling the player the model is still working when it stopped two seconds ago.
@@ -170,13 +176,19 @@ export default function Game({
   function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
     // Same refusals as the button, so a shortcut can never send what a click would not.
-    if (busy || alreadyDone || stale || !prompt.trim()) return
+    if (busy || alreadyDone || stale || !prompt.trim() || tooLong) return
     e.preventDefault()
     e.currentTarget.requestSubmit()
   }
 
   async function send(e: FormEvent) {
     e.preventDefault()
+    // Re-checked here, not only on the button: the bound is also enforced by `maxLength`,
+    // but a value set past it must fail closed rather than ride a POST the server rejects.
+    if (tooLong) {
+      setErr('Ton prompt est trop long (500 caractères maximum).')
+      return
+    }
     setErr('')
     setBusy(true)
     setLive({ text: '', scoring: false })
@@ -262,7 +274,9 @@ export default function Game({
       <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className={`screen screen--split${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
-        <Step current={state.current} total={state.total} />
+        <Step current={state.current} total={state.total}>
+          {!scored && <PhaseClock timer={state.timer} what="pour écrire ton prompt" />}
+        </Step>
 
         {/* The only heading on this screen, and the target a route change moves focus to. The
             round track above says the same thing visibly, so this one says what the *screen*
@@ -334,16 +348,18 @@ export default function Game({
             on a screen of its own. It stays here because the player is still in the middle of
             writing ten prompts: what came of the last one is the reading they do while the next
             one waits, not a different activity that deserves its own tab.
-            Every figure is drawn, including the two the bound is made of. The critic's score and
-            the peers' average are the only reason the retained quality is the number it is, and
-            a round synthesis that printed the verdict without its inputs would be asking a class
-            to accept an arithmetic result they cannot check.
-             *
-             * Every figure goes through `fr`, because §7's note_tour is a real division and the
-             * server stopped pretending otherwise: a round of proximity 7 and quality 6 is 6,5, and
-             * a board that printed "6.5" would be the only Americanism in a French room. `fr` also
-             * prints the em-dash for an absent `quality_peers` — a round where nobody rated — so a
-             * cell never shows a zero that nobody earned. */}
+            It prints every term the note is made of, in one sentence, because the numbers only
+            mean anything together: proximity and the retained quality are the two inputs, and
+            the critic's score and the peers' average are the two the quality itself is made of.
+            A note stated alone asks a class to accept an arithmetic result they cannot check.
+            The weights are named because the note is no longer an even split — proximity counts
+            for a third and quality for two thirds — so the same two inputs give a different note
+            than the old mean did, and a player comparing rounds deserves to know why.
+            Every figure goes through `fr`, because the note is a real division and the server
+            stopped pretending otherwise: a round of proximity 7 and quality 6 is 5, and a
+            sentence that printed "5.0" would be the only Americanism in a French room.
+            The peer half is dropped for a plain clause when `quality_peers` is null — a round
+            where nobody rated — so the note never names a peer score nobody gave. */}
         {scored && state.summary && (
           <section className="tally">
             <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
@@ -358,11 +374,33 @@ export default function Game({
                       isMe={true}
                       className="board__name board__name--me"
                     />
-                    <span className="tally__round num">
-                      {fr(mine.round_score)}
-                      <span className="tally__roundden">/ 10</span>
-                    </span>
                   </div>
+                  {/* The score as the sentence it is, with all four numbers and their weights.
+                      `role="status"` is the pattern the rest of the screen already uses for text
+                      that changes with the phase. */}
+                  <p className="prose" role="status">
+                    Proximité (poids 1/3) : <span className="num">{fr(mine.proximity)}</span>/10
+                    {' · '}
+                    Qualité retenue (poids 2/3) : <span className="num">{fr(mine.quality)}</span>/10
+                    {' ('}le LLM <span className="num">{fr(mine.quality_llm)}</span>
+                    {mine.quality_peers === null ? (
+                      ', les joueurs n’ont pas noté'
+                    ) : (
+                      <>
+                        , les joueurs <span className="num">{fr(mine.quality_peers)}</span>
+                      </>
+                    )}
+                    {') → '}
+                    Ta note finale :{' '}
+                    {/* The number and its unit are one nowrap unit, and the space between them
+                        is a real text node: JSX drops whitespace that sits between two tags on
+                        different lines, which is what rendered "6sur 10". */}
+                    <span className="num tally__round">
+                      {fr(mine.round_score)}
+                      <span className="tally__roundden">{' '}sur 10</span>
+                    </span>
+                    .
+                  </p>
                   <pre className="slot tally__prompt">{mine.prompt}</pre>
                   <details className="tally__more">
                     <summary className="tally__morebtn">Voir la réponse du modèle</summary>
@@ -374,34 +412,12 @@ export default function Game({
           </section>
         )}
 
-        {/* The end of the round's discussion, directly under the table it is about. Directly,
-            because the numbers are what the room is arguing about and the bar says whether the
-            room is finished arguing — it is the summary's own conclusion, not a control parked at
-            the bottom of the screen.
-            It only ever appears on a summary: `state.ready` is null while a round is open, so the
-            playing phase below keeps its composer and never grows a second submit — and the
-            failure is reported through this screen's own `setErr`, the same line the composer
-            uses. */}
-        <ReadyBar
-          ready={state.ready}
-          onReady={async () => {
-            try {
-              await postReady(code, getToken(code) ?? '')
-              // `true` means the server has the vote. The bar cannot tell a success from a
-              // refusal on its own — the screens report a refusal by writing to `setErr` and
-              // RESOLVING — so this answer is what lets it close its own double-tap window
-              // instead of painting a refusal under a vote the room already holds.
-              return true
-            } catch (e) {
-              // `describe`, not a fixed sentence: the refusals are two different facts with two
-              // different repairs, and « the vote failed » is neither of them. A vote the server
-              // already had, and a phone that woke up on the next round, both arrive here as a
-              // 409 with a reason attached.
-              setErr(describe(e))
-              return false
-            }
-          }}
-        />
+        {/* The next round is the admin's button alone: the class has no vote on a summary. */}
+        {scored && (
+          <p className="prose prose--sm prose--dim" role="status">
+            L’admin lance la manche suivante.
+          </p>
+        )}
 
         {/* The target and the field it is written against, kept as one block: on a phone
             turned sideways they sit side by side, on a phone held upright they are the first
@@ -424,6 +440,7 @@ export default function Game({
                 : 'Le modèle doit répondre'
             }
             value={state.target ?? '—'}
+            image={state.target_image}
           />
 
           {!scored && (
@@ -445,7 +462,7 @@ export default function Game({
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                     placeholder="Décris la scène, le ton, la longueur…"
-                    maxLength={2000}
+                    maxLength={500}
                     // The prompt is a piece of instruction, not prose. Autocorrect and the
                     // spellchecker are both actively hostile to it: they "fix" the deliberate
                     // misspellings and the invented vocabulary that make a model produce
@@ -469,10 +486,13 @@ export default function Game({
                 <button
                   type="submit"
                   className="btn btn--signal btn--wide"
-                  disabled={busy || alreadyDone || stale || !prompt.trim()}
+                  disabled={busy || alreadyDone || stale || !prompt.trim() || tooLong}
                 >
                   {submitLabel}
                 </button>
+                <p className="hint">
+                  {prompt.length} / 500
+                </p>
                 <p className="hint">
                   <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
                 </p>

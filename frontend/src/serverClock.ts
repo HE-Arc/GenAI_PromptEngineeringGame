@@ -33,7 +33,6 @@
  */
 
 import { useEffect, useLayoutEffect, useState } from 'react'
-import type { QuizState } from './api'
 
 // A quarter second. Fast enough that the figure on screen is never a whole second behind the
 // room, slow enough that a phone held in one hand for thirty seconds does not wake its CPU four
@@ -54,7 +53,11 @@ export type QuizWindow = {
   left: number
 }
 
-export function useQuizWindow(quiz: QuizState | null): QuizWindow {
+/** Any server-timed window: the didacticiel's `QuizState`, or the snapshot's `timer` (writing a
+ * prompt, rating one). Both carry the same two clocks. */
+export type ServerWindow = { deadline_ms: number; server_ms: number }
+
+export function useQuizWindow(quiz: ServerWindow | null): QuizWindow {
   const serverMs = quiz?.server_ms ?? null
   const [clock, setClock] = useState<Clock | null>(null)
 

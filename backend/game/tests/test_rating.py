@@ -485,12 +485,11 @@ class RatingPlayTests(TransactionTestCase):
         self.assertEqual(settled.filter(quality__isnull=True).count(), 0)
         # Prompt 0 drew {7, 9} and prompt 1 drew {5, 9}: means 8 and 7, both inside the band
         # around the critic's 6, so the two qualities are 8 and 7. The round's note is then the
-        # spec's mean of the two dimensions, and 5 + 8 is an odd sum, so the two rows no longer
-        # collapse onto one number: 6.5 and 6. A `// 2` used to make both 6, which is the whole
-        # reason §7's `/` is worth a FloatField.
+        # WEIGHTED mean `(proximity + 2 * quality) / 3` — 1/3 proximity, 2/3 quality — and the two
+        # rows do not collapse onto one number: (5 + 16) / 3 and (5 + 14) / 3.
         self.assertEqual({a.quality_peers for a in settled}, {7, 8})
         self.assertEqual({a.quality for a in settled}, {7, 8})
-        self.assertEqual({a.round_score for a in settled}, {(5 + 8) / 2, (5 + 7) / 2})
+        self.assertEqual({a.round_score for a in settled}, {(5 + 2 * 8) / 3, (5 + 2 * 7) / 3})
 
     def test_the_summary_phase_never_moves_on_its_own(self) -> None:
         # A round gets commented on, so nothing in this file may advance out of it. Every submit
@@ -586,8 +585,8 @@ class RatingPlayTests(TransactionTestCase):
             shapes.pop(),
             frozenset(
                 {
-                    "code", "phase", "current", "total", "target", "anonymous",
-                    "players", "online_count", "quiz", "reveal", "summary", "ready",
+                    "code", "phase", "current", "total", "target", "target_image", "timer", "anonymous",
+                    "players", "online_count", "quiz", "reveal", "summary", "ready", "error",
                 }
             ),
         )
@@ -622,6 +621,44 @@ class RatingPlayTests(TransactionTestCase):
         reveal = room_state(room.code)["reveal"]
         self.assertEqual(reveal["author"], players[0].name)
         self.assertEqual(reveal["author_label"], players[0].name)
+
+    def test_reveal_mine_is_true_only_for_the_author_anonymous(self) -> None:
+        # The whole feature, and the case that motivated it: under anonymity the name is hidden,
+        # so ONLY a per-viewer flag can tell the author their own prompt is not ratable before the
+        # 409. The author of reveal index 0 is `players[0]`; nobody else, in either mode, is told
+        # this prompt is theirs.
+        room, players, _rows = self._rating_room(answers=2, anonymous=True)
+        reveal = room_state(room.code, players[0])["reveal"]
+        self.assertTrue(reveal["mine"])
+        self.assertIsNone(reveal["author"])  # anonymity is preserved: the flag does not name
+        self.assertFalse(room_state(room.code, players[1])["reveal"]["mine"])
+
+    def test_reveal_mine_is_true_only_for_the_author_named(self) -> None:
+        # The named mode, pinned separately so a fix that only reasoned about anonymity — the
+        # reported bug — cannot regress the mode that already worked.
+        room, players, _rows = self._rating_room(answers=2, anonymous=False)
+        self.assertTrue(room_state(room.code, players[0])["reveal"]["mine"])
+        self.assertFalse(room_state(room.code, players[1])["reveal"]["mine"])
+
+    def test_reveal_mine_is_false_for_a_tokenless_viewer(self) -> None:
+        # The admin and any spectator read `/events` with no token, so `player is None`. They own
+        # nothing in the room: False is the correct answer, not a fallback, or the console would
+        # be told the prompt on screen is its own and showed the "not ratable" panel.
+        room, _players, _rows = self._rating_room(answers=2)
+        self.assertFalse(room_state(room.code)["reveal"]["mine"])
+
+    def test_reveal_mine_follows_the_reveal_cursor(self) -> None:
+        # The flag is about the prompt ON SCREEN, not about the reader in the abstract: a player
+        # owns exactly one prompt of the round, so it is True on their own reveal and False on the
+        # others as the cursor walks.
+        room, players, _rows = self._rating_room(answers=3, names=("ana", "bob", "clea"), anonymous=True)
+        rnd = room.rounds.get(order=0)
+        for index, owner in enumerate(players):
+            with self.subTest(index=index):
+                rnd.revealed = index
+                rnd.save(update_fields=["revealed"])
+                # The reader is `players[1]`, so only index 1 is theirs.
+                self.assertEqual(room_state(room.code, players[1])["reveal"]["mine"], index == 1)
 
     def test_the_pseudonym_counts_arrival_order_not_the_alphabet(self) -> None:
         # "Joueur N" is a stable handle, so N has to come from something the room agrees on: who
@@ -724,8 +761,8 @@ class RatingPlayTests(TransactionTestCase):
         # The mask is scoped to the rating phase, not to anonymity and not to the game: the
         # summary is where the round is read out loud, and the final screen is where the two
         # halves are the lesson. So the same rows that were null a moment ago carry their numbers
-        # again. Proximity 5 and the critic's unrated 6, so the total is 5.5 — a half, which is
-        # the spec's arithmetic and the reason the column is a float.
+        # again. Proximity 5 and the critic's unrated 6, so the weighted total is (5 + 2 * 6) / 3
+        # — a repeating value, which is the weighted arithmetic and the reason the column is a float.
         room, _players, _rows = self._rating_room(answers=2, anonymous=True)
         settle_round(room)
         room.phase = Room.Phase.SUMMARY
@@ -733,7 +770,7 @@ class RatingPlayTests(TransactionTestCase):
         view = [p for p in room_state(room.code)["players"] if p["answered"]]
         for p in view:
             self.assertEqual((p["proximity_total"], p["quality_total"]), (5, 6))
-            self.assertEqual(p["score"], (5 + 6) / 2)
+            self.assertEqual(p["score"], (5 + 2 * 6) / 3)
 
     def test_the_snapshot_still_sorts_with_every_score_blanked(self) -> None:
         # THE CRASH. `room_state` sorts on `-(score)`, and `-None` is a TypeError: the whole
@@ -818,14 +855,15 @@ class RatingPlayTests(TransactionTestCase):
         for key in ("proximity", "quality_llm", "quality_peers", "quality", "round_score", "quality_comment"):
             self.assertIn(key, first)
         # The four judgements are INTEGERS, because the whole scale is: a float among them would
-        # be a display bug the plan's constraints forbid, and only the round's note — a mean of
-        # two of them — is allowed to carry a half.
+        # be a display bug the plan's constraints forbid, and only the round's note — a weighted
+        # mean of two of them — is allowed to carry a fraction.
         for key in ("proximity", "quality_llm", "quality_peers", "quality"):
             self.assertIsInstance(first[key], int)
-        # `(5 + 7) / 2` exactly. This is 6.0, and it says nothing about the floor — what pins that
-        # is the odd sums elsewhere in this file. What it does show is that the round's note is a
-        # MEAN of the two dimensions and not their sum, a floor of their sum, or a quality of 7.
-        self.assertEqual(first["round_score"], (5 + 7) / 2)
+        # `(5 + 2 * 7) / 3` exactly. This is 6.333…, and it says nothing about the floor — what
+        # pins that is the repeating values elsewhere in this file. What it does show is that the
+        # round's note is a WEIGHTED mean of the two dimensions — the prompt weighs twice the
+        # output — and not their sum, a floor of their sum, or a quality of 7.
+        self.assertEqual(first["round_score"], (5 + 2 * 7) / 3)
         # The critic's REASON, stored beside its score. The fixture built its answers on the ORM
         # with no comment, so it is empty here — the offline case is
         # `test_an_offline_settlement_carries_the_critics_own_words` in the class below. What this
@@ -930,10 +968,11 @@ class SettlementBoundTests(TransactionTestCase):
         self.assertEqual(answer.quality_llm, 4)
         self.assertEqual(answer.quality_peers, 10)  # the raw mean, before the bound
         self.assertEqual(answer.quality, 7)
-        # The round's note is the spec's mean, not a floor of it: (8 + 7) / 2 == 7.5, and an
-        # integer column would have awarded 7 and lost half a point of a « sur 100 » game.
-        self.assertEqual(answer.round_score, (answer.score + 7) / 2)
-        self.assertEqual(answer.round_score, 7.5)
+        # The round's note is the WEIGHTED mean, not a floor of it: (8 + 2 * 7) / 3 == 7.333…,
+        # and an integer column would have awarded 7 and lost a third of a point of a « sur 100 »
+        # game. The prompt's construction weighs twice the answer it produced.
+        self.assertEqual(answer.round_score, (answer.score + 2 * 7) / 3)
+        self.assertAlmostEqual(answer.round_score, 22 / 3)
 
     def test_a_unanimous_room_one_is_capped_three_below_a_critic_eight(self) -> None:
         # The mirror, and the one that protects the other end: a room that hates a prompt cannot
@@ -942,7 +981,7 @@ class SettlementBoundTests(TransactionTestCase):
         self.assertEqual(answer.quality_llm, 8)
         self.assertEqual(answer.quality_peers, 1)
         self.assertEqual(answer.quality, 5)
-        self.assertEqual(answer.round_score, (answer.score + 5) / 2)  # (8 + 5) / 2 == 6.5
+        self.assertEqual(answer.round_score, (answer.score + 2 * 5) / 3)  # (8 + 10) / 3 == 6.0
 
     def test_a_unanimous_room_inside_the_band_is_heard_exactly(self) -> None:
         # The third leg, and the one a bound implemented the wrong way round fails: a group that
@@ -952,6 +991,34 @@ class SettlementBoundTests(TransactionTestCase):
         self.assertEqual(answer.quality, 7)
         self.assertEqual(answer.quality_peers, 7)
 
+    def test_round_score_weights_the_prompt_twice_over_the_output(self) -> None:
+        # THE FORMULA CHANGE, pinned directly. `round_score = (proximity + 2 * quality) / 3`:
+        # the prompt's construction weighs twice the answer it happened to produce, because at the
+        # old 50/50 a lucky output could outrank a well-written prompt. Settled on the ORM with no
+        # raters, so `quality` stands on the critic's own score and the arithmetic is the only
+        # variable.
+        room = Room.objects.create(code="WGHT", tutorial=False)
+        rnd = Round.objects.create(room=room, order=0, target="cible")
+        ana = Player.objects.create(room=room, name="ana")
+        answer = rnd.answers.create(player=ana, prompt="p", output="o", score=4, quality_llm=7)
+        settle_round(room)
+        answer.refresh_from_db()
+        self.assertEqual(answer.quality, 7)
+        # The canonical case: (4 + 2 * 7) / 3 == 6.0 exactly.
+        self.assertEqual(answer.round_score, 6.0)
+        # And the case where the two formulas DIVERGE, which is the whole point: proximity 8 with
+        # quality 2 is (8 + 4) / 3 == 4.0 under the weighted rule, where the old 50/50 mean gave
+        # 5.0. A test that only checked a case where both agree would pass under either formula.
+        other = Round.objects.create(room=room, order=1, target="cible 1")
+        second = other.answers.create(player=ana, prompt="q", output="o", score=8, quality_llm=2)
+        room.current = 1
+        room.save(update_fields=["current"])
+        settle_round(room)
+        second.refresh_from_db()
+        self.assertEqual(second.quality, 2)
+        self.assertEqual(second.round_score, 4.0)
+        self.assertNotEqual(second.round_score, (8 + 2) / 2)  # != the old mean's 5.0
+
     def test_the_summary_reports_the_bound_rather_than_the_raw_scores(self) -> None:
         # The same settlement as the first test, read off the wire this time: the summary is what
         # the players are shown, and a settled column the payload does not carry would be a
@@ -960,7 +1027,7 @@ class SettlementBoundTests(TransactionTestCase):
         row = room_state("BND1")["summary"]["rows"][0]
         self.assertEqual(
             {k: row[k] for k in ("proximity", "quality_llm", "quality_peers", "quality", "round_score")},
-            {"proximity": 8, "quality_llm": 4, "quality_peers": 10, "quality": 7, "round_score": 7.5},
+            {"proximity": 8, "quality_llm": 4, "quality_peers": 10, "quality": 7, "round_score": (8 + 2 * 7) / 3},
         )
 
     def test_a_rating_that_lands_after_the_settlement_never_rewrites_it(self) -> None:
@@ -993,7 +1060,7 @@ class SettlementBoundTests(TransactionTestCase):
         answer.refresh_from_db()
         self.assertIsNone(answer.quality_peers)
         self.assertEqual(answer.quality, 7)
-        self.assertEqual(answer.round_score, (6 + 7) / 2)
+        self.assertEqual(answer.round_score, (6 + 2 * 7) / 3)
 
     def test_a_player_who_wrote_nothing_is_not_settled(self) -> None:
         # No row, no round counted. A player who sat out the round keeps the rounds they played
@@ -1043,8 +1110,8 @@ class SettlementBoundTests(TransactionTestCase):
         room.refresh_from_db()
         self.assertEqual(room.phase, Room.Phase.SUMMARY)
         # Settled, not null: the players who left mid-round still get the critic's score they were
-        # owed, and the two dimensions are averaged like any other row.
-        self.assertEqual({a.round_score for a in rnd.answers.all()}, {(4 + 6) / 2})
+        # owed, and the two dimensions are weighted like any other row.
+        self.assertEqual({a.round_score for a in rnd.answers.all()}, {(4 + 2 * 6) / 3})
         self.assertEqual({a.quality_peers for a in rnd.answers.all()}, {None})
         self.assertEqual(room_state(code)["summary"]["rows"][0]["quality"], 6)
 
@@ -1080,7 +1147,7 @@ class SettlementBoundTests(TransactionTestCase):
         # The critic's 7 with a band of ±3 does not move a 6.5, so both columns are 7 and the
         # bound is not what produced the agreement — the rounding is, and this is the tie it has
         # to settle the same way in the function and at the call site.
-        self.assertEqual(row["round_score"], (8 + 7) / 2)
+        self.assertEqual(row["round_score"], (8 + 2 * 7) / 3)
 
     def test_an_offline_settlement_carries_the_critics_own_words(self) -> None:
         # THE REASON THE COMMENT IS KEPT, and the spec rule it satisfies: « Hors ligne : le modèle
@@ -1125,7 +1192,7 @@ class SettlementBoundTests(TransactionTestCase):
         # The offline heuristic's score is on the row beside its own honesty string, so the two can
         # never be separated on screen. It is still a number, and the game is still playable.
         self.assertIsInstance(row["quality_llm"], int)
-        self.assertEqual(row["round_score"], (8 + row["quality"]) / 2)
+        self.assertEqual(row["round_score"], (8 + 2 * row["quality"]) / 3)
 
     def test_the_critics_comment_is_the_one_the_critic_returned(self) -> None:
         # The keyed path, so the string on the row is a real critic's prose and not the stub's

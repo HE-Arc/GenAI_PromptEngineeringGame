@@ -46,6 +46,11 @@ export interface RevealState {
   author: string | null
   author_label: string
   rated: number
+  // Per-viewer, and the only field here that is. True when the prompt on screen is the reader's
+  // OWN, so the client can show the "not ratable" panel immediately instead of waiting for the
+  // server's 409. It works under anonymity, where `author` is null and cannot name the reader:
+  // the comparison is made server-side, where the reader's id is known, and sent as a boolean.
+  mine: boolean
 }
 
 // One line of the round synthesis, shown once anonymity is lifted. `quality_llm`,
@@ -63,7 +68,9 @@ export interface SummaryRow {
   output: string
   proximity: number
   quality_llm: number
-  quality_peers: number
+  // Null on the round nobody rated — a one-player room, or the class asleep through the rating.
+  // The server leaves it NULL rather than a mean of nothing, and the summary says so in words.
+  quality_peers: number | null
   quality: number
   quality_comment: string
   round_score: number
@@ -167,6 +174,11 @@ export type State = {
   current: number
   total: number
   target: string | null
+  // The picture an exercise refers to ("générez cette image"), or null.
+  target_image: string | null
+  // The clock of the phase on screen — writing a prompt, rating one — or null when nothing is
+  // timed. Same two clocks as `QuizState`, read through `useQuizWindow`.
+  timer: { deadline_ms: number; server_ms: number } | null
   // Fixed for the whole game, so a screen can read it once instead of inferring anonymity from
   // whether a name happens to be present.
   anonymous: boolean
@@ -182,6 +194,11 @@ export type State = {
   // three blocks above are: a client that tests for a key's existence has to know the phase to do
   // it, and this is the block that lets a screen say nothing about phases at all.
   ready: ReadyState | null
+  // A transient, room-wide failure notice: a French sentence when a submit in this room just
+  // failed at the worker level, `null` otherwise. Room-scoped rather than per-player, so the
+  // facilitator's token-less console sees it too — and it expires server-side on its own, so a
+  // screen draws it while it is present and forgets it the moment it clears.
+  error: string | null
 }
 
 // The cross-rating scale, declared here because this file is where the room-state contract
@@ -428,6 +445,7 @@ const REASONS: Record<string, string> = {
   'you wrote this one': 'Ce prompt, c’est toi qui l’as écrit : personne ne note le sien.',
   'score 1-10': 'Choisis une note entre 1 et 10.',
   'prompt required': 'Écris un prompt avant de l’envoyer.',
+  'prompt too long': 'Ton prompt est trop long (500 caractères maximum).',
   'bad token': 'Cette partie a peut-être été relancée. Reprends le code depuis l’accueil.',
   'bad password': 'Mot de passe incorrect.',
   'admin only': 'Session expirée. Reconnecte-toi.',

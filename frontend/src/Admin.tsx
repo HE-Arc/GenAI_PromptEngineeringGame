@@ -387,6 +387,10 @@ export default function Admin() {
   // rating phase is built to preserve.
   const [tutorial, setTutorial] = useState(true)
   const [anonymous, setAnonymous] = useState(true)
+  // The two time limits, in seconds, as typed. Sent as typed; the server keeps them inside its
+  // own bounds and falls back to its defaults on anything it cannot read.
+  const [roundSeconds, setRoundSeconds] = useState('60')
+  const [rateSeconds, setRateSeconds] = useState('20')
   // A confirm only holds until anything about the room changes, and says which action it is
   // confirming: two of the destructive controls now arm the same way, and an arm that did not
   // carry its action could confirm "throw the room away" after the host had reached for the
@@ -720,8 +724,40 @@ export default function Admin() {
                 </span>
               </span>
             </label>
+            <div className="timers">
+              <div className="field">
+                <label className="label" htmlFor="round-seconds">
+                  Temps par question (s)
+                </label>
+                <input
+                  id="round-seconds"
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={10}
+                  max={600}
+                  value={roundSeconds}
+                  onChange={(e) => setRoundSeconds(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label className="label" htmlFor="rate-seconds">
+                  Temps pour noter un prompt (s)
+                </label>
+                <input
+                  id="rate-seconds"
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={300}
+                  value={rateSeconds}
+                  onChange={(e) => setRateSeconds(e.target.value)}
+                />
+              </div>
+            </div>
             <p className="prose prose--sm prose--dim">
-              Les deux sont réglés pour toute la partie. Une relance peut repartir avec ou sans
+              Tout est réglé pour toute la partie. Une relance peut repartir avec ou sans
               didacticiel.
             </p>
           </div>
@@ -740,6 +776,8 @@ export default function Admin() {
                 const { code: c } = await post<{ code: string }>('/api/admin/rooms', {
                   tutorial,
                   anonymous,
+                  round_seconds: roundSeconds,
+                  rate_seconds: rateSeconds,
                 })
                 enter(c)
               }, lostSession)
@@ -1023,6 +1061,16 @@ export default function Admin() {
               {note.figures && <p className="runshow__figs">{note.figures}</p>}
               {note.hint && <p className="runshow__hint">{note.hint}</p>}
             </div>
+
+            {/* A submit failed at the worker level somewhere in this room. The console is the
+                screen that can act on it, so it is told here — right under the state block —
+                rather than only on the phone whose request it was. Transient: the server expires
+                it, so this clears itself and needs no dismiss. */}
+            {state?.error && (
+              <p className="notice" role="status">
+                {state.error}
+              </p>
+            )}
 
             <Readout label="Code de la partie" value={code} code />
 
