@@ -1,3 +1,4 @@
+pub mod admin_session;
 pub mod auth;
 pub mod db;
 pub mod hub;

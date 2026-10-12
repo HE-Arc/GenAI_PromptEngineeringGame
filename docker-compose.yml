@@ -1,14 +1,11 @@
 services:
-  backend:
-    build: ./backend
+  server:
+    build: ./server
     ports:
-      - "8000:8000"
+      - "3001:3001"
     env_file:
-      - path: ./backend/.env
+      - path: ./server/.env
         required: false
-    environment:
-      # Enables the idle-room sweeper thread inside the server process.
-      GENAI_SWEEP: "1"
     volumes:
       - sqlite_data:/data
 
@@ -18,9 +15,9 @@ services:
       - "5173:5173"
     environment:
       # Reachable name inside the compose network; falls back to localhost outside Docker.
-      BACKEND_URL: http://backend:8000
+      AXUM_URL: http://server:3001
     depends_on:
-      - backend
+      - server
 
 volumes:
   sqlite_data:

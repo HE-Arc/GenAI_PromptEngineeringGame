@@ -21,10 +21,10 @@ const LINK_WORDS: Record<Link, string> = {
 
 export const linkWord = (link: Link) => LINK_WORDS[link]
 
-// A room that does not exist never answers, and neither transport can read a refusal off
-// a socket that never opened, so the only honest signal is that nothing ever opened. The
-// browser has already retried three times by then, and a phone retrying forever against a
-// bad code is the exact "Connexion..." dead end this replaces. After the third miss we
+// A room that does not exist never answers, and the socket cannot read a refusal off
+// a connection that never opened, so the only honest signal is that nothing ever opened.
+// The browser has already retried three times by then, and a phone retrying forever against
+// a bad code is the exact "Connexion..." dead end this replaces. After the third miss we
 // stop believing and say so.
 const MISSES_BEFORE_FAILED = 3
 
@@ -33,15 +33,10 @@ const MISSES_BEFORE_FAILED = 3
 const WATCH_EVERY_MS = 4_000
 // A room cannot sit still for this long in the middle of ten rounds and a live leaderboard,
 // so silence this long means a half-open socket: the server is gone and the browser will
-// never find out, because neither transport writes anything that would fail on a dead read.
+// never find out, because the socket writes nothing that would fail on a dead read.
 // Long enough that a quiet lobby before the admin presses start costs one socket a minute,
 // which is nothing.
 const SILENCE_IS_DEATH_MS = 60_000
-
-// Rollback hatch: with VITE_WS_DISABLED=1 the room rides the Django SSE stream and the
-// POST answer exactly as before the migration, so a broken socket layer is one env var
-// away from the old path with no code change.
-const WS_DISABLED = import.meta.env.VITE_WS_DISABLED === '1'
 
 // The answer stream, as the room broadcasts it. One event per frame plus a sequence
 // number, because two chunks for the same player carry identical shapes and a screen
@@ -65,14 +60,13 @@ export function useRoom(code: string | null, token?: string | null) {
   // every reconnect for a value nothing draws.
   const connRef = useRef<RoomWs | null>(null)
 
-  // `token === undefined` is an anonymous feed: the admin, who is not a player. A player
-  // whose token is not in this browser yet passes `null` and does not connect at all, because
-  // an unattributed feed is worse than no feed — the server would report every player,
-  // including the one looking at the screen, as offline. Anonymous stays on SSE: the admin
-  // authenticates by session cookie, the socket only knows tokens, and the console never
-  // holds an admin_key to offer it.
+  // `token === undefined` is the admin console, which holds no player token: it
+  // subscribes with an empty token and the login session cookie the browser
+  // attaches to the upgrade on its own. A player whose token is not in this
+  // browser yet passes `null` and does not connect at all, because an
+  // unattributed feed is worse than no feed — the server would report every
+  // player, including the one looking at the screen, as offline.
   const anonymous = token === undefined
-  const useWs = !WS_DISABLED && !anonymous && !!token
 
   useEffect(() => {
     if (!code) return
@@ -84,159 +78,89 @@ export function useRoom(code: string | null, token?: string | null) {
     // connection already given up on.
     const gen = attempt
 
-    if (useWs) {
-      // The token is how the server knows which player this phone is, and therefore who is
-      // online. It rides the hello frame, which the socket answers with a snapshot, so the
-      // first frame after a reconnect is the whole room rather than a delta against state
-      // the player may have missed while asleep.
-      const who = token as string
-      let lastBeat = Date.now()
-      let misses = 0
-      let dead = false
-      let opened = false
-      // No setLink here: the callers that re-open (retry, silence watch) already set
-      // 'connecting' before the attempt bump, and the first mount derives it from 'idle'.
-      const conn = connectRoomWs(room, who, {
-        onSnapshot: (state) => {
-          if (dead) return
-          opened = true
-          misses = 0
-          lastBeat = Date.now()
-          setSnap({ code: room, state })
-          setLink('live')
-          setWsUp(true)
-        },
-        onAnswer: (event) => {
-          lastBeat = Date.now()
-          // A refusal names no player and belongs to the sender alone, but it still
-          // proves the socket is alive: only the verdict waiter reads it, the link stays.
-          if (event.kind === 'error' && (event.code === 'bad_token' || event.code === 'unknown_room')) {
-            dead = true
-            setLink('failed')
-            setWsUp(false)
-            return
-          }
-          setFeed((f) => ({ event, seq: (f?.seq ?? 0) + 1 }))
-        },
-        onOpen: () => {
-          lastBeat = Date.now()
-        },
-        onDown: () => {
-          // A flap, not a verdict: the socket is already climbing its own backoff
-          // ladder, and the player only needs to be told the readout is stale.
-          if (!opened) {
-            misses += 1
-            if (misses >= MISSES_BEFORE_FAILED) dead = true
-            setLink(dead ? 'failed' : 'connecting')
-          } else {
-            setLink('down')
-          }
-          setWsUp(false)
-        },
-        onFailed: () => {
+    // The token is how the server knows which player this phone is, and therefore who is
+    // online. It rides the hello frame, which the socket answers with a snapshot, so the
+    // first frame after a reconnect is the whole room rather than a delta against state
+    // the player may have missed while asleep.
+    const who = anonymous ? '' : (token as string)
+    let lastBeat = Date.now()
+    let misses = 0
+    let dead = false
+    let opened = false
+    // No setLink here: the callers that re-open (retry, silence watch) already set
+    // 'connecting' before the attempt bump, and the first mount derives it from 'idle'.
+    const conn = connectRoomWs(room, who, {
+      onSnapshot: (state) => {
+        if (dead) return
+        opened = true
+        misses = 0
+        lastBeat = Date.now()
+        setSnap({ code: room, state })
+        setLink('live')
+        setWsUp(true)
+      },
+      onAnswer: (event) => {
+        lastBeat = Date.now()
+        // A refusal names no player and belongs to the sender alone, but it still
+        // proves the socket is alive: only the verdict waiter reads it, the link stays.
+        if (event.kind === 'error' && (event.code === 'bad_token' || event.code === 'unknown_room')) {
           dead = true
           setLink('failed')
           setWsUp(false)
-        },
-      })
-
-      // Same half-open watch as the SSE path below: the keepalive belongs to the socket,
-      // but a phone that slept through it wakes to timers that stopped, and the first tick
-      // after the screen comes back is always long overdue. Reopening is cheap — the server
-      // answers hello with the whole snapshot — so a needless reconnect just re-reads the
-      // state the player already had.
-      const watch = setInterval(() => {
-        if (dead) return
-        if (Date.now() - lastBeat <= SILENCE_IS_DEATH_MS) return
-        lastBeat = Date.now()
-        setLink('connecting')
-        setWsUp(false)
-        conn.close()
-        // Reconnecting is a new connection, not a revived one: the attempt bump tears
-        // this effect down and rebuilds it, so no two sockets can ever be open at once.
-        setAttempt((a) => (a === gen ? a + 1 : a))
-      }, WATCH_EVERY_MS)
-
-      connRef.current = conn
-      return () => {
-        clearInterval(watch)
-        conn.close()
-        if (connRef.current === conn) connRef.current = null
-      }
-    }
-
-    // The fallback path: the pre-migration SSE stream, kept verbatim so the rollback env
-    // restores exactly the behaviour it replaces rather than an approximation of it. The
-    // token rides in the query string, which Django routes past: everything after `?` is
-    // ignored, so the stream endpoint is unchanged and the attribution is a query parameter.
-    const who = anonymous ? '' : `&token=${encodeURIComponent(token as string)}`
-    let es: EventSource | null = null
-    let opened = false
-    let dead = false
-    let misses = 0
-    let lastBeat = Date.now()
-
-    const open = () => {
-      es?.close()
-      const s = new EventSource(`/api/rooms/${room}/events?r=${gen}${who}`)
-      s.onopen = () => {
-        opened = true
-        dead = false
-        misses = 0
-        lastBeat = Date.now()
-        setLink('live')
-      }
-      s.onmessage = (e) => {
-        lastBeat = Date.now()
-        setSnap({ code: room, state: JSON.parse(e.data) as State })
-        setLink('live')
-      }
-      s.onerror = () => {
-        // Once open, the browser is already reconnecting on its own and the player only
-        // needs to be told the readout is stale. Before that, a miss is a bad code, not a
-        // bad moment.
-        if (opened) {
-          setLink('down')
           return
         }
-        misses += 1
-        if (misses >= MISSES_BEFORE_FAILED) dead = true
-        setLink(dead ? 'failed' : 'connecting')
-      }
-      es = s
-    }
+        setFeed((f) => ({ event, seq: (f?.seq ?? 0) + 1 }))
+      },
+      onOpen: () => {
+        lastBeat = Date.now()
+      },
+      onDown: () => {
+        // A flap, not a verdict: the socket is already climbing its own backoff
+        // ladder, and the player only needs to be told the readout is stale.
+        if (!opened) {
+          misses += 1
+          if (misses >= MISSES_BEFORE_FAILED) dead = true
+          setLink(dead ? 'failed' : 'connecting')
+        } else {
+          setLink('down')
+        }
+        setWsUp(false)
+      },
+      onFailed: () => {
+        dead = true
+        setLink('failed')
+        setWsUp(false)
+      },
+    })
 
-    open()
-
-    // The phone slept. Its timers stopped, the socket died underneath it, and the browser
-    // notices the dead connection on its own schedule, if at all — and its schedule is a
-    // backoff that grows every attempt, so the player can sit on a stale round for a minute
-    // after a screen lock. So this does not wait to be told, and opens a new stream itself
-    // instead of leaving the recovery to that backoff. It costs nothing to be wrong: the view
-    // pushes the entire room snapshot on every connect, so a needless reopen just re-reads
-    // the state the player already had.
+    // The phone slept. Its timers stopped, the socket died underneath it, and the first
+    // tick after the screen comes back is always long overdue. Reopening is cheap — the
+    // server answers hello with the whole snapshot — so a needless reconnect just re-reads
+    // the state the player already had. The keepalive belongs to the socket, but a phone
+    // that slept through it wakes to timers that stopped.
     //
     // The timer is throttled while the tab is hidden, which is the right way round. There is
     // nobody looking at a hidden tab, and the first tick after the screen comes back is
     // always long overdue, so a phone that slept through a round rejoins on its next beat.
     const watch = setInterval(() => {
       if (dead) return
-      // The browser already knows when it has lost the socket: it moves to CONNECTING and
-      // starts retrying. Going straight to a fresh attempt skips the backoff it has grown.
-      const broken = es?.readyState !== EventSource.OPEN
-      // Or it does not, which is the half-open case only silence can catch.
-      const silent = Date.now() - lastBeat > SILENCE_IS_DEATH_MS
-      if (!broken && !silent) return
+      if (Date.now() - lastBeat <= SILENCE_IS_DEATH_MS) return
       lastBeat = Date.now()
       setLink('connecting')
-      open()
+      setWsUp(false)
+      conn.close()
+      // Reconnecting is a new connection, not a revived one: the attempt bump tears
+      // this effect down and rebuilds it, so no two sockets can ever be open at once.
+      setAttempt((a) => (a === gen ? a + 1 : a))
     }, WATCH_EVERY_MS)
 
+    connRef.current = conn
     return () => {
       clearInterval(watch)
-      es?.close()
+      conn.close()
+      if (connRef.current === conn) connRef.current = null
     }
-  }, [code, token, attempt, anonymous, useWs])
+  }, [code, token, attempt, anonymous])
 
   // Called from a click, never from the effect, so re-opening the feed is an event rather
   // than a cascade.
@@ -258,10 +182,9 @@ export function useRoom(code: string | null, token?: string | null) {
     // 'connecting' is derived, not stored: nothing has to write it when the room changes.
     link: link === 'idle' && code ? 'connecting' : link,
     retry,
-    // The answer channel of the live socket: the Game screen falls back to the POST
-    // stream whenever there is no socket to speak on.
+    // The answer channel of the live socket: prompts only ever leave on it.
     answer: feed,
     sendPrompt,
-    wsLive: WS_DISABLED ? false : wsUp,
+    wsLive: wsUp,
   }
 }

@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -14,7 +14,8 @@ use tokio::sync::mpsc;
 pub mod protocol;
 
 use crate::ws::protocol::{WsIn, WsOut};
-use crate::auth::{validate, Auth};
+use crate::admin_session;
+use crate::auth::{validate, validate_ws, Auth};
 use crate::db::{answers, rooms};
 use crate::hub::{get_hub, RoomHub};
 use crate::router::AppState;
@@ -52,13 +53,14 @@ pub async fn ws_handler(
     State(state): State<AppState>,
     Path(code): Path<String>,
     Query(params): Query<WsParams>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     if rooms::get_room(&state.pool, &code).await.is_err() {
         return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown room"}))).into_response();
     }
     let state = state.clone();
-    ws.on_upgrade(move |socket| handle_socket(socket, state, code, params.token))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, code, params.token, headers))
         .into_response()
 }
 
@@ -195,9 +197,20 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
     });
 }
 
-async fn handle_socket(ws: WebSocket, state: AppState, code: String, query_token: String) {
-    // Query token gates the connection before any hello is read.
-    if validate(&state.pool, &code, &query_token).await.is_err() {
+async fn handle_socket(
+    ws: WebSocket,
+    state: AppState,
+    code: String,
+    query_token: String,
+    headers: HeaderMap,
+) {
+    // Query token gates the connection before any hello is read; the
+    // admin session cookie is the fallback so the console subscribes
+    // with no token in a URL that proxies would log.
+    if validate_ws(&state.pool, &code, &query_token, &headers)
+        .await
+        .is_err()
+    {
         let mut ws = ws;
         send_direct(&mut ws, &WsOut::error("bad_token", "bad token")).await;
         let _ = ws
@@ -208,6 +221,13 @@ async fn handle_socket(ws: WebSocket, state: AppState, code: String, query_token
             .await;
         return;
     }
+    // Answer identity is the player query token only: an admin-key or
+    // cookie connection may watch but never answers for a player row.
+    let answer_token: Option<String> =
+        match validate(&state.pool, &code, &query_token).await {
+            Ok(Auth::Player(_)) => Some(query_token.clone()),
+            _ => None,
+        };
     let hub = get_hub(&state.hubs, &code).await;
     let (mut sender, mut receiver) = ws.split();
     // Single writer task: the recv loop and the hub fan-out both push WsOut
@@ -274,7 +294,11 @@ async fn handle_socket(ws: WebSocket, state: AppState, code: String, query_token
         };
         match incoming {
             WsIn::Hello { token } => {
-                if validate(&state.pool, &code, &token).await.is_err() {
+                // Cookie-authed admins hello with an empty token: the
+                // session already admitted them at connect time.
+                if validate(&state.pool, &code, &token).await.is_err()
+                    && !admin_session::request_is_admin(&headers)
+                {
                     send_out(&tx_out, WsOut::error("bad_token", "bad token"));
                     return;
                 }
@@ -296,9 +320,12 @@ async fn handle_socket(ws: WebSocket, state: AppState, code: String, query_token
                 }
             }
             WsIn::Ping => send_out(&tx_out, WsOut::Pong),
-            WsIn::AnswerStart { prompt } => match begin_answer(&state, &code, &query_token, &prompt).await {
-                Ok(job) => spawn_answer(state.clone(), job),
-                Err(reject) => send_out(&tx_out, WsOut::error(reject.code, reject.message)),
+            WsIn::AnswerStart { prompt } => match answer_token.as_deref() {
+                Some(t) => match begin_answer(&state, &code, t, &prompt).await {
+                    Ok(job) => spawn_answer(state.clone(), job),
+                    Err(reject) => send_out(&tx_out, WsOut::error(reject.code, reject.message)),
+                },
+                None => send_out(&tx_out, WsOut::error("bad_token", "only players can answer")),
             },
         }
     }

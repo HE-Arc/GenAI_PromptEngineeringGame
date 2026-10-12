@@ -161,7 +161,7 @@ export function Roster({ players, online, myName }: { players: Player[]; online:
   return (
     <div>
       {/* The roster moves on every arrival, every departure and every reconnect, all of it
-          pushed by SSE and none of it in response to anything the player did — so the eye has
+          pushed by the socket and none of it in response to anything the player did — so the eye has
           nothing to catch it on and a screen reader has nothing at all. The echo says the same
           sentence the panel says, in the panel's own terms. `polite`, because a player who is
           mid-word does not want a reconnect to talk over them. */}

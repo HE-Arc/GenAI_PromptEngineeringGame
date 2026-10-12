@@ -82,6 +82,43 @@ async fn ws_answer_start_streams_chunks_then_done_and_rejects_replay() {
 }
 
 #[tokio::test]
+async fn ws_admin_cookie_subscribes_without_token() {
+    // The console never holds an admin_key: the login cookie alone
+    // admits the WS upgrade and hello answers the cached snapshot.
+    let (base, pool) = spawn_app().await;
+    rooms::create_room(&pool, "AD77").await.unwrap();
+    let cookie = format!("genai_admin={}", server::admin_session::issue_value());
+    let req = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(format!("{base}/api/rooms/AD77/ws?token="))
+        .header("Cookie", cookie)
+        .header("Host", "127.0.0.1")
+        .header("Upgrade", "websocket")
+        .header("Connection", "Upgrade")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .header("Sec-WebSocket-Version", "13")
+        .body(())
+        .unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(Message::Text(r#"{"type":"hello","token":""}"#.into()))
+        .await
+        .unwrap();
+    let msg = recv_json(&mut ws).await;
+    assert!(
+        matches!(msg, WsOut::Snapshot { .. }),
+        "cookie-authed hello must yield snapshot, got {msg:?}"
+    );
+    // Watching is all a cookie connection may do: answering needs a player row.
+    ws.send(Message::Text(r#"{"type":"answer.start","prompt":"x"}"#.into()))
+        .await
+        .unwrap();
+    let err = recv_json(&mut ws).await;
+    assert!(
+        matches!(&err, WsOut::Error { code, .. } if code == "bad_token"),
+        "admin connection must not answer, got {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn ws_hello_returns_snapshot_and_bad_token_closes() {
     let (base, pool) = spawn_app().await;
     rooms::create_room(&pool, "AB12").await.unwrap();

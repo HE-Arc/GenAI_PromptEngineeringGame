@@ -459,7 +459,7 @@ export default function Admin() {
   // A code is persisted only once the room has answered us, never on entry: a stored code
   // must name a room that exists. Persisting an unverified one would leave a dead screen that
   // every reload of /admin returns to, with a Demarrer button that cannot work. A ref rather
-  // than state, so this costs one write per code instead of one per SSE frame.
+  // than state, so this costs one write per code instead of one per frame.
   useEffect(() => {
     if (state && code && !verified.current) {
       verified.current = true
@@ -496,8 +496,8 @@ export default function Admin() {
     }
   }, [code, signedIn])
 
-  // A dead stream cannot say whether the room was swept or the network dropped:
-  // EventSource never sees the status. So a failed stream is probed once against the room
+  // A dead socket cannot say whether the room was swept or the network dropped:
+  // the close frame never carries the reason. So a failed feed is probed once against the room
   // list, which the session already allows. Absent from a list that answered means the
   // idle sweep took it, and the console walks back to the list on its own with one line
   // saying so. Anything else — the room still listed, or the probe itself failing — keeps
@@ -950,7 +950,7 @@ export default function Admin() {
   // `setCode(null)` is the branch that draws a screen of its own — the rooms list, because the
   // session this function is returning to is still alive — and it is also what tears the stream
   // down: the hook's effect deps change, React runs the previous cleanup (which clears the
-  // watchdog and closes the EventSource) before the new body early-runs. `state` falls to null
+  // watchdog and closes the socket) before the new body early-runs. `state` falls to null
   // with it, because the hook only hands back a snapshot whose code still matches — so the
   // "persist a code once the room has answered" effect cannot re-write the key it was just asked
   // to forget.

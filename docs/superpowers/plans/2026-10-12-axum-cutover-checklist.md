@@ -32,7 +32,11 @@ curl -s localhost:5173/api/healthz  # via le proxy
 | 2 | join/ready : Axum possède join puis ready, chaque écriture incrémente `seq` | nouvelle entrée proxy join/ready → `:3001` | `cargo test rest_parity::join_wrong_phase_409_parity`, `write_invalidates_snapshot_seq` |
 | 3 | rate/quiz : Axum possède rate puis quiz | entrée proxy rate/quiz → `:3001` | `cargo test rest_parity::` |
 | 4 | answer : `answer.start` sur WS remplace `POST .../answer` SSE ; refus `already_answered` / `inflight` par `error` WS (sémantique 409 conservée) | entrée proxy answer → `:3001` | `cargo test llm:: answer::` |
-| 5 | admin : **DERNIÈRE, NON FAITE TANT QUE L'AUTH SESSION N'EXISTE PAS CÔTÉ AXUM** (voir § Admin) | entrée proxy admin → `:3001` | contrat `403/404/409` + session admin |
+| 5 | admin : session cookie signée (HMAC, `ADMIN_SECRET`) + clé `admin_key` en repli ; console abonnée en WS via le cookie | tout `/api/*` → `:3001` | `cargo test admin_` + `ws_admin_cookie` |
+
+## Bascule finale (Task 10a, faite)
+
+L'auth session existe côté Axum (`POST /api/admin/login` émet un cookie HttpOnly signé, `GET /api/admin/rooms` liste les parties, le WS lit le cookie), donc l'étape 5 est basculée et Django est supprimé : `backend/` n'existe plus, `docker-compose.yml` ne monte que l'Axum `:3001`, et `frontend/vite.config.ts` envoie tout `/api/*` vers Axum sans drapeau. Le harnais de charge vit en `server/load_test_ws.py`. Portes tenues avant suppression : suite Django 407 tests OK une dernière fois + smoke 10 joueurs PASS sur toutes les portes.
 
 ## Porte (gate) E2E par étape
 
@@ -59,12 +63,6 @@ Sécurité des données : Axum et Django partagent le même fichier SQLite en
 WAL pendant le strangler (lecteurs concurrents autorisés), un rollback ne
 perd donc aucune ligne.
 
-## Admin : reste sur Django (écart Task 7 connu)
+## Admin : basculée (écart Task 7 résorbé en Task 10a)
 
-La console admin reste sur le SSE avec auth par cookie de session (écart
-acté en Task 7 : pas de `admin_key` transporté comme le WS `?token=`).
-Tant que l'auth session côté serveur n'existe pas dans Axum, les routes
-admin restent câblées sur Django `:8000` et l'étape 5 du tableau ci-dessus
-est **explicitement exclue** du cutover. La bascule admin n'a lieu qu'après
-l'arrivée de l'auth session côté Axum, avec re-validation du contrat
-`403/404/409` + session avant de toucher au proxy.
+La console s'authentifiait par cookie de session, que le WS ne savait pas lire (écart acté en Task 7). L'auth session existe désormais côté Axum (voir § Bascule finale), la console est abonnée en WS via le cookie, et les routes admin sont câblées sur Axum `:3001`.

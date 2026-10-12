@@ -1,6 +1,6 @@
 # Benchmark 100 joueurs — Axum vs Django
 
-Conditions : LLM stubbé (`OPENAI_API_KEY` non définie, zéro appel facturé), base jetable, 100 joueurs simultanés dans une room. Harnais : `backend/load_test_100.py` (Django) et `backend/load_test_ws.py` (Axum). Mesures du 2026-10-12.
+Conditions : LLM stubbé (`OPENAI_API_KEY` non définie, zéro appel facturé), base jetable, 100 joueurs simultanés dans une room. Harnais : `backend/load_test_100.py` (Django, supprimé avec lui) et `server/load_test_ws.py` (Axum). Mesures du 2026-10-12.
 
 | Scénario | Axum | Django avant | Gain |
 |---|---|---|---|

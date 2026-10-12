@@ -125,3 +125,90 @@ async fn write_invalidates_snapshot_seq() {
     assert_eq!(seq, s0 + 1);
     assert!(snap["players"].as_array().unwrap().iter().any(|p| p == "ana"));
 }
+
+#[tokio::test]
+async fn admin_login_ok_sets_signed_cookie() {
+    // Django parity: right password opens the session; Axum answers
+    // with a signed HttpOnly cookie instead of a server session.
+    let server = test_server().await;
+    let res = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "genai"}))
+        .await;
+    res.assert_status_ok();
+    res.assert_text(r#"{"ok":true}"#);
+    let set_cookie = res
+        .headers()
+        .get("set-cookie")
+        .expect("login must set the admin cookie")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(set_cookie.starts_with("genai_admin="), "cookie name parity");
+    assert!(set_cookie.contains("HttpOnly"), "never readable from page JS");
+}
+
+#[tokio::test]
+async fn admin_login_wrong_password_403_parity() {
+    // Django answers 403 {"error":"bad password"} — Axum must match exactly.
+    let server = test_server().await;
+    let res = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "nope"}))
+        .await;
+    res.assert_status(axum::http::StatusCode::FORBIDDEN);
+    res.assert_text(r#"{"error":"bad password"}"#);
+}
+
+#[tokio::test]
+async fn admin_gated_routes_session_parity() {
+    // Every admin route answers 403 {"error":"admin only"} without
+    // credentials, and the login cookie opens each of them.
+    let server = test_server().await;
+    let gated = server.get("/api/admin/rooms").await;
+    gated.assert_status(axum::http::StatusCode::FORBIDDEN);
+    gated.assert_text(r#"{"error":"admin only"}"#);
+
+    let login = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "genai"}))
+        .await;
+    login.assert_status_ok();
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let list = server.get("/api/admin/rooms").add_header("cookie", cookie.clone()).await;
+    list.assert_status_ok();
+
+    // The cookie also opens per-room admin writes, like Django's session.
+    let created = server
+        .post("/api/admin/rooms")
+        .add_header("cookie", cookie.clone())
+        .json(&json!({}))
+        .await;
+    created.assert_status_ok();
+    let code = created.json::<serde_json::Value>()["code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let started = server
+        .post(&format!("/api/admin/rooms/{code}/start"))
+        .add_header("cookie", cookie)
+        .await;
+    started.assert_status_ok();
+
+    // A forged cookie stays a 403: the signature is the whole credential.
+    let forged = server
+        .get("/api/admin/rooms")
+        .add_header("cookie", "genai_admin=deadbeef")
+        .await;
+    forged.assert_status(axum::http::StatusCode::FORBIDDEN);
+}

@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
 
+use crate::admin_session;
 use crate::db::{answers, rooms};
 use crate::hub::get_hub;
 use crate::router::AppState;
@@ -45,12 +46,23 @@ fn admin_password() -> String {
     std::env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "genai".into())
 }
 
+// Global admin (create/list/login): the session cookie, with the
+// password bearer kept so existing integrations keep working.
+fn global_admin(headers: &HeaderMap) -> bool {
+    admin_session::request_is_admin(headers) || bearer(headers) == admin_password()
+}
+
 async fn require_room_admin(
     pool: &SqlitePool,
     headers: &HeaderMap,
     code: &str,
 ) -> Result<rooms::Room, (StatusCode, Json<serde_json::Value>)> {
     let room = rooms::get_room(pool, code).await.map_err(|e| unknown_room(e).unwrap())?;
+    // Session cookie first: the console never holds the per-room key,
+    // which only ever travelled as a WS query token before this.
+    if admin_session::request_is_admin(headers) {
+        return Ok(room);
+    }
     if bearer(headers) != room.admin_key {
         return Err(err(StatusCode::FORBIDDEN, "admin only"));
     }
@@ -394,12 +406,82 @@ pub async fn quiz_post(
         .into_response()
 }
 
+#[derive(Deserialize, Default)]
+pub struct LoginBody {
+    #[serde(default)]
+    pub password: String,
+}
+
+// Mirrors Django admin_login: same 403 body on a wrong password, and a
+// signed HttpOnly cookie instead of Django's signed-cookie session.
+// The cookie also authorises the WS upgrade (Cookie header), which is
+// how the console subscribes without ever holding a per-room key.
+pub async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
+    if body.password != admin_password() {
+        return err(StatusCode::FORBIDDEN, "bad password").into_response();
+    }
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = admin_session::set_cookie_header().parse() {
+        headers.insert(header::SET_COOKIE, v);
+    }
+    (StatusCode::OK, headers, Json(json!({"ok": true}))).into_response()
+}
+
+// Mirrors Django admin_list_rooms payload keys; ordered live-first so
+// the console and this list rank rooms the same way.
+pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !global_admin(&headers) {
+        return err(StatusCode::FORBIDDEN, "admin only").into_response();
+    }
+    let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT code, phase, current, tutorial, anonymous FROM room ORDER BY code",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let mut out = Vec::with_capacity(rows.len());
+    for (code, phase, current, tutorial, anonymous) in &rows {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM round WHERE room_code = ?")
+            .bind(code)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
+        let players: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player WHERE room_code = ?")
+            .bind(code)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
+        // No presence registry on this server: WS connections are
+        // anonymous to the DB, so the count reads 0 until presence lands.
+        out.push(json!({
+            "code": code, "phase": phase, "current": current, "total": total,
+            "online_count": 0, "players": players,
+            "tutorial": *tutorial != 0, "anonymous": *anonymous != 0,
+        }));
+    }
+    // Live phases first, lobby next, finished last: same ranking the
+    // Django list applies, so the console order survives the cutover.
+    out.sort_by(|a, b| {
+        let rank = |p: &str| match p {
+            "quiz" | "playing" | "rating" | "summary" => 0,
+            "waiting" => 1,
+            "done" => 2,
+            _ => 3,
+        };
+        let ra = rank(a["phase"].as_str().unwrap_or(""));
+        let rb = rank(b["phase"].as_str().unwrap_or(""));
+        ra.cmp(&rb)
+            .then(a["code"].as_str().cmp(&b["code"].as_str()))
+    });
+    (StatusCode::OK, Json(json!({"rooms": out}))).into_response()
+}
+
 pub async fn admin_create(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
-    if bearer(&headers) != admin_password() {
+    if !global_admin(&headers) {
         return err(StatusCode::FORBIDDEN, "admin only").into_response();
     }
     let data = body.map(|b| b.0).unwrap_or(json!({}));

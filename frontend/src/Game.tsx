@@ -6,11 +6,7 @@ import {
   answerStart,
   describe,
   getName,
-  getToken,
-  isAbort,
   present,
-  StreamError,
-  streamAnswer,
   wsRefusal,
   type Player,
   type State,
@@ -27,7 +23,6 @@ export default function Game({
   onRetry,
   answer,
   sendPrompt,
-  wsLive,
 }: {
   state: State
   code: string
@@ -35,7 +30,6 @@ export default function Game({
   onRetry: () => void
   answer: AnswerFeed | null
   sendPrompt: (prompt: string) => void
-  wsLive: boolean
 }) {
   const [prompt, setPrompt] = useState('')
   const [result, setResult] = useState<Result | null>(null)
@@ -45,15 +39,12 @@ export default function Game({
   // which is holding the keyboard, and the verdict, which is what the submit earned.
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const verdictRef = useRef<HTMLDivElement>(null)
-  // True the moment the POST has answered, before the stream has said so. See `send`.
+  // True the moment the `done` frame lands, before the next snapshot says so. See `send`.
   const [sent, setSent] = useState(false)
   // The answer as it is being written, and then the verdict. Two pieces of one thing rather
   // than two, because the player's question — « where is my note » — has one answer, and a
   // screen that could show either would have to say which half is on.
   const [live, setLive] = useState<{ text: string; scoring: boolean } | null>(null)
-  // Aborting the stream is not a failure and must not be reported as one: unmounting, or the
-  // player leaving, closes the request mid-answer. Kept in a ref because it is never rendered.
-  const abortRef = useRef<AbortController | null>(null)
   // The verdict this screen is waiting on over the socket. The frames arrive on the room
   // feed the hook owns, not on the send call, so the waiter parks the resolve/reject pair
   // here and the effect below feeds it as frames land. One at a time: the composer is
@@ -73,7 +64,7 @@ export default function Game({
   // it out. The round is the trigger, and a render is where React resets state on a trigger.
   //
   // The result is normally kept. The push that closes the round lands after this player's
-  // own POST, so clearing it took away the last player's score, comment and output within a
+  // own answer, so clearing it took away the last player's score, comment and output within a
   // second of earning them. It is kept instead and labelled with the round it belongs to,
   // which is what stops the misreading the reset was originally for — an unlabelled note
   // sitting under a different round's target.
@@ -127,10 +118,10 @@ export default function Game({
   // Derived from the phase rather than from `answered`, because "this player already sent" is
   // true at the end of every round and says nothing about whether the round is still open.
   const scored = state.phase === 'summary'
-  // This player's own send, OR the stream. The stream alone is the event that put the score
-  // below the fold: the button label is the only feedback still inside the viewport after a
-  // submit, and it sat unchanged for the length of a model call, waiting on an SSE frame that
-  // this same POST has already made unnecessary. The POST is the authority on its own outcome.
+  // This player's own send, OR the snapshot. The snapshot alone is the event that put the
+  // score below the fold: the button label is the only feedback still inside the viewport
+  // after a submit, and it sat unchanged for the length of a model call. The `done` frame
+  // is the authority on its own outcome.
   const alreadyDone = sent || (me?.answered ?? false)
 
   // The meter counts players who are present, so it can actually finish; the ones who are not
@@ -155,8 +146,7 @@ export default function Game({
   // is still empty. This is also the exact condition the server closes a round on, so the
   // line is never more or less true than the game is.
   // `busy` is in the first test, not the second: a player who has pressed send is waiting on
-  // the jury, not being told to answer again. Before the stream existed the POST only came
-  // back at the very end, so this line had ten seconds of nothing to be wrong about.
+  // the jury, not being told to answer again.
   const caption = (() => {
     if (!alreadyDone && !busy) return left === 1 ? 'À toi de répondre' : 'Réponses envoyées'
     return left === 0 ? 'Tout le monde a répondu' : `En attente de ${noun(left, 'joueur', 'joueurs')}`
@@ -177,7 +167,7 @@ export default function Game({
         : ''
 
   // The server refuses anything past 500 characters, so the composer enforces the same
-  // bound before the POST: a submit the server would reject is a billed round-trip for nothing.
+  // bound before sending: a submit the server would reject is a billed round-trip for nothing.
   const tooLong = prompt.trim().length > 500
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
@@ -203,7 +193,7 @@ export default function Game({
   async function send(e: FormEvent) {
     e.preventDefault()
     // Re-checked here, not only on the button: the bound is also enforced by `maxLength`,
-    // but a value set past it must fail closed rather than ride a POST the server rejects.
+    // but a value set past it must fail closed rather than ride a send the server rejects.
     if (tooLong) {
       setErr('Ton prompt est trop long (500 caractères maximum).')
       return
@@ -211,51 +201,22 @@ export default function Game({
     setErr('')
     setBusy(true)
     setLive({ text: '', scoring: false })
-    // The socket path sends one frame and waits on the broadcast; the POST path streams
-    // its own reply. Same verdict shape out of both, so everything below the wait is one
-    // code path whichever transport spoke.
+    // One frame on the live socket, and the verdict comes back as frames on the
+    // same feed. The text the player watched is the verdict's text: the server
+    // stored the same string and the judge scored the same string, so one truth
+    // reaches the screen. The `done` frame carries no round — the round is the
+    // one the prompt was sent on — and the socket never truncates mid-frame.
     const roundNow = state.current
     try {
-      let verdict: { score: number; comment: string; output: string; truncated: boolean }
-      if (wsLive) {
-        const done = await new Promise<{ score: number; comment: string; text: string }>(
-          (resolve, reject) => {
-            // Armed before the send: the server may answer faster than React re-renders,
-            // and a frame landing before the waiter exists would wait forever.
-            waiterRef.current = { player: myName, text: '', scoring: false, resolve, reject }
-            answerStart(sendPrompt, prompt)
-          },
-        )
-        // The text the player watched, not a second copy from the payload: the server
-        // stored the same string and the judge scored the same string, so one truth
-        // reaches the screen. The `done` frame carries no round or truncation — the round
-        // is the one the prompt was sent on, and the socket never truncates mid-frame.
-        verdict = { score: done.score, comment: done.comment, output: done.text, truncated: false }
-      } else {
-        const ac = new AbortController()
-        abortRef.current = ac
-        // Accumulated here rather than read back off `live`: a state value captured by this closure
-        // is the value it had when the send started, so reading it after the awaits would hand the
-        // verdict an empty answer.
-        let text = ''
-        let scoring = false
-        const res = await streamAnswer(
-          `/api/rooms/${code}/answer`,
-          { token: getToken(code), prompt },
-          {
-            chunk: (delta) => {
-              text += delta
-              setLive({ text, scoring })
-            },
-            scoring: () => {
-              scoring = true
-              setLive({ text, scoring })
-            },
-          },
-          ac.signal,
-        )
-        verdict = { score: res.score, comment: res.comment, output: text, truncated: res.truncated }
-      }
+      const done = await new Promise<{ score: number; comment: string; text: string }>(
+        (resolve, reject) => {
+          // Armed before the send: the server may answer faster than React re-renders,
+          // and a frame landing before the waiter exists would wait forever.
+          waiterRef.current = { player: myName, text: '', scoring: false, resolve, reject }
+          answerStart(sendPrompt, prompt)
+        },
+      )
+      const verdict = { score: done.score, comment: done.comment, output: done.text, truncated: false }
       setResult({ score: verdict.score, comment: verdict.comment, output: verdict.output, round: roundNow, truncated: verdict.truncated })
       setLive(null)
       // Only the verdict earns the round its answer. Not the first chunk: the row does not exist
@@ -265,19 +226,16 @@ export default function Game({
       setSent(true)
       setPrompt('')
     } catch (e) {
-      // An abort says nothing to the player: the screen went away, or the player did. There is
-      // no error line to write and no state to undo, because a cancel writes nothing server-side
-      // either — the generation keeps running and the round closes on the answers that do land.
-      if (!isAbort(e)) {
-        setErr(e instanceof StreamError ? e.message : describe(e))
-        // Nothing was persisted, so the composer must stay usable and must stop claiming the
-        // answer is sent — otherwise a failed send locks the player out of a round they never
-        // answered, and there is nothing on screen saying why.
-        setSent(false)
-        setLive(null)
-      }
+      // A refusal off the socket lands here through the waiter: nothing was
+      // persisted, so the composer stays usable instead of locking the player
+      // out of a round they never answered.
+      setErr(describe(e))
+      // Nothing was persisted, so the composer must stay usable and must stop claiming the
+      // answer is sent — otherwise a failed send locks the player out of a round they never
+      // answered, and there is nothing on screen saying why.
+      setSent(false)
+      setLive(null)
     } finally {
-      abortRef.current = null
       setBusy(false)
     }
   }
@@ -313,12 +271,12 @@ export default function Game({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [answerSeq])
 
-  // Cancel an answer still being written when this screen goes away. `busy` is deliberately not
-  // in the deps: the effect must fire on unmount only, and a re-run on every send would abort
-  // the request it was mounted for.
+  // Dropping a waiter whose screen went away: the generation keeps running
+  // server-side and the round closes on the answers that do land, so there is
+  // nothing to cancel, only a promise nobody will read. `busy` is deliberately
+  // not in the deps: the effect must fire on unmount only.
   useEffect(
     () => () => {
-      abortRef.current?.abort()
       waiterRef.current = null
     },
     [],

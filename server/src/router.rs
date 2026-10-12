@@ -38,7 +38,11 @@ async fn healthz() -> impl IntoResponse {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/admin/rooms", post(rest::admin_create))
+        .route("/api/admin/login", post(rest::admin_login))
+        .route(
+            "/api/admin/rooms",
+            get(rest::admin_list).post(rest::admin_create),
+        )
         .route("/api/admin/rooms/:code/start", post(rest::admin_start))
         .route("/api/admin/rooms/:code/next", post(rest::admin_next))
         .route("/api/admin/rooms/:code/restart", post(rest::admin_restart))
