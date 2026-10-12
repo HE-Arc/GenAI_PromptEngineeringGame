@@ -8,3 +8,9 @@
 # untracked forever, and a `git add -A` would try to commit a nested repository as a directory.
 GenAI_PromptEngineeringGame.wiki/
 server/target/
+
+# Local secrets and databases never leave this machine.
+.env
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

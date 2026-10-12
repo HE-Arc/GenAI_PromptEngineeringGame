@@ -18,7 +18,9 @@ use crate::router::AppState;
 async fn touch(state: &AppState, code: &str) {
     let hub = get_hub(&state.hubs, code).await;
     let seq = hub.next_seq().await;
-    if let Ok(fresh) = rooms::room_snapshot(&state.pool, code).await {
+    // Presence overrides the roster fallback so a DB write right after a
+    // connect/disconnect does not regress the live count.
+    if let Ok(fresh) = rooms::room_snapshot(&state.pool, code, Some(hub.presence())).await {
         hub.publish_snapshot(seq, fresh).await;
     }
 }
@@ -451,11 +453,16 @@ pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> im
             .fetch_one(&state.pool)
             .await
             .unwrap_or(0);
-        // No presence registry on this server: WS connections are
-        // anonymous to the DB, so the count reads 0 until presence lands.
+        // Live socket count from the hub; rooms never touched by a WS
+        // connection read 0, which is also the truth for them.
+        let online = if let Some(hub) = state.hubs.read().await.get(code) {
+            hub.presence()
+        } else {
+            0
+        };
         out.push(json!({
             "code": code, "phase": phase, "current": current, "total": total,
-            "online_count": 0, "players": players,
+            "online_count": online, "players": players,
             "tutorial": *tutorial != 0, "anonymous": *anonymous != 0,
         }));
     }

@@ -1,8 +1,11 @@
 use serde_json::Value;
+use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
+use crate::db::rooms;
 use crate::ws::protocol::WsOut;
 
 pub type SnapshotMsg = (u64, Value);
@@ -17,6 +20,9 @@ pub struct RoomHub {
     // One live LLM stream per (round, player); replaces the Django
     // process-local _inflight set so every Tokio task sees the same claims.
     inflight: Mutex<HashSet<(i64, i64)>>,
+    // Connected player sockets (admins excluded). Atomic because connect
+    // and disconnect run on different Tokio tasks and share no await point.
+    presence: AtomicUsize,
 }
 
 impl RoomHub {
@@ -32,6 +38,7 @@ impl RoomHub {
             snapshot: RwLock::new((0, Value::Null)),
             events,
             inflight: Mutex::new(HashSet::new()),
+            presence: AtomicUsize::new(0),
         }
     }
 
@@ -83,6 +90,41 @@ impl RoomHub {
             }
         }
     }
+
+    // Player sockets only; admin/cookie connections never count.
+    pub fn presence(&self) -> usize {
+        self.presence.load(Ordering::Relaxed)
+    }
+
+    // Connect/disconnect mutate only the in-memory count, yet every
+    // subscriber (and the admin list) must see the new value live: rebuild
+    // the snapshot once per change and bump the seq like any other write.
+    // Returns the fresh (seq, state) so the hello sender can reply with it.
+    pub async fn refresh_presence(
+        &self,
+        pool: &SqlitePool,
+        code: &str,
+        delta: i64,
+    ) -> Option<SnapshotMsg> {
+        let prev = if delta > 0 {
+            self.presence.fetch_add(delta as usize, Ordering::Relaxed)
+        } else {
+            // usize counter, isize delta: saturate instead of panicking on underflow.
+            let cur = self.presence.load(Ordering::Relaxed);
+            let sub: usize = delta.unsigned_abs().try_into().unwrap_or(usize::MAX);
+            let next = cur.saturating_sub(sub);
+            self.presence.store(next, Ordering::Relaxed);
+            cur
+        };
+        let new = self.presence.load(Ordering::Relaxed);
+        if new == prev {
+            return None;
+        }
+        let snap = rooms::room_snapshot(pool, code, Some(new)).await.ok()?;
+        let seq = self.next_seq().await;
+        self.publish_snapshot(seq, snap).await;
+        Some(self.cached().await)
+    }
 }
 
 impl Default for RoomHub {
@@ -125,5 +167,37 @@ mod tests {
         assert!(hub.resync_needed(&mut rx));
         let (seq, _) = hub.cached().await;
         assert_eq!(seq, 3);
+    }
+
+    #[tokio::test]
+    async fn presence_increment_decrement_publishes_live_count() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "PR23").await.unwrap();
+        // Presence is clamped to the roster, so a player row must exist.
+        crate::db::rooms::add_player(&pool, "PR23", "ana").await.unwrap();
+        let hub = RoomHub::new();
+        assert_eq!(hub.presence(), 0);
+
+        // Connect: one player socket => online_count 1 in the new snapshot.
+        let (seq1, snap1) = hub
+            .refresh_presence(&pool, "PR23", 1)
+            .await
+            .expect("snapshot");
+        assert_eq!(hub.presence(), 1);
+        assert_eq!(snap1["online_count"], 1);
+        assert!(seq1 >= 1);
+
+        // Disconnect: count falls back to 0 and a fresh snapshot goes out.
+        let (seq2, snap2) = hub
+            .refresh_presence(&pool, "PR23", -1)
+            .await
+            .expect("snapshot");
+        assert_eq!(hub.presence(), 0);
+        assert_eq!(snap2["online_count"], 0);
+        assert!(seq2 > seq1, "disconnect must advance the snapshot seq");
+
+        // Saturating guard: a stale decrement can never panic or go negative.
+        let _ = hub.refresh_presence(&pool, "PR23", -1).await;
+        assert_eq!(hub.presence(), 0);
     }
 }

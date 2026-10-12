@@ -50,6 +50,10 @@ async fn ws_answer_start_streams_chunks_then_done_and_rejects_replay() {
     ws.send(Message::Text(hello.into())).await.unwrap();
     let snap = recv_json(&mut ws).await;
     assert!(matches!(snap, WsOut::Snapshot { .. }));
+    // Player hello also publishes a presence snapshot (online_count 1);
+    // drain it before the answer frames are asserted.
+    let presence = recv_json(&mut ws).await;
+    assert!(matches!(presence, WsOut::Snapshot { .. }));
 
     ws.send(Message::Text(r#"{"type":"answer.start","prompt":"first prompt"}"#.into()))
         .await
@@ -133,9 +137,13 @@ async fn ws_hello_returns_snapshot_and_bad_token_closes() {
         matches!(msg, WsOut::Snapshot { .. }),
         "hello must yield snapshot, got {msg:?}"
     );
-    // ping keepalive round-trips without touching the DB.
+    // ping keepalive round-trips without touching the DB. The presence
+    // snapshot (hello side effect) may arrive before the pong, so drain.
     ws.send(Message::Text(r#"{"type":"ping"}"#.into())).await.unwrap();
-    let pong = recv_json(&mut ws).await;
+    let mut pong = recv_json(&mut ws).await;
+    while !matches!(pong, WsOut::Pong) {
+        pong = recv_json(&mut ws).await;
+    }
     assert!(matches!(pong, WsOut::Pong), "ping must yield pong, got {pong:?}");
 
     // Bad query token: error bad_token then close 4403, mirroring REST 403.

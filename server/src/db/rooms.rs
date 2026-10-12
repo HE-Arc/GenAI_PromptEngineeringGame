@@ -131,9 +131,13 @@ pub async fn player_by_token(pool: &SqlitePool, token: &str) -> Result<Option<Pl
 // bare name list renders the roster total ("sur 1 dans la pièce") with a
 // blank where the count belongs. Scores stay null until settling lands;
 // only the fields join-order and one answer lookup can state are filled.
+//
+// `presence` overrides online_count with the hub's live socket count;
+// callers without hub access pass None and fall back to roster length.
 pub async fn room_snapshot(
     pool: &SqlitePool,
     code: &str,
+    presence: Option<usize>,
 ) -> Result<serde_json::Value, sqlx::Error> {
     let room = get_room(pool, code).await?;
     // get_room does not select this column, and widening its SELECT would
@@ -164,9 +168,6 @@ pub async fn room_snapshot(
         }
         None => Vec::new(),
     };
-    // No presence registry on this server: WS connections are anonymous to
-    // the DB, so every rostered player reads as on the stream until presence
-    // lands. Counting the roster keeps the count and the lamps in agreement.
     let players: Vec<serde_json::Value> = names
         .iter()
         .map(|(id, name)| {
@@ -183,7 +184,14 @@ pub async fn room_snapshot(
             })
         })
         .collect();
-    let online_count = players.len();
+    // Presence lives in RoomHub, not here: callers that hold the hub pass
+    // the live count, and this fallback keeps the count and the lamps in
+    // agreement for snapshot rebuilds that predate the first connection.
+    // Clamped to the roster so a lagged decrement cannot outnumber players.
+    let online_count = match presence {
+        Some(n) => n.min(players.len()),
+        None => players.len(),
+    };
     let target: Option<String> = round.as_ref().and_then(|r| {
         if r.target.is_empty() {
             None

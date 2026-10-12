@@ -185,7 +185,10 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 .await
                 .unwrap_or(None);
         if let Some(rc) = room_code {
-            if let Ok(fresh) = rooms::room_snapshot(&state.pool, &rc).await {
+            // Presence override keeps the live count across the rebuild.
+            if let Ok(fresh) =
+                rooms::room_snapshot(&state.pool, &rc, Some(job.hub.presence())).await
+            {
                 job.hub.publish_snapshot(seq, fresh).await;
             }
         }
@@ -195,6 +198,27 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
             feedback: verdict.feedback,
         });
     });
+}
+
+// Owns the hub-side presence slot for one connected player socket. Drop
+// fires the decrement in a detached task: socket teardown runs inside the
+// recv loop where awaiting the snapshot rebuild would only hold the socket
+// open longer, and the pool/hub clones make the task self-sufficient.
+struct PresenceGuard {
+    hub: Arc<RoomHub>,
+    pool: sqlx::SqlitePool,
+    code: String,
+}
+
+impl Drop for PresenceGuard {
+    fn drop(&mut self) {
+        let hub = Arc::clone(&self.hub);
+        let pool = self.pool.clone();
+        let code = self.code.clone();
+        tokio::spawn(async move {
+            let _ = hub.refresh_presence(&pool, &code, -1).await;
+        });
+    }
 }
 
 async fn handle_socket(
@@ -260,7 +284,10 @@ async fn handle_socket(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     let (seq, snap) = fwd_hub.cached().await;
                     if snap.is_null() {
-                        if let Ok(fresh) = rooms::room_snapshot(&fwd_pool, &fwd_code).await {
+                        if let Ok(fresh) =
+                            rooms::room_snapshot(&fwd_pool, &fwd_code, Some(fwd_hub.presence()))
+                                .await
+                        {
                             let next = fwd_hub.next_seq().await;
                             fwd_hub.publish_snapshot(next, fresh.clone()).await;
                             if fwd_tx.send(WsOut::Snapshot { seq: next, state: fresh }).is_err() {
@@ -275,6 +302,9 @@ async fn handle_socket(
             }
         }
     });
+    // Held from the first successful player hello until this socket drops;
+    // admins and cookie connections never count, so theirs stays None.
+    let mut present: Option<PresenceGuard> = None;
     while let Some(msg) = receiver.next().await {
         let msg = match msg {
             Ok(m) => m,
@@ -305,7 +335,7 @@ async fn handle_socket(
                 let (seq, snap) = hub.cached().await;
                 if snap.is_null() {
                     // First subscriber builds the snapshot once; later ones clone it.
-                    match rooms::room_snapshot(&state.pool, &code).await {
+                    match rooms::room_snapshot(&state.pool, &code, None).await {
                         Ok(fresh) => {
                             let next = hub.next_seq().await;
                             hub.publish_snapshot(next, fresh.clone()).await;
@@ -317,6 +347,23 @@ async fn handle_socket(
                     }
                 } else {
                     send_out(&tx_out, WsOut::Snapshot { seq, state: snap });
+                }
+                // First player hello registers presence and republishes the
+                // snapshot so the admin counter moves without another write.
+                if present.is_none()
+                    && matches!(validate(&state.pool, &code, &token).await, Ok(Auth::Player(_)))
+                {
+                    if let Some((pseq, pstate)) = hub
+                        .refresh_presence(&state.pool, &code, 1)
+                        .await
+                    {
+                        send_out(&tx_out, WsOut::Snapshot { seq: pseq, state: pstate });
+                        present = Some(PresenceGuard {
+                            hub: Arc::clone(&hub),
+                            pool: state.pool.clone(),
+                            code: code.clone(),
+                        });
+                    }
                 }
             }
             WsIn::Ping => send_out(&tx_out, WsOut::Pong),
