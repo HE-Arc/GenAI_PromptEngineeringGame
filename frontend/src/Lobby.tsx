@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ConsoleBar, PresenceDots, Readout, ReadyBar, Roster } from './ui'
+import { ConsoleBar, PlayerCloud, PresenceDots, Readout, ReadyBar, Roster } from './ui'
 import { describe, getName, getToken, postReady, type State } from './api'
 import type { Link } from './useRoom'
 
@@ -110,7 +110,7 @@ export default function Lobby({
 
             <div className="actions">
               <button type="button" className="btn btn--signal btn--wide" onClick={() => void share()}>
-                {shared === 'copied' ? 'Code copié' : shared === 'sent' ? 'Code partagé' : 'Partager le code'}
+                {shared === 'copied' ? '✓ Code copié' : shared === 'sent' ? '✓ Code partagé' : 'Partager le code'}
               </button>
             </div>
 
@@ -199,6 +199,8 @@ export default function Lobby({
           {/* The number is the one on the stream, not the size of the roster — a phone asleep
               in a pocket is a player who is in the game and not in the room. */}
           <Roster players={state.players} online={state.online_count} myName={getName(state.code)} />
+          {/* The room as tokens popping in: the game-show version of « is everyone here ». */}
+          <PlayerCloud players={state.players} myName={getName(state.code)} />
           {/* Anonymous lobby presence from the ready votes already in room_state. */}
           {state.ready && state.ready.count > 0 && state.ready.count < state.ready.needed && (
             <PresenceDots label={`${state.ready.count} sur ${state.ready.needed} prêts…`} />

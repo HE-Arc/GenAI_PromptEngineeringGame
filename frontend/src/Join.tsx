@@ -60,13 +60,17 @@ export default function Join({
     <div className="deck">
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--solo" id="main" tabIndex={-1}>
-        <h1 className="title" tabIndex={-1}>Jeu GenAi</h1>
-        <p className="prose prose--dim">
+        <div className="hero">
+          <span className="hero__badge" aria-hidden="true">✦</span>
+          <h1 className="title title--hero" tabIndex={-1}>Jeu GenAi</h1>
+          <p className="hero__tag">Le jeu du prompt parfait</p>
+        </div>
+        <p className="prose prose--dim hero__lead">
           Le modèle doit répondre par une chose bien précise. À toi d’écrire le prompt qui
           l’y amène. Un jury note la ressemblance sur 10, et les dix manches se jouent entre
           vous.
         </p>
-        <form className="form" onSubmit={go}>
+        <form className="form card" onSubmit={go}>
           <div className="field">
             <label className="label" htmlFor="join-code">
               Code de la partie

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
+import { AnswerMeter, Board, Confetti, ConsoleBar, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
   absent,
@@ -12,9 +12,24 @@ import {
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
+import { buzz, useCountUp } from './fx'
 import type { AnswerFeed, Link } from './useRoom'
 
 type Result = { score: number; comment: string; output: string; round: number; truncated: boolean }
+
+// The one-word reaction over the score, the way a game shouts "Excellent !" before the number.
+function cheer(score: number): string {
+  if (score >= 9) return 'Parfait !'
+  if (score >= 7) return 'Excellent !'
+  if (score >= 5) return 'Pas mal !'
+  if (score >= 3) return 'Peut mieux faire'
+  return 'Aïe…'
+}
+
+// The score ticking up to its value. A component of its own so the hook restarts per verdict.
+function ScoreUp({ score }: { score: number }) {
+  return <>{useCountUp(score)}</>
+}
 
 export default function Game({
   state,
@@ -199,6 +214,7 @@ export default function Game({
       return
     }
     setErr('')
+    buzz()
     setBusy(true)
     setLive({ text: '', scoring: false })
     // One frame on the live socket, and the verdict comes back as frames on the
@@ -343,10 +359,11 @@ export default function Game({
             or a `—` in the score slot while the text arrives would be a number nobody gave, and
             the slot is the loudest thing on the screen. */}
         {live && (
-          <div className="verdict" ref={verdictRef} tabIndex={-1}>
+          <div className="verdict verdict--live" ref={verdictRef} tabIndex={-1}>
             <div>
-              <p className="label">
-                {live.scoring ? 'Le jury délibère…' : 'Le modèle a répondu'}
+              <p className="label verdict__livelabel">
+                <span className="spinner" aria-hidden="true" />
+                {live.scoring ? 'Le jury délibère…' : 'Le modèle écrit…'}
               </p>
               <ModelOutput text={live.text} streaming={!live.scoring} />
             </div>
@@ -354,9 +371,11 @@ export default function Game({
         )}
 
         {result && (
-          <div className="verdict" ref={verdictRef} tabIndex={-1}>
+          <div className="verdict verdict--done" ref={verdictRef} tabIndex={-1} data-tier={result.score >= 7 ? 'high' : result.score >= 4 ? 'mid' : 'low'}>
+            {result.score >= 7 && <Confetti key={`${result.round}-${result.score}`} />}
+            <p className="verdict__cheer" aria-hidden="true">{cheer(result.score)}</p>
             <div className="verdict__top">
-              <span className="verdict__score num">{result.score}</span>
+              <span className="verdict__score num"><ScoreUp score={result.score} /></span>
               <span className="verdict__den">sur 10</span>
               <span className="verdict__round">manche {result.round + 1}</span>
             </div>

@@ -1,7 +1,8 @@
-import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
 import { AnswerMeter, ConsoleBar, PhaseClock, ReadyBar, RoundTrack, ScoreScale } from './ui'
 import { ApiError, describe, getName, getToken, post, postReady, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
+import { buzz } from './fx'
 
 /* The cross-rating screen. The most constrained surface in the console, and the constraints are
  * the feature: a prompt, the target it was written against, and one number to give. */
@@ -215,10 +216,15 @@ export default function Rating({
                 <button
                   key={n}
                   type="button"
-                  className={`btn rate${picked === n ? ' btn--signal' : ''}`}
+                  className={`btn rate${picked === n ? ' rate--on' : ''}`}
+                  // A warm-to-green ramp along the scale, so the grid reads as low-to-high at a glance.
+                  style={{ '--h': Math.round(((n - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)) * 130) } as CSSProperties}
                   aria-pressed={picked === n}
                   disabled={busy || sent}
-                  onClick={() => setPicked(n)}
+                  onClick={() => {
+                    buzz(8)
+                    setPicked(n)
+                  }}
                 >
                   {n}
                 </button>

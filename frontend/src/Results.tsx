@@ -1,4 +1,5 @@
-import { Board, ConsoleBar, Section, type BoardColumn } from './ui'
+import type { CSSProperties } from 'react'
+import { Avatar, Board, Confetti, ConsoleBar, Section, type BoardColumn } from './ui'
 import { fr, nounOf } from './format'
 import { getName, type State } from './api'
 import type { Link } from './useRoom'
@@ -84,7 +85,8 @@ export default function Results({
       <ConsoleBar meta={`Partie ${state.code}`} link={link} onRetry={onRetry} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--split" id="main" tabIndex={-1}>
-        <div>
+        <div className="finale">
+          {winners.length > 0 && points > 0 && <Confetti pieces={110} />}
           {/* `tabIndex` so the route-change effect in App.tsx can land focus here. This is
               the last screen of a game, so it is the one place a round ending swaps the whole
               view out from under a keyboard user; without a focusable target the swap is
@@ -93,7 +95,30 @@ export default function Results({
           <h1 className="title" tabIndex={-1}>
             Partie terminée
           </h1>
-          <p className="prose prose--dim">{winners.length ? verdict : 'Aucun joueur dans la partie.'}</p>
+          <p className="prose finale__lead">{winners.length ? verdict : 'Aucun joueur dans la partie.'}</p>
+          {/* The podium: the top three, second-first-third, the way a podium stands. Decorative —
+              the sentence above and the board below carry the same result in words. Places come
+              from equal scores, so a tie shares a step instead of being split by join order. */}
+          {points > 0 && (
+            <ol className="podium" aria-hidden="true">
+              {[1, 0, 2].map((i) => {
+                const p = state.players[i]
+                if (!p) return <li key={i} className="podium__slot podium__slot--empty" />
+                const place = state.players.findIndex((q) => q.score === p.score) + 1
+                return (
+                  <li key={p.name} className="podium__slot" data-place={place} style={{ '--i': i } as CSSProperties}>
+                    {place === 1 && <span className="podium__crown">👑</span>}
+                    <Avatar name={p.name} size="lg" />
+                    <span className="podium__name">{p.name}</span>
+                    <span className="podium__pts num">{fr(p.score)}</span>
+                    <span className="podium__step">
+                      <span className="podium__place num">{place}</span>
+                    </span>
+                  </li>
+                )
+              })}
+            </ol>
+          )}
         </div>
 
         {/* The winner is a sentence and the standings are the evidence, so on a wide screen

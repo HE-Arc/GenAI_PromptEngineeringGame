@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ConsoleBar, PlayerName, Readout, RoundTrack, Section } from './ui'
+import { Avatar, Confetti, ConsoleBar, PlayerName, Readout, Ring, RoundTrack, Section } from './ui'
 import { countdown, fr, noun } from './format'
 import { useQuizWindow } from './serverClock'
+import { buzz, useWindowLength } from './fx'
 import {
   ApiError,
   describe,
@@ -32,6 +33,9 @@ import type { Link } from './useRoom'
 // speaks in — the one fact about a QCM that is unambiguous to a player who cannot see either of
 // the two colours.
 const LETTERS = ['A', 'B', 'C', 'D']
+// Each answer also has its own colour and shape, as on a quiz-show buzzer board: the shape is the
+// channel that survives colour blindness, the letter is what the reveal speaks in.
+const SHAPES = ['▲', '◆', '●', '■']
 
 export default function Quiz({
   state,
@@ -74,6 +78,7 @@ export default function Quiz({
   // measured once per frame and frozen, and `open` is a comparison against `deadline_ms` rather
   // than a timer that has been running since mount.
   const { open, left } = useQuizWindow(quiz)
+  const windowLength = useWindowLength(quiz?.deadline_ms ?? null, open ? left : 0)
 
   // Fetched once. An effect because the bank does not arrive with the snapshot and cannot be
   // derived from it; keyed on the room rather than on anything that moves, so a frame arriving
@@ -206,6 +211,7 @@ export default function Quiz({
 
   async function answer(choice: number) {
     if (locked || !question) return
+    buzz()
     setBusy(true)
     setErr('')
     try {
@@ -328,7 +334,7 @@ export default function Quiz({
             <p className="qclock" data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
               {open ? (
                 <>
-                  <span className="qclock__n num">{secs}</span>
+                  <Ring left={left} length={windowLength} secs={secs} />
                   <span className="qclock__t">
                     {secs > 1 ? 'secondes pour répondre' : 'seconde pour répondre'}
                   </span>
@@ -395,15 +401,21 @@ export default function Quiz({
                 // The missed row is drawn only once there is a verdict to miss: before the reveal
                 // the player's own row is marked by nothing at all, which is the entire feature.
                 const missed = isYours && key !== null && !isKey
+                // Before the reveal the player's own pick is ringed — it says « this is what you
+                // sent », never whether it is right. After it, every row that is not the key fades.
+                const pickedNow = isYours && key === null
+                const faded = key !== null && !isKey && !missed
                 return (
                   <button
                     key={text}
                     type="button"
-                    className={`btn choice${isKey ? ' choice--right' : ''}${missed ? ' choice--miss' : ''}${isYours && key !== null ? ' choice--yours' : ''}`}
+                    data-k={i}
+                    className={`btn choice${isKey ? ' choice--right' : ''}${missed ? ' choice--miss' : ''}${isYours && key !== null ? ' choice--yours' : ''}${pickedNow ? ' choice--picked' : ''}${faded ? ' choice--faded' : ''}`}
                     disabled={locked}
                     onClick={() => void answer(i)}
                   >
                     <span className="choice__k" aria-hidden="true">
+                      <span className="choice__shape">{SHAPES[i] ?? ''}</span>
                       {LETTERS[i] ?? ''}
                     </span>
                     <span className="choice__t">{text}</span>
@@ -443,6 +455,7 @@ export default function Quiz({
                     `✗` anywhere (no row is `isYours` when `picked` is null) and the absence of the
                     cross is stated here in words instead. The third takes no colour at all, because
                     nothing about it is right or wrong. */}
+                {right && <Confetti key={order} />}
                 <div
                   className={`revealnote${
                     right ? ' revealnote--good' : picked === null ? '' : ' revealnote--miss'
@@ -459,14 +472,14 @@ export default function Quiz({
                     </>
                   ) : right ? (
                     <>
-                      <span className="revealnote__t">Tu as juste</span>
+                      <span className="revealnote__t"><span aria-hidden="true">🎉 </span>Tu as juste</span>
                       <span className="revealnote__s">
                         C’est bien la réponse {LETTERS[picked]} que tu avais choisie.
                       </span>
                     </>
                   ) : (
                     <>
-                      <span className="revealnote__t">Pas celle-là</span>
+                      <span className="revealnote__t"><span aria-hidden="true">😬 </span>Pas celle-là</span>
                       <span className="revealnote__s">
                         Tu avais choisi la {LETTERS[picked]}, la bonne réponse était la{' '}
                         {key !== null ? LETTERS[key] : ''}.
@@ -526,7 +539,8 @@ export default function Quiz({
               <div className="qboard__list">
                 {rows.map((p, i) => (
                   <div className="qboard__row" key={p.name}>
-                    <span className="board__rank">{i + 1}</span>
+                    <span className="board__rank" data-medal={i < 3 ? i + 1 : undefined}>{i + 1}</span>
+                    <Avatar name={p.name} />
                     <PlayerName
                       name={p.name}
                       isMe={p.name === myName}

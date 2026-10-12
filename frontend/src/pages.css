@@ -16,6 +16,7 @@
    * a second declaration competing with the composed one at a lower specificity. */
   --pad-top: 1.1rem;
   padding: var(--pad-top) var(--pad) 3rem;
+  min-width: 0;
 }
 /* A frozen snapshot beats a spinner, but only if it says it is frozen. Every figure that came
  * from the server dims while the stream is down. The player's own draft and their own score
@@ -86,8 +87,51 @@
 }
 
 .title {
-  font: 800 1.5rem/1.05 var(--font-display);
-  letter-spacing: 0.005em;
+  font: 900 1.75rem/1.05 var(--font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+/* The join screen's logo: the game's name as a title card. */
+.hero {
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  text-align: center;
+}
+.hero__badge {
+  display: inline-grid;
+  place-items: center;
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 22px;
+  background: linear-gradient(145deg, var(--signal-lit), var(--hot));
+  color: #fff;
+  font-size: 2.4rem;
+  box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.45), 0 6px 0 var(--hot-deep), 0 14px 40px -10px rgba(255, 79, 163, 0.7);
+  transform: rotate(-6deg);
+}
+.title--hero {
+  font-size: clamp(3rem, 16vw, 4.5rem);
+  line-height: 0.95;
+  background: linear-gradient(90deg, var(--signal-lit), var(--signal) 40%, var(--hot));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 4px 0 rgba(0, 0, 0, 0.35));
+}
+.hero__tag {
+  padding: 0.25rem 0.8rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hero__lead {
+  text-align: center;
+  text-wrap: balance;
 }
 .title--sm {
   font-size: 1.1875rem;
@@ -103,8 +147,7 @@
 .rule {
   display: grid;
   gap: 0.6rem;
-  padding-top: var(--pad);
-  border-top: 1px solid var(--rail);
+  padding-top: 0.25rem;
 }
 
 /* No keyboard and no pointer means no shortcut to advertise, so it is off by default and a
@@ -142,7 +185,7 @@
  * separate things to scroll to. */
 .choices {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
 @media (min-width: 40rem) {
   .choices {
@@ -156,7 +199,7 @@
 .rates {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.4rem;
+  gap: 0.5rem 0.45rem;
 }
 @media (min-width: 40rem) {
   .rates {
@@ -410,8 +453,9 @@
  * a rule above it and real space below the primary. A thumb reaching for "next round" in a
  * room where someone is shouting must not be able to land on "erase the game in progress". */
 .guard {
-  padding-top: 0.9rem;
-  border-top: 1px solid var(--rail);
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--rail-lit);
 }
 
 .foot {
@@ -420,7 +464,7 @@
   gap: 0.75rem;
   flex-wrap: wrap;
   padding-top: var(--pad);
-  border-top: 1px solid var(--rail);
+  border-top: 1px dashed var(--rail-lit);
 }
 .foot__code {
   color: var(--ink-dim);

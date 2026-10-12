@@ -1,8 +1,7 @@
-/* The instrument panel: the pieces that are the same on every screen, so the six screens
- * read as one device rather than six layouts that happen to share a CSS file.
- */
+/* The game pieces that are the same on every screen — rail, target card, timer, meters, score,
+ * boards — so six screens read as one game rather than six layouts sharing a CSS file. */
 
-/* ---- top rail ---------------------------------------------------------------------- */
+/* ---- top rail ------------------------------------------------------------------------- */
 
 .railbar {
   position: sticky;
@@ -11,54 +10,69 @@
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.65rem var(--pad);
+  padding: 0.6rem var(--pad);
+  background: rgba(18, 8, 47, 0.72);
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
   border-bottom: 1px solid var(--rail);
-  background: var(--deck);
 }
 .railbar__mark {
-  font: 800 1.1rem/1 var(--font-display);
-  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: 900 1.25rem/1 var(--font-display);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, var(--signal-lit), var(--hot));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  white-space: nowrap;
+}
+.railbar__spark {
+  color: var(--signal);
+  -webkit-text-fill-color: var(--signal);
 }
 .railbar__meta {
-  font-size: 0.8125rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--ink-dim);
-}
-.railbar__meta::before {
-  content: '';
-  display: inline-block;
-  width: 1px;
-  height: 0.7em;
-  margin-right: 0.6rem;
-  vertical-align: -0.08em;
-  background: var(--rail);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-/* A player's phone can lose the event stream mid-round and never say so otherwise. This is
- * the one persistent indicator of whether the readout they are looking at is current. */
+/* Is the screen live? One pill in the corner. */
 .status {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.4rem;
   margin-left: auto;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--ink-dim);
   white-space: nowrap;
 }
+.status output {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
 .lamp {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   flex: none;
+  border-radius: 50%;
   background: var(--ink-dim);
 }
-/* Sodium means the stream is genuinely live. This is the one other place the accent is spent,
- * and it is the right place: "live" is exactly what the original budget reserved it for. */
 .lamp--live {
-  background: var(--signal);
-  box-shadow: 0 0 0 2px var(--glow);
+  background: var(--good);
+  box-shadow: 0 0 0 3px rgba(62, 227, 154, 0.25);
 }
-/* Reconnecting and connecting are the same calm thing at two points on the same road, and
- * neither is a fault. Cool, never red: a phone on a lock screen is not in trouble. */
 .lamp--connecting,
 .lamp--down {
   background: var(--cool-lit);
@@ -66,14 +80,12 @@
 .lamp--failed {
   background: var(--fault);
 }
-/* A player's presence in the named roster. Cool, because it is about other people and not
- * about you; unlit is a lamp that is off, not a missing one. */
 .lamp--on {
-  background: var(--cool);
+  background: var(--good);
 }
 .lamp--off {
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--rail);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ink-faint);
 }
 .status--fault {
   color: var(--fault);
@@ -81,125 +93,103 @@
 .status--pending {
   color: var(--cool-lit);
 }
-/* 44px of touch target around four letters of text. The negative margin takes the space back
- * out of the layout, so the rail does not grow a row to accommodate a thumb. */
 .status__retry {
   display: inline-flex;
   align-items: center;
   min-height: 2.75rem;
   margin: -0.72rem 0;
-  padding: 0 0.4rem;
+  padding: 0 0.3rem;
   border: 0;
   background: none;
   color: inherit;
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
 }
 
-/* ---- illuminated readout slab --------------------------------------------------------- */
+/* ---- the target card -------------------------------------------------------------------- */
 
 .readout {
   position: relative;
-  padding: 0.9rem var(--pad) 1.1rem;
-  border: 1px solid var(--rail);
+  padding: 1rem var(--pad) 1.15rem;
   border-radius: var(--radius);
   overflow: hidden;
-  /* The only gradient in the console: the panel's own light falloff, warm at the top edge
-   * and cold at the bottom, as a lit face on an unlit box actually behaves. */
-  background: var(--readout-face);
-  box-shadow: inset 0 1px 0 var(--bevel), inset 0 -1px 0 var(--edge-dark),
-    0 0 34px -14px var(--glow);
+  background:
+    radial-gradient(120% 80% at 0% 0%, rgba(255, 200, 61, 0.16), transparent 60%),
+    linear-gradient(160deg, #3b2496 0%, #26145f 100%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 var(--bevel), 0 0 0 1px rgba(0, 0, 0, 0.2), var(--shadow),
+    0 0 40px -18px var(--glow);
 }
 .readout > * {
   position: relative;
 }
-/* Broadcast glass. A three-pixel scanline, not a texture image. Kept faint: it darkens every
- * other row of the glyphs as well as the panel, and the target is the one thing on this
- * screen that has to stay readable across a dim room. */
-.readout::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg,
-    var(--scan) 0 1px,
-    transparent 1px 3px
-  );
-}
 .readout__label {
-  display: block;
-  margin-bottom: 0.4rem;
-  color: var(--ink-dim);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  display: inline-block;
+  margin-bottom: 0.55rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--signal-lit);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .readout__value {
   margin: 0;
   color: var(--signal);
   font-family: var(--font-display);
-  font-weight: 800;
+  font-weight: 900;
   font-size: clamp(2.25rem, 10.5vw, 3.5rem);
-  line-height: 0.94;
-  letter-spacing: -0.005em;
+  line-height: 0.95;
+  letter-spacing: 0.005em;
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.3);
   text-wrap: balance;
   overflow-wrap: anywhere;
 }
-/* The room code is the loudest thing on the lobby, because it is the thing a player has to
- * read out loud across a room. Two classes on the element rather than one, so it cannot be
- * knocked off by a tier rule that happens to land later in the file. */
+/* The room code as letter tiles on a game board. */
 .readout__value.readout__value--code {
-  font-size: clamp(3.25rem, 19vw, 5.5rem);
-  line-height: 0.9;
-  letter-spacing: 0.06em;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  padding: 0.25rem 0 0.35rem;
+}
+.codechar {
+  display: inline-grid;
+  place-items: center;
+  width: min(19vw, 5rem);
+  aspect-ratio: 4 / 5;
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--signal-lit), var(--signal));
+  color: var(--signal-ink);
+  font-size: clamp(2.6rem, 14vw, 4.25rem);
+  line-height: 1;
+  text-shadow: none;
+  box-shadow: inset 0 3px 0 var(--edge-warm), 0 5px 0 var(--signal-deep), 0 10px 24px -8px var(--glow);
+}
+.readout:has(.readout__value--code) {
+  text-align: center;
 }
 
-/* ---- the two steps down ---------------------------------------------------------------- */
-
-/* A phrase: still the display voice, still a voice at distance, sized so ninety-odd
- * characters cost a third of the screen instead of all of it. */
 .readout[data-size='phrase'] .readout__value {
-  font-size: clamp(1.5rem, 6.5vw, 2rem);
-  line-height: 1.04;
-  text-wrap: balance;
+  font-size: clamp(1.6rem, 7vw, 2.1rem);
+  line-height: 1.05;
 }
-
-/* A paragraph: the round's subject, set as an artifact rather than as body copy.
- *
- * This tier used to compute to exactly what the composer underneath it computes to — 1rem of
- * --font-ui, the same family and the same size as `.area` and as the send button. Measured at
- * 390x844, the single most important element on the Game screen was typographically
- * identical to the field you type the answer into, which is a hierarchy that has told a
- * player nothing at all.
- *
- * So the step is a whole tier, not a nudge. The letterform returns to the display face the
- * rest of the panel is cut in — Big Shoulders runs about 30% narrower than Barlow at the same
- * size, so the paragraph is six lines where it was seven despite being 25% bigger — and the
- * measure comes down from 34rem to 26rem, so a long recipe stops running the full width of
- * the panel. Neither the size nor the face reads on its own, which is why the panel also grows
- * the 2px sodium rule below: those two are the part of the hierarchy that survives being
- * compared with the composer underneath, and the rule is the part that survives being looked
- * at. */
-.readout[data-size='text'] {
-  border-left: 2px solid var(--signal);
-}
+/* A paragraph target: white, not gold, because a gold paragraph is tiring to read closely. */
 .readout[data-size='text'] .readout__value {
+  color: var(--ink);
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 1.25rem;
   line-height: 1.3;
   letter-spacing: 0.01em;
-  max-width: 26rem;
+  max-width: 34rem;
+  text-shadow: none;
   text-wrap: pretty;
-  /* An exercise carries its own layout — an email's paragraphs, a pseudo-code's indentation. */
   white-space: pre-wrap;
 }
 
-/* The one thing allowed to grow on a wide screen. Everywhere else the wide layout only
- * rearranges; this panel is what the room is looking at, and a target letterboxed into a
- * 1600px band is a target nobody can read from the back of the room. */
 @media (min-width: 64rem) {
   .readout {
     padding: 1.4rem 1.75rem 1.8rem;
@@ -207,16 +197,13 @@
   .readout__value {
     font-size: 4.5rem;
   }
-  .readout__value.readout__value--code {
-    font-size: 7rem;
+  .codechar {
+    width: 6.5rem;
+    font-size: 5.5rem;
   }
   .readout[data-size='phrase'] .readout__value {
     font-size: 3rem;
   }
-  /* Room to grow, which is exactly what a paragraph wants and a word does not: at this width
-   * the same recipe is three comfortable lines instead of seven. The measure grows with the
-   * size but less than it does, so a 60rem line of display type is never a 90-character
-   * reading. */
   .readout[data-size='text'] .readout__value {
     font-size: 1.5rem;
     line-height: 1.35;
@@ -224,106 +211,121 @@
   }
 }
 
-/* ---- segmented track: rounds are a sequence, so a track -------------------------------- */
+/* ---- round track ------------------------------------------------------------------------ */
 
 .track {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  gap: 3px;
-  height: 7px;
+  gap: 4px;
+  height: 8px;
 }
-/* An empty tick is still a tick: it is the slot the next round goes in, so its edge is a
- * control surface to the eye and not a hairline. --track-edge, not --rail — see the token. */
 .track__tick {
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--track-edge);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px var(--rail-lit);
 }
 .track__tick--done {
-  background: var(--rail-lit);
+  background: linear-gradient(90deg, var(--cool), var(--cool-lit));
   box-shadow: none;
 }
 .track__tick--now {
   background: var(--signal);
-  box-shadow: none;
+  box-shadow: 0 0 10px var(--glow);
 }
 
 .stepwrap {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.55rem;
 }
 .step {
   display: flex;
   align-items: baseline;
-  gap: 0.6rem;
+  gap: 0.5rem;
 }
 .step__n {
   color: var(--ink);
-  font: 800 1.375rem/1 var(--font-display);
+  font: 900 1.6rem/1 var(--font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   font-variant-numeric: tabular-nums;
 }
 .step__of {
   color: var(--ink-dim);
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
-/* The didacticiel's shared thirty seconds, as an instrument.
- *
- * Drawn between the question track and the illuminated panel, because that is where a class reads
- * it: the question is above, and the four answers are below, so the clock sits at the throat of
- * both. The admin console counts the same window down with the same hook, so the host's seconds
- * and the class's seconds are the same seconds — which is the point.
- *
- * Sodium, and that is now the only thing sodium means in the didacticiel. It used to double as
- * "this is the correct answer", which is why the right answer had to be painted in sodium too and
- * the two outcomes shared a hue; --good took that job and left the accent free to mean the one
- * thing it means everywhere else in this console: something is live and it is moving.
- *
- * The last five seconds step up rather than change colour. A red clock would be a fault lamp, and
- * nothing is wrong: the window is closing exactly as it was always going to. What is different is
- * only how much of it is left, so the difference is weight and a step in size. */
+/* ---- the clock: a draining ring ---------------------------------------------------------- */
+
 .qclock {
   display: flex;
-  align-items: baseline;
-  gap: 0.55rem;
-  min-height: 2.5rem;
-  padding-top: 0.6rem;
-  border-top: 1px solid var(--rail);
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3.5rem;
+}
+.ring {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+}
+.ring__svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.ring__track {
+  fill: rgba(0, 0, 0, 0.25);
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 5;
+}
+.ring__fill {
+  fill: none;
+  stroke: var(--signal);
+  stroke-width: 5;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 250ms linear, stroke 200ms linear;
+  filter: drop-shadow(0 0 4px var(--glow));
 }
 .qclock__n {
-  color: var(--signal);
-  font-size: clamp(2rem, 9vw, 2.75rem);
-  line-height: 0.8;
+  color: var(--ink);
+  font-size: 1.5rem;
+  line-height: 1;
 }
 .qclock__t {
   color: var(--ink-dim);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   line-height: 1.3;
 }
-/* Under five seconds the figure is bigger and the label brighter, so a player who has looked up
- * from their desk registers it without reading it. */
+/* The last five seconds: the ring turns hot pink and the figure throbs. */
+.qclock[data-state='soon'] .ring__fill {
+  stroke: var(--hot);
+  filter: drop-shadow(0 0 6px rgba(255, 79, 163, 0.6));
+}
 .qclock[data-state='soon'] .qclock__n {
-  font-size: clamp(2.5rem, 12vw, 3.25rem);
+  color: var(--hot);
 }
 .qclock[data-state='soon'] .qclock__t {
   color: var(--ink);
 }
-/* The window is shut, so the number is gone and the word says what happened. --ink-dim rather
- * than --cool-lit: the reveal is coming, and cool is the colour this console reserves for facts
- * about other people. */
 .qclock__t--closed {
-  align-self: center;
-  font: 800 1.125rem/1.1 var(--font-display);
-  letter-spacing: 0.02em;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  font: 900 1.125rem/1.1 var(--font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-/* How many people are in the room. The first thing a player checks on arrival — am I in the
- * right room, is everyone here — so it is a designed element and not a caption. The number is
- * set in the display face at a size readable at arm's length, in the cool colour, because it
- * counts other people and is not a score: it must never compete with the target or with the
- * sodium the player is trying to win. */
+/* ---- how many people are here ------------------------------------------------------------ */
+
 .roster {
   display: flex;
   align-items: baseline;
@@ -333,14 +335,13 @@
   color: var(--cool-lit);
   font-size: clamp(3rem, 15vw, 4.25rem);
   line-height: 0.85;
+  text-shadow: 0 0 24px rgba(51, 189, 240, 0.45);
 }
 .roster__unit {
   color: var(--ink-dim);
   font-size: 0.9375rem;
   font-weight: 600;
 }
-/* The roster total, deliberately under the number and not beside it: this is the count of
- * people the game knows about, and it must never be read as the count of people present. */
 .roster__total {
   margin-top: 0.15rem;
   color: var(--ink-dim);
@@ -348,57 +349,99 @@
   font-weight: 600;
 }
 .roster__meter {
-  margin-top: 0.5rem;
+  margin-top: 0.6rem;
 }
 
-/* The list's columns are declared here, on the list, and every row BORROWS them through
- * `subgrid`. A column of figures has to line up down the list, and it cannot when each row
- * lays itself out on its own: an `auto` track in twenty separate grids sizes to twenty
- * separate contents, so the figures would agree with each other only by accident — and they
- * would stop agreeing the first time a row grew a name long enough to push its number
- * sideways. `.qboard__row` is the rule this is deliberately NOT copied from; it lays each
- * didacticiel row out independently and its `/ 8` column drifts for the same reason.
- *
- * Each row keeps its own box — the padding, the rule and the alignment belong to the row and
- * not to the four cells — and inherits only the tracks, which is what `subgrid` is for.
- *
- * The plain template under the `subgrid` one is the fallback, not a leftover. A browser that
- * does not know `subgrid` drops the second declaration and lays every row out as lamp, name,
- * score, away: today's row plus the figure, which is a worse answer but not a broken one, and
- * the fallback repeats the track list because the row's own gap would otherwise be the
- * parent's only and the cells would touch. */
+/* Players as tokens, popping in as they arrive. */
+.cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cloud__p {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: 100%;
+  padding: 0.25rem 0.75rem 0.25rem 0.25rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px var(--rail);
+}
+.cloud__p--me {
+  box-shadow: inset 0 0 0 2px var(--signal);
+}
+.cloud__p--off {
+  opacity: 0.55;
+}
+.cloud__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+
+.avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: linear-gradient(145deg, hsl(var(--h) 85% 62%), hsl(var(--h) 75% 42%));
+  color: #fff;
+  font: 900 0.8rem/1 var(--font-display);
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 2px 0 hsl(var(--h) 70% 25%);
+}
+.avatar--md {
+  width: 2.25rem;
+  height: 2.25rem;
+  font-size: 1rem;
+}
+.avatar--lg {
+  width: 3.5rem;
+  height: 3.5rem;
+  font-size: 1.4rem;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.35), 0 3px 0 hsl(var(--h) 70% 25%), 0 0 0 3px rgba(255, 255, 255, 0.85);
+}
+.avatar--dim {
+  filter: grayscale(0.85);
+}
+
+/* The host's named roster. Columns live on the list and rows borrow them through subgrid. */
 .rosterlist {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr) auto auto;
-  column-gap: 0.55rem;
+  column-gap: 0.6rem;
 }
 .rosterlist__row {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: 8px minmax(0, 1fr) auto auto;
   grid-template-columns: subgrid;
-  column-gap: 0.55rem;
+  column-gap: 0.6rem;
   align-items: center;
   padding: 0.4rem 0;
   border-top: 1px solid var(--rail);
   font-size: 0.9375rem;
 }
-.rosterlist__row .lamp {
-  width: 8px;
-  height: 8px;
+.rosterlist__who {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
 }
 .rosterlist__name {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
-/* The player's total, in the console's figure and in the board's position after the name. One
- * step down from `.board__pts` for the reason `.board__cell` gives: the total is the one
- * figure in the row THE BOARD is about, and here the row is about a person. The host is
- * scanning this list for a name they cannot reach, and a total set at the board's size
- * competes with that scan.
- * `--ink-dim`, like `.board__cell`, because these are other people's scores: sodium belongs to
- * the target and to "you", and a list of figures that borrowed it would be spending the accent
- * on twenty numbers instead of one player's answer. */
 .rosterlist__score {
   color: var(--ink-dim);
   font-size: 1.0625rem;
@@ -412,67 +455,101 @@
   white-space: nowrap;
 }
 
-/* ---- answer meter: one lamp per player ------------------------------------------------- */
+/* ---- answer meter: one segment per player ----------------------------------------------- */
 
 .meterrow {
   display: flex;
   align-items: baseline;
   gap: 0.6rem;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.45rem;
 }
 .meterrow__count {
   margin-left: auto;
   color: var(--ink);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  font: 800 1rem/1 var(--font-display);
   font-variant-numeric: tabular-nums;
 }
 .meter {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  gap: 3px;
-  height: 12px;
+  gap: 4px;
+  height: 14px;
 }
 .meter__seg {
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--track-edge);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px var(--rail-lit);
 }
-/* Filled = someone else is in. Cool and desaturated, because it is not about you. */
 .meter__seg--on {
-  background: var(--cool);
-  box-shadow: inset 0 1px 0 var(--edge-cool);
+  background: linear-gradient(180deg, var(--cool-lit), var(--cool));
+  box-shadow: 0 0 10px -2px rgba(51, 189, 240, 0.6);
 }
-/* Your own lamp is sodium, the same colour as the target and your score: the accent means
- * "yours" everywhere it appears, and "one of these is me" comes free. */
 .meter__seg--me {
-  background: var(--signal);
-  box-shadow: inset 0 1px 0 var(--edge-warm), 0 0 0 1px var(--glow);
+  background: linear-gradient(180deg, var(--signal-lit), var(--signal));
+  box-shadow: 0 0 10px -2px var(--glow);
 }
 
-/* ---- score scale: ten ticks, so a 4 does not read like an 8 ---------------------------- */
+/* ---- score scale ------------------------------------------------------------------------ */
 
 .scale {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  gap: 3px;
-  height: 16px;
+  gap: 4px;
+  height: 14px;
 }
 .scale__tick {
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--track-edge);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px var(--rail-lit);
 }
 .scale__tick--on {
-  background: var(--signal);
-  box-shadow: inset 0 1px 0 var(--edge-warm);
+  background: linear-gradient(180deg, var(--signal-lit), var(--signal));
+  box-shadow: 0 0 8px -2px var(--glow);
 }
 
+/* ---- the verdict card -------------------------------------------------------------------- */
+
 .verdict {
+  position: relative;
   display: grid;
-  gap: 0.7rem;
-  padding-top: var(--pad);
-  border-top: 1px solid var(--rail);
+  gap: 0.75rem;
+  padding: 1rem var(--pad) 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--rail);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  box-shadow: inset 0 1px 0 var(--bevel), var(--shadow);
+}
+.verdict--done[data-tier='high'] {
+  border-color: rgba(255, 200, 61, 0.6);
+  box-shadow: inset 0 1px 0 var(--bevel), var(--shadow), 0 0 40px -10px var(--glow);
+}
+.verdict__livelabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--signal);
+}
+.verdict__cheer {
+  font: 900 1.5rem/1 var(--font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, var(--signal-lit), var(--hot));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.verdict--done[data-tier='low'] .verdict__cheer {
+  background: none;
+  color: var(--ink-dim);
 }
 .verdict__top {
   display: flex;
@@ -481,32 +558,33 @@
 }
 .verdict__score {
   color: var(--signal);
-  font-size: clamp(3.25rem, 17vw, 5.5rem);
+  font-size: clamp(4rem, 22vw, 6rem);
   line-height: 0.78;
+  text-shadow: 0 4px 0 var(--signal-deep), 0 0 30px var(--glow);
 }
 .verdict__den {
   padding-bottom: 0.15rem;
   color: var(--ink-dim);
-  font-size: 0.9375rem;
-  font-weight: 600;
+  font-size: 1rem;
+  font-weight: 700;
 }
 .verdict__round {
   margin-left: auto;
-  padding-bottom: 0.2rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--ink-dim);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 700;
   white-space: nowrap;
 }
 
-/* The model's own words, dropped into a slot. */
 .slot {
   margin: 0;
-  padding: 0.7rem 0.8rem;
+  padding: 0.75rem 0.85rem;
   border: 1px solid var(--rail);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--well);
-  box-shadow: inset 0 1px 0 var(--edge-sunk);
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: 0.9375rem;
@@ -515,54 +593,37 @@
   overflow-wrap: anywhere;
 }
 
-/* ---- the run of show: where the game is, before any instrument ---------------------------- */
+/* ---- the host's run-of-show -------------------------------------------------------------- */
 
-/* One block, above everything else on the admin console, because it is the only part of that
- * screen a teacher can read while talking. Six instruments sit below it and each answers one
- * narrow question; this one answers the question that has to be answered first, which is "where
- * are we and what do I press".
- *
- * It is legible on a phone because it is four lines and nothing else: the phase name, one
- * sentence, the counts, and the one thing the host can do about it. No meter, no lamp, no track —
- * those are for the screens below it, and a host holding this at their side with one hand has no
- * time to decode a segmented bar.
- *
- * The left edge is the only part of it that changes, and it changes for one reason: it takes the
- * sodium while the shared thirty seconds are running. So a glance is enough to tell which half of
- * the didacticiel the room is in, without reading a word of it. */
 .runshow {
   display: grid;
   gap: 0.3rem;
-  padding: 0.75rem var(--pad) 0.85rem;
+  padding: 0.9rem var(--pad) 1rem;
+  border-radius: var(--radius);
   border: 1px solid var(--rail);
-  border-left: 3px solid var(--cool);
-  border-radius: 0 var(--radius) var(--radius) 0;
-  background: var(--panel);
+  border-left: 5px solid var(--cool);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
 }
 .runshow[data-live='true'] {
   border-left-color: var(--signal);
 }
 .runshow__phase {
   color: var(--ink);
-  font: 800 clamp(1.5rem, 7vw, 2rem)/1 var(--font-display);
-  letter-spacing: 0.01em;
+  font: 900 clamp(1.6rem, 7vw, 2.1rem)/1 var(--font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 .runshow__lead {
   color: var(--ink);
   font-size: 1rem;
   line-height: 1.4;
 }
-/* The countdown, set in the same tabular figures as every other figure in this console so it
- * does not shuffle the line sideways as it counts. */
 .runshow__timer {
   color: var(--signal);
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* The counts, and then the invitation. Three steps down from the sentence above them, and no
- * further: --ink-dim then --ink-faint are both AA on this panel (4.79:1 and 4.51:1) and they are
- * the last two tiers this palette has before the text stops being for reading. */
 .runshow__figs {
   color: var(--ink-dim);
   font-size: 0.875rem;
@@ -574,26 +635,21 @@
   line-height: 1.4;
 }
 
-/* ---- the didacticiel: the answer's why, and the eight-question ranking ------------------ */
+/* ---- the didacticiel's explanation and ranking -------------------------------------------- */
 
-/* Why this answer is the right one. It is the reason the phase exists — a QCM without an
- * explanation teaches position rather than method — so it gets a panel of its own rather than a
- * line of dim text under the choices, and it takes focus when it appears because it is the thing
- * the player has just earned.
- *
- * The sodium rule is the panel's only signal of novelty: nothing about it says "new", it says
- * "this is the answer's own material", which is the same thing the console uses sodium for
- * everywhere else. */
 .explain {
   display: grid;
   gap: 0.4rem;
-  padding: 0.9rem var(--pad);
-  border-left: 2px solid var(--signal);
-  border-radius: 0 var(--radius) var(--radius) 0;
-  background: var(--well);
+  padding: 0.95rem var(--pad);
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 200, 61, 0.35);
+  background: linear-gradient(180deg, rgba(255, 200, 61, 0.12), rgba(255, 200, 61, 0.04));
 }
-.explain:focus-visible {
-  outline-offset: 0;
+.explain .label {
+  color: var(--signal-lit);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .explain .prose {
   font-size: 1.0625rem;
@@ -603,81 +659,73 @@
 .qboard {
   display: grid;
   gap: 0.5rem;
-  padding-top: var(--pad);
-  border-top: 1px solid var(--rail);
+  padding: 1rem var(--pad);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--rail);
 }
 .qboard__mine {
   display: flex;
   align-items: baseline;
   gap: 0.6rem;
 }
-/* Sodium, and large, because this number is the screen's verdict and it is the only score in
- * the console that will never appear in the final ranking. */
 .qboard__score {
   color: var(--signal);
   font-size: clamp(3rem, 16vw, 5rem);
   line-height: 0.8;
+  text-shadow: 0 4px 0 var(--signal-deep);
 }
 .qboard__den {
   color: var(--ink-dim);
   font-size: 0.9375rem;
   font-weight: 600;
 }
-/* The didacticiel's own board, not `.board`. The class list in that component is the game's
- * ranking, down to the bar drawn against the leader, and reusing it here would draw the same
- * object in a second place with a second meaning: this list is a score that is deliberately kept
- * out of the ranking, and saying so next to it is half of what makes it readable. */
 .qboard__list {
   display: grid;
+  gap: 0.4rem;
 }
 .qboard__row {
   display: grid;
-  grid-template-columns: 1.4rem minmax(0, 1fr) auto auto;
+  grid-template-columns: 2rem auto minmax(0, 1fr) auto auto;
   gap: 0.55rem;
-  align-items: baseline;
-  padding: 0.45rem 0;
-  border-top: 1px solid var(--rail);
+  align-items: center;
+  padding: 0.5rem 0.7rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
 }
 .qboard__pts {
   color: var(--ink);
   font-size: 1.375rem;
   line-height: 1;
 }
-/* The denominator is a separate span rather than a suffix on the value so the two can be set at
- * different sizes and so a screen reader reads "7", "sur 8" rather than "7 sur 8" as one number
- * it will then have to parse. */
 .qboard__of {
   color: var(--ink-dim);
   font-size: 0.875rem;
 }
 
-/* ---- the round synthesis: the numbers behind a score ----------------------------------- */
+/* ---- the round synthesis ----------------------------------------------------------------- */
 
 .tally {
   display: grid;
   gap: 0.6rem;
-  padding-top: var(--pad);
-  border-top: 1px solid var(--rail);
+  padding: 1rem var(--pad);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--rail);
+  box-shadow: var(--shadow);
 }
 .tally__row {
   display: grid;
-  gap: 0.5rem;
-  padding-top: 0.6rem;
-  border-top: 1px solid var(--rail);
+  gap: 0.6rem;
 }
 .tally__head {
   display: flex;
   align-items: baseline;
   gap: 0.6rem;
 }
-/* The final note and its unit as one nowrap unit, at the size the old score-only header used:
- * it is the one figure the player is asked to carry out of the round. The two inputs above it
- * stay in the body face, so the sentence reads as prose with a number in it rather than as three
- * competing headlines. The unit keeps its own smaller size and takes a real space from the JSX —
- * the margin that used to separate the two spans is gone, because it read as "6sur 10". */
 .tally__round {
   color: var(--signal);
-  font-size: 1.75rem;
+  font-size: 2rem;
   line-height: 1;
   white-space: nowrap;
 }
@@ -689,10 +737,6 @@
 .tally__prompt {
   font-size: 0.9375rem;
 }
-/* Four figures in a row, wrapping to two on the narrowest phone. Every one of them is printed
- * even though two of them are the inputs to the third: the retained quality is an arithmetic
- * result, and a class that cannot check the arithmetic cannot argue with the number it is being
- * asked to write ten of. */
 .tally__figs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -706,9 +750,8 @@
 .tally__fig {
   display: grid;
   gap: 0.1rem;
-  padding: 0.45rem 0.5rem;
-  border: 1px solid var(--rail);
-  border-radius: var(--radius);
+  padding: 0.5rem 0.6rem;
+  border-radius: 10px;
   background: var(--well);
 }
 .tally__fig b {
@@ -722,29 +765,15 @@
   font-size: 0.75rem;
   font-weight: 600;
 }
-/* The critic's cell is the one that carries a sentence, so it is the one that gets a row of its
- * own. `grid-column: 1 / -1` rather than a wider track: the other three figures stay a tidy
- * grid of equal boxes, and the critic reads as the cell that outgrew the format because it has
- * something to say, which is exactly what it is. A `<p>` for the same reason the others are
- * `<span>` — a cell that may hold two sentences of prose cannot be a phrasing element, and the
- * browser would eventually have to be told which one it is. */
 .tally__fig--critic {
   grid-column: 1 / -1;
   gap: 0.35rem;
 }
-/* The reason, in the judge's own voice and at the judge's own size — the same `prose--sm` the
- * verdict in `Game.tsx` uses for `result.comment`, because it IS the same sentence about the
- * same kind of number. Sodium, and only on the first line: offline this is where the console
- * admits there was no model, and that admission should be findable while scanning the row rather
- * than read at the end of it. */
 .tally__why {
   padding-top: 0.35rem;
   border-top: 1px solid var(--rail);
   color: var(--ink-dim);
 }
-/* The model's answer to one prompt, behind a disclosure rather than below the fold. Nine of
- * these on one screen is a wall of preformatted text, and what a class reads out loud is the
- * prompt; the summary marker keeps the 48px target the rest of the console's controls hold. */
 .tally__more {
   display: grid;
 }
@@ -752,36 +781,21 @@
   display: flex;
   align-items: center;
   min-height: 3rem;
-  color: var(--ink-dim);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  color: var(--cool-lit);
+  font-size: 0.875rem;
+  font-weight: 700;
   cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-@media (hover: hover) and (pointer: fine) {
-  .tally__morebtn:hover {
-    color: var(--ink);
-  }
-}
-.tally__more .slot {
-  margin-bottom: 0.5rem;
 }
 
-/* ---- cross-rating: a target, a prompt, and one number ----------------------------------- */
+/* ---- cross-rating -------------------------------------------------------------------------- */
 
-/* The target, above the prompt, in the body face and not in the illuminated panel. The panel is
- * spent on the target in every other phase, and it cannot be spent here: on this screen the thing
- * being looked at is the prompt, and a target set at display size above it would be the loudest
- * thing on the screen while being the one of the two that is only reference. This is the only
- * place in the console where a target is not the illuminated panel, and it is the reason the
- * panel has an eye to follow rather than a rule to obey. */
 .ratehead {
   display: grid;
   gap: 0.35rem;
-  padding: 0.7rem var(--pad);
-  border-left: 2px solid var(--cool);
-  background: var(--well);
-  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 0.8rem var(--pad);
+  border-radius: var(--radius);
+  border: 1px solid var(--edge-cool);
+  background: rgba(51, 189, 240, 0.08);
 }
 .ratehead__target {
   margin: 0;
@@ -791,15 +805,13 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-/* The exercise's picture, in the target panel and above the prompt being rated. Full width of
- * its box, never wider; the white of the figure is kept, it is part of the figure. */
 .readout__image,
 .ratehead__image {
   display: block;
   width: 100%;
   height: auto;
   margin-top: 0.75rem;
-  border-radius: var(--radius);
+  border-radius: 10px;
   background: #fff;
 }
 .rateline {
@@ -810,49 +822,48 @@
 .rateline__who {
   margin-left: 0;
 }
-/* What this row is, in words, next to whose prompt it is. In the anonymous mode the label is a
- * pseudonym that says nothing about the player, which is the point: the row reads the same in
- * both modes and a player who knew the game was anonymous can tell that nothing extra has been
- * revealed by the shape of the header. */
 .rateline__what {
   margin-left: auto;
   color: var(--ink-dim);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-/* The prompt being judged, and the only thing on this screen set as an artifact. The display
- * face is a quarter larger than the body text around it, which is what separates "the thing you
- * are here to read" from "the sentence explaining what to do with it" without a box around
- * either. */
+/* The prompt being judged: a speech-bubble card, the one thing on screen to read closely. */
 .prompt {
+  position: relative;
   margin: 0;
-  padding: 1rem var(--pad);
-  border: 1px solid var(--rail);
-  border-left: 2px solid var(--signal);
+  padding: 1rem var(--pad) 1.1rem;
   border-radius: var(--radius);
-  background: var(--well);
-  box-shadow: inset 0 1px 0 var(--edge-sunk);
-  color: var(--ink);
+  background: #fff;
+  color: #1b1140;
   font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 1.25rem;
-  line-height: 1.35;
+  font-weight: 700;
+  font-size: 1.3rem;
+  line-height: 1.3;
   letter-spacing: 0.01em;
   text-wrap: pretty;
   overflow-wrap: anywhere;
+  box-shadow: 0 5px 0 #b9acef, var(--shadow);
 }
-/* "This one is yours", after the server said so. Cool rather than the fault red: a rule of the
- * game is not a malfunction, and the fault colour on this screen would be spent on something
- * nobody did wrong. The panel replaces the scale rather than sitting beside it — a scale the
- * player may not use is a control that looks live. */
+.prompt::before {
+  content: '';
+  position: absolute;
+  top: -9px;
+  left: 1.4rem;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  transform: rotate(45deg);
+  border-radius: 3px;
+}
 .ownprompt {
   margin: 0;
-  padding: 0.7rem var(--pad);
-  border-left: 2px solid var(--cool);
-  background: var(--well);
-  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 0.8rem var(--pad);
+  border-radius: var(--radius);
+  border: 1px solid var(--edge-cool);
+  background: rgba(51, 189, 240, 0.1);
   color: var(--cool-lit);
   font-size: 0.9375rem;
   line-height: 1.45;
@@ -862,14 +873,12 @@
   align-items: baseline;
   gap: 0.6rem;
 }
-/* The chosen note, big, at the end of the row: the player has just picked a number and this is
- * the one place on the screen where the number is the answer to a question they are being asked.
- * Decorative — the ten buttons below it each carry their own digit in the accessibility tree. */
 .raterow__value {
   margin-left: auto;
   color: var(--signal);
-  font-size: 1.75rem;
+  font-size: 2.25rem;
   line-height: 1;
+  text-shadow: 0 3px 0 var(--signal-deep);
 }
 .rateends {
   display: flex;
@@ -879,44 +888,54 @@
   text-transform: lowercase;
 }
 
-/* ---- leaderboard ---------------------------------------------------------------------- */
+/* ---- leaderboard --------------------------------------------------------------------------- */
 
 .board {
   display: grid;
+  gap: 0.4rem;
 }
-/* The measured board. The template is set inline by the component — it is the only place that
-   knows how many columns there are — and both the header and the rows take it from here with
-   `inherit`, so a heading cannot drift out of alignment with the numbers it names. */
 .board--cols .board__head,
 .board--cols .board__row {
+  /* Each row spans the whole board and re-declares the board's columns. Without the span, a row
+   * was laid out as ONE CELL of the board's own grid, and the final standings fell apart. */
+  grid-column: 1 / -1;
   grid-template-columns: inherit;
 }
 .board__head {
   display: grid;
   column-gap: 0.55rem;
-  padding-bottom: 0.3rem;
-  border-bottom: 1px solid var(--rail);
+  padding: 0 0.7rem 0.2rem;
   color: var(--ink-dim);
   font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-/* Everything but the name is a number, and numbers are read right-aligned. */
 .board__head > span:not(.board__headname) {
   text-align: right;
 }
 .board__row {
   display: grid;
-  grid-template-columns: 1.4rem minmax(0, 1fr) auto;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
   column-gap: 0.55rem;
-  row-gap: 0.35rem;
-  align-items: baseline;
-  padding: 0.5rem 0;
-  border-top: 1px solid var(--rail);
+  row-gap: 0.4rem;
+  align-items: center;
+  padding: 0.55rem 0.7rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px var(--rail);
 }
-/* One step down from `.board__pts`, because the total is the one figure in the row the board is
-   about: a column of numbers all at the same weight is a column with no answer in it. */
+.board__row--me {
+  background: rgba(255, 200, 61, 0.12);
+  box-shadow: inset 0 0 0 2px rgba(255, 200, 61, 0.7);
+}
+.board__who {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  min-width: 0;
+}
 .board__cell {
   color: var(--ink-dim);
   font: 700 1.0625rem/1 var(--font-display);
@@ -924,97 +943,181 @@
   text-align: right;
 }
 .board__rank {
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--ink-dim);
-  font: 700 0.9375rem/1 var(--font-display);
+  font: 900 0.95rem/1 var(--font-display);
   font-variant-numeric: tabular-nums;
 }
+.board__rank[data-medal='1'] {
+  background: linear-gradient(145deg, #ffe27a, #e0a800);
+  color: #4a3200;
+  box-shadow: 0 2px 0 #9c7200;
+}
+.board__rank[data-medal='2'] {
+  background: linear-gradient(145deg, #f2f4ff, #aab2cc);
+  color: #2c3045;
+  box-shadow: 0 2px 0 #757c96;
+}
+.board__rank[data-medal='3'] {
+  background: linear-gradient(145deg, #f5b98a, #c06b2f);
+  color: #3d1d06;
+  box-shadow: 0 2px 0 #82441a;
+}
 .board__name {
-  color: var(--ink-dim);
+  min-width: 0;
+  color: var(--ink);
   font-size: 0.9375rem;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 .board__name--me {
   color: var(--ink);
-  font-weight: 600;
+  font-weight: 700;
 }
 .board__tag {
   margin-left: 0.4rem;
-  padding: 0.05rem 0.3rem;
-  border: 1px solid var(--rail-lit);
-  border-radius: var(--radius);
-  color: var(--ink-dim);
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: var(--signal);
+  color: var(--signal-ink);
   font-size: 0.6875rem;
-  font-weight: 600;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: 0.1em;
+}
+.board__tag--fun {
+  margin-left: 0;
+  background: rgba(255, 79, 163, 0.18);
+  color: #ffc2e0;
+  box-shadow: inset 0 0 0 1px rgba(255, 79, 163, 0.5);
+  text-transform: none;
 }
 .board__pts {
   color: var(--ink);
-  font-size: 1.375rem;
+  font-size: 1.5rem;
   line-height: 1;
+  text-align: right;
 }
-/* Proportional to the leader, so a row tells you where you stand and not just in what
- * place. A 0 never renders as nothing at all: max() keeps a visible nub. */
+.board__row--me .board__pts {
+  color: var(--signal);
+}
 .board__bar {
   grid-column: 2 / -1;
-  height: 4px;
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--track-edge);
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  overflow: hidden;
 }
-/* Block, explicitly: `.board__bar` is blockified by being a grid item, but this span is not
- * one, and an inline box silently drops the height and width it was given. */
 .board__fill {
   display: block;
   height: 100%;
-  min-width: 2px;
-  background: var(--cool);
+  min-width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--cool-deep), var(--cool));
+  transition: width 600ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .board__fill--top {
-  background: var(--signal);
+  background: linear-gradient(90deg, var(--signal-deep), var(--signal));
 }
 
-/* A pointer exists on a desktop, so a row can acknowledge it. Purely additive: the board is
- * read-only, nothing here is a control, and no information is available on hover that is not
- * already on screen — the row brightens and its bar steps up, nothing more. The `:hover`
- * guard matters on a touch screen, where iOS would otherwise leave the last-tapped row stuck
- * lit for the rest of the game. */
-@media (hover: hover) and (pointer: fine) {
-  .board__row:hover {
-    background: var(--well);
-  }
-  .board__row:hover .board__name {
-    color: var(--ink);
-  }
-  .board__row:hover .board__fill {
-    background: var(--cool-lit);
-  }
-  .board__row:hover .board__fill--top {
-    background: var(--signal-lit);
-  }
+/* ---- the final podium ---------------------------------------------------------------------- */
+
+.finale {
+  display: grid;
+  gap: 0.6rem;
+  text-align: center;
+}
+.finale .title {
+  font-size: clamp(2.25rem, 11vw, 3.5rem);
+  background: linear-gradient(90deg, var(--signal-lit), var(--hot));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.finale__lead {
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+.podium {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.podium__slot {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.podium__crown {
+  font-size: 1.6rem;
+  line-height: 1;
+  margin-bottom: -0.2rem;
+}
+.podium__name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  font-size: 0.9375rem;
+}
+.podium__pts {
+  color: var(--signal);
+  font-size: 1.4rem;
+  line-height: 1;
+}
+.podium__step {
+  display: grid;
+  place-items: start center;
+  width: 100%;
+  padding-top: 0.5rem;
+  border-radius: 12px 12px 4px 4px;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel));
+  box-shadow: inset 0 2px 0 var(--bevel);
+}
+.podium__slot[data-place='1'] .podium__step {
+  height: 7rem;
+  background: linear-gradient(180deg, #ffe27a, #d29a00);
+}
+.podium__slot[data-place='2'] .podium__step {
+  height: 5rem;
+  background: linear-gradient(180deg, #e8ebf7, #9aa3bf);
+}
+.podium__slot[data-place='3'] .podium__step {
+  height: 3.75rem;
+  background: linear-gradient(180deg, #f0ae7c, #b46127);
+}
+.podium__place {
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 2rem;
+  line-height: 1;
 }
 
-/* ---- the room list: the console's way back into a room ---------------------------------- */
+/* ---- the room list (admin) ------------------------------------------------------------------ */
 
-/* The one block here that is not an instrument. Everything else in this file is a readout the
- * class is looking at; this is a list of choices the admin is making, and it borrows the
- * console's vocabulary rather than inventing a screen's worth of its own: `.btn` for the row
- * because a row IS a button and re-drawing it would cost the 48px floor, the focus ring and
- * the keyboard for nothing. So the only new rules here are the grid that puts the code, the
- * phase and the counts on one line each, and the two type sizes. */
 .roomslist {
   display: grid;
   gap: 0.6rem;
 }
 .roomslist__rows {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.6rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-/* Left-aligned against the deck rather than centred like every other `.btn`: this row holds
- * four values that have to line up in a column so the eye can run down the codes, and centred
- * text of variable length turns that column into a staircase. `min-height` is not restated —
- * `.btn` already holds the 3rem floor and a second copy of the same number here is a rule that
- * can disagree with the one it copied. */
 .roomslist__row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1023,17 +1126,10 @@
   row-gap: 0.25rem;
   text-align: left;
 }
-/* The code, in the display face and in the panel's own ink rather than sodium. Sodium is the
- * "live and lit" accent and it means the primary action everywhere else in this console; if
- * every row carried it, the colour would stop being a way of telling the one button to press
- * from the four rows of context above it. What makes the code readable instead is size: it is
- * the widest thing in the row and the only thing set in the face the illuminated panel uses,
- * so an admin matching it against the join form on a student's phone is comparing like with
- * like. */
 .roomslist__code {
-  color: var(--ink);
-  font: 800 1.25rem/1 var(--font-display);
-  letter-spacing: 0.06em;
+  color: var(--signal);
+  font: 900 1.4rem/1 var(--font-display);
+  letter-spacing: 0.12em;
   overflow-wrap: anywhere;
 }
 .roomslist__where {
@@ -1042,27 +1138,18 @@
   gap: 0.1rem;
   text-align: right;
 }
-/* The phase, in the same name the run-of-show block above it uses for the same phase — one
- * wording, read off one table, so the row an admin chose from and the screen they landed on
- * cannot call the same moment two different things. */
 .roomslist__phase {
   color: var(--ink-dim);
   font-size: 0.8125rem;
   font-weight: 600;
   white-space: nowrap;
 }
-/* The round, one tier under the phase and in --ink-faint: the phase is the question the row is
- * answering, the round is the refinement of it. */
 .roomslist__round {
   color: var(--ink-faint);
   font-size: 0.75rem;
   font-weight: 600;
   white-space: nowrap;
 }
-/* The counts, on their own line under both columns: the phase is what decides and the counts
- * are what confirms, and the second is read after the first rather than beside it.
- * `--ink-dim` rather than `--ink` because this is not what the row is for — the row opens a
- * room, and the counts only tell an admin which one. */
 .roomslist__figs {
   grid-column: 1 / -1;
   color: var(--ink-dim);
@@ -1070,20 +1157,80 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-/* The connected count, indented under the one it refines rather than run together with it in
- * "12 joueurs, 3" — the second number is not another count of players, it is a count of how many
- * of that twelve are on the stream, and the word saying so is the same pair the run-of-show
- * already uses for it. Cool, because it is a fact about other people and about a connection
- * rather than about the room, which is what `--cool-lit` means everywhere else in this console. */
 .roomslist__now {
   margin-left: 0.4rem;
   color: var(--cool-lit);
   font-weight: 600;
 }
 
-/* ---- the two moments that earn motion -------------------------------------------------- */
+/* ---- presence dots -------------------------------------------------------------------------- */
+
+.presence {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ink-dim);
+  font-size: 0.875rem;
+}
+.presence__dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.presence__dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cool-lit);
+}
+
+/* ---- confetti ------------------------------------------------------------------------------- */
+
+.confetti {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  overflow: hidden;
+  pointer-events: none;
+}
+.confetti i {
+  position: absolute;
+  top: -20px;
+  left: var(--x);
+  width: var(--w);
+  height: calc(var(--w) * 0.45);
+  border-radius: 2px;
+  background: var(--c);
+  opacity: 0;
+}
+
+/* ---- motion ---------------------------------------------------------------------------------
+ * Everything that moves is here, behind the reduced-motion query. */
 
 @media (prefers-reduced-motion: no-preference) {
+  @keyframes popIn {
+    from {
+      opacity: 0;
+      transform: scale(0.6) translateY(8px);
+    }
+    60% {
+      opacity: 1;
+      transform: scale(1.06);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes riseIn {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
   @keyframes lampOn {
     from {
       opacity: 0.25;
@@ -1094,51 +1241,39 @@
       transform: none;
     }
   }
-  @keyframes tickOn {
-    from {
-      opacity: 0.2;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-  /* Filling the meter as the room answers: the wait after submitting is the one stretch of
-   * dead time in a ten-minute game, so it gets to be the first thing that moves. */
-  .meter__seg--on,
-  .meter__seg--me {
-    animation: lampOn 240ms ease-out both;
-  }
-  /* The snap on the newest lamp: a 150ms scale pop on top of the fill. Only the segment
-   * carrying `--new` gets it, so earlier lamps stay still. */
+  /* Vertical only: a segment is wide, and a uniform scale pushed it past the screen edge, which
+   * makes a phone's layout viewport grow and the whole page scroll sideways. */
   @keyframes lampPop {
     0% {
-      transform: scale(1.65);
+      transform: scaleY(1.9);
     }
     100% {
       transform: none;
     }
   }
-  .meter__seg--new {
-    animation: lampOn 240ms ease-out both, lampPop 150ms ease-out both;
-    transform-origin: center;
-  }
-  /* Staged summary reveal: rows rise in with a stagger set by `--d` (last-first, top rows
-   * land last). Visual only, rows stay in the DOM. */
-  @keyframes tallyIn {
+  @keyframes tickOn {
     from {
       opacity: 0;
-      transform: translateY(10px);
+      transform: scaleY(0.3);
     }
     to {
       opacity: 1;
       transform: none;
     }
   }
-  .tally__row--in {
-    animation: tallyIn 400ms ease-out both;
-    animation-delay: var(--d, 0ms);
+  @keyframes throb {
+    from {
+      transform: scale(1);
+    }
+    to {
+      transform: scale(1.12);
+    }
   }
-  /* Anonymous typing dots: three dots bouncing in turn. */
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
   @keyframes dotUp {
     0%,
     60%,
@@ -1151,22 +1286,78 @@
       opacity: 1;
     }
   }
-  .presence {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    color: var(--ink-dim);
-    font-size: 0.875rem;
+  @keyframes fall {
+    0% {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) rotate(0);
+    }
+    85% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translate3d(var(--dx), 105vh, 0) rotate(var(--r));
+    }
   }
-  .presence__dots {
-    display: inline-flex;
-    gap: 3px;
+  @keyframes glowPulse {
+    from {
+      box-shadow: 0 0 0 3px var(--good), 0 0 18px 0 rgba(62, 227, 154, 0.4), 0 4px 0 var(--kd);
+    }
+    to {
+      box-shadow: 0 0 0 3px var(--good), 0 0 34px 6px rgba(62, 227, 154, 0.7), 0 4px 0 var(--kd);
+    }
+  }
+  @keyframes shake {
+    0%,
+    100% {
+      transform: none;
+    }
+    20%,
+    60% {
+      transform: translateX(-6px);
+    }
+    40%,
+    80% {
+      transform: translateX(6px);
+    }
+  }
+  @keyframes shine {
+    from {
+      background-position: -200% 0;
+    }
+    to {
+      background-position: 200% 0;
+    }
+  }
+
+  /* Each screen's content rises in when the screen appears. */
+  .screen > * {
+    animation: riseIn 380ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .screen > :nth-child(2) { animation-delay: 40ms; }
+  .screen > :nth-child(3) { animation-delay: 80ms; }
+  .screen > :nth-child(4) { animation-delay: 120ms; }
+  .screen > :nth-child(n + 5) { animation-delay: 160ms; }
+
+  .codechar {
+    animation: popIn 500ms cubic-bezier(0.2, 0.8, 0.2, 1.2) both;
+    animation-delay: calc(var(--i, 0) * 90ms + 120ms);
+  }
+  .cloud__p {
+    animation: popIn 420ms cubic-bezier(0.2, 0.8, 0.2, 1.2) both;
+  }
+  .meter__seg--on,
+  .meter__seg--me {
+    animation: lampOn 240ms ease-out both;
+  }
+  .meter__seg--new {
+    animation: lampOn 240ms ease-out both, lampPop 180ms ease-out both;
+  }
+  .tally__row--in {
+    animation: riseIn 420ms ease-out both;
+    animation-delay: var(--d, 0ms);
   }
   .presence__dots i {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--cool-lit);
     animation: dotUp 1.2s ease-in-out infinite;
   }
   .presence__dots i:nth-child(2) {
@@ -1175,30 +1366,62 @@
   .presence__dots i:nth-child(3) {
     animation-delay: 300ms;
   }
-  .board__tag--fun {
-    margin-left: 0.4rem;
-    border-color: var(--edge-cool);
-  }
-  /* The payoff, read as a sweep rather than a jump. */
   .scale__tick--on {
-    animation: tickOn 200ms ease-out both;
-    animation-delay: calc(var(--i, 0) * 45ms);
+    animation: tickOn 220ms ease-out both;
+    animation-delay: calc(var(--i, 0) * 55ms + 250ms);
   }
-  /* The last five seconds of the shared window, and the only motion in the didacticiel. It is a
-   * single soft pulse on a figure that is already bigger and brighter than it was — a fade
-   * carrying the urgency on its own would be the whole signal for a reader who cannot see the
-   * colour, so the size and the weight do the work and this only says "now". Behind the query
-   * because `prefers-reduced-motion` is honoured in this console and a room full of phones
-   * blinking in time is a distraction, not a signal. */
-  @keyframes tickTock {
-    from {
-      opacity: 0.72;
-    }
-    to {
-      opacity: 1;
-    }
+  .qclock[data-state='soon'] .ring {
+    animation: throb 0.5s ease-in-out infinite alternate;
   }
-  .qclock[data-state='soon'] .qclock__n {
-    animation: tickTock 1s ease-in-out infinite alternate;
+  .spinner {
+    animation: spin 0.8s linear infinite;
+  }
+  .verdict--done {
+    animation: popIn 480ms cubic-bezier(0.2, 0.8, 0.2, 1.15) both;
+  }
+  .verdict__cheer {
+    animation: popIn 520ms cubic-bezier(0.2, 0.8, 0.2, 1.3) 120ms both;
+  }
+  .revealnote {
+    animation: popIn 460ms cubic-bezier(0.2, 0.8, 0.2, 1.25) both;
+  }
+  .revealnote--miss {
+    animation: popIn 300ms ease-out both, shake 420ms ease-in-out 300ms;
+  }
+  .btn.choice--right:disabled {
+    animation: glowPulse 0.9s ease-in-out infinite alternate;
+  }
+  .board__row {
+    animation: riseIn 360ms ease-out both;
+    animation-delay: calc(var(--i, 0) * 50ms);
+  }
+  .podium__slot {
+    animation: riseIn 600ms cubic-bezier(0.2, 0.8, 0.2, 1.1) both;
+  }
+  .podium__slot[data-place='3'] { animation-delay: 200ms; }
+  .podium__slot[data-place='2'] { animation-delay: 500ms; }
+  .podium__slot[data-place='1'] { animation-delay: 850ms; }
+  .podium__crown {
+    animation: popIn 500ms cubic-bezier(0.2, 0.8, 0.2, 1.4) 1300ms both;
+  }
+  /* A slow shine across the primary button, so the next action always draws the eye. */
+  .btn--signal:not(:disabled)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(110deg, transparent 35%, rgba(255, 255, 255, 0.45) 50%, transparent 65%) no-repeat;
+    background-size: 200% 100%;
+    animation: shine 3.2s ease-in-out infinite;
+  }
+  .confetti i {
+    animation: fall var(--t) cubic-bezier(0.25, 0.5, 0.5, 1) var(--d) forwards;
+  }
+}
+/* Under reduced motion there is no confetti at all: a static scatter would just be noise. */
+@media (prefers-reduced-motion: reduce) {
+  .confetti {
+    display: none;
   }
 }
