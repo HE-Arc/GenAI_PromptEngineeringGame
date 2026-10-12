@@ -54,6 +54,28 @@ fn stub_score(output: &str, target: &str) -> Verdict {
     }
 }
 
+const STUB_ROLE: &[&str] = &["tu es", "role", "incarne", "agis comme", "parle en tant que"];
+const STUB_PUBLIC: &[&str] = &["public", "destinataire", "lecteur", "adresse", "pour un", "pour une", "niveau"];
+const STUB_CONTEXT: &[&str] = &["contexte", "situation", "cadre", "materiel", "donnees", "enonce", "ingredients"];
+const STUB_FORMAT: &[&str] = &["format", "liste", "tableau", "json", "markdown", "puces", "sous forme", "en 3", "en 2", "en 5"];
+const STUB_LENGTH: &[&str] = &["maximum", "moins de", "au plus", "mots", "lignes", "phrase", "court", "bref", "concis"];
+
+// Keyword-marker heuristic standing in for the critic without a key: 1 base,
+// +2 per structural criterion present, +1 for a length bound.
+pub fn stub_grade(prompt: &str) -> Verdict {
+    let text = prompt.to_lowercase();
+    if text.trim().is_empty() {
+        return Verdict { score: 0, feedback: STUB_COMMENT.into() };
+    }
+    let has = |markers: &[&str]| markers.iter().any(|m| text.contains(m));
+    let mut points = 1;
+    for markers in [STUB_ROLE, STUB_PUBLIC, STUB_CONTEXT, STUB_FORMAT] {
+        points += 2 * has(markers) as i64;
+    }
+    points += has(STUB_LENGTH) as i64;
+    Verdict { score: points, feedback: STUB_COMMENT.into() }
+}
+
 impl super::LlmSource for StubSource {
     // One 20ms beat per chunk: slow enough for the WS fan-out path to show
     // progressive frames, fast enough to keep the suite under a second.
@@ -61,14 +83,15 @@ impl super::LlmSource for StubSource {
         &self,
         prompt: String,
         tx: mpsc::UnboundedSender<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = super::StreamResult> + Send + '_>> {
         Box::pin(async move {
             for chunk in stub_chunks(&prompt) {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 if tx.send(chunk).is_err() {
-                    return;
+                    break;
                 }
             }
+            Ok(false)
         })
     }
 
@@ -79,6 +102,15 @@ impl super::LlmSource for StubSource {
         target: &str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
         let verdict = stub_score(output, target);
+        Box::pin(async move { verdict })
+    }
+
+    fn grade_prompt(
+        &self,
+        prompt: &str,
+        _target: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
+        let verdict = stub_grade(prompt);
         Box::pin(async move { verdict })
     }
 }

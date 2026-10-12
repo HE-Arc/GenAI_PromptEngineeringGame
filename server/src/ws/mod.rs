@@ -9,7 +9,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 pub mod protocol;
 
@@ -17,6 +19,7 @@ use crate::ws::protocol::{WsIn, WsOut};
 use crate::admin_session;
 use crate::auth::{validate, validate_ws, Auth};
 use crate::db::{answers, rooms};
+use crate::game;
 use crate::hub::{get_hub, RoomHub};
 use crate::router::AppState;
 
@@ -27,6 +30,17 @@ pub struct WsParams {
 }
 
 const CLOSE_BAD_TOKEN: u16 = 4403;
+// Same bound the composer enforces (`maxLength`), checked again server-side.
+const MAX_PROMPT_CHARS: usize = 500;
+// Player-facing, so French: shown to the author and as the room notice.
+const CRASH_NOTICE: &str = "La partie a planté côté serveur. Préviens l'animateur.";
+// Protocol-level pings are answered by the browser's network stack, not by
+// page JS, so a backgrounded tab with throttled timers still answers them.
+// That makes them the right probe for "is this player still reachable".
+const SERVER_PING_EVERY: Duration = Duration::from_secs(15);
+// No frame at all (pong, ping, text) for this long means a half-open
+// socket: close it so the presence grace period starts counting.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub struct AnswerReject {
     pub code: &'static str,
@@ -41,6 +55,7 @@ impl std::fmt::Debug for AnswerReject {
 
 pub struct AnswerJob {
     hub: Arc<RoomHub>,
+    code: String,
     round_id: i64,
     player_id: i64,
     player_name: String,
@@ -77,6 +92,7 @@ pub async fn begin_answer(
     token: &str,
     prompt: &str,
 ) -> Result<AnswerJob, AnswerReject> {
+    let prompt = prompt.trim();
     let player = match validate(&state.pool, code, token).await {
         Ok(Auth::Player(p)) => p,
         Ok(Auth::Admin) => {
@@ -112,6 +128,34 @@ pub async fn begin_answer(
             message: "already answered",
         });
     }
+    // Checked after already_answered, the more precise refusal. Only the writing phase takes prompts, and only while its clock runs.
+    match game::load(&state.pool, code).await {
+        Ok(g) if g.phase == "playing" && !g.phase_expired() => {}
+        Ok(g) if g.phase == "playing" => {
+            return Err(AnswerReject {
+                code: "bad_phase",
+                message: "Temps écoulé : la manche est fermée.",
+            })
+        }
+        _ => {
+            return Err(AnswerReject {
+                code: "bad_phase",
+                message: "not playing",
+            })
+        }
+    }
+    if prompt.is_empty() {
+        return Err(AnswerReject {
+            code: "bad_request",
+            message: "prompt required",
+        });
+    }
+    if prompt.chars().count() > MAX_PROMPT_CHARS {
+        return Err(AnswerReject {
+            code: "bad_request",
+            message: "prompt too long",
+        });
+    }
     let hub = get_hub(&state.hubs, code).await;
     if !hub.try_claim(round.id, player.id).await {
         return Err(AnswerReject {
@@ -121,6 +165,7 @@ pub async fn begin_answer(
     }
     Ok(AnswerJob {
         hub,
+        code: code.to_string(),
         round_id: round.id,
         player_id: player.id,
         player_name: player.name,
@@ -129,20 +174,41 @@ pub async fn begin_answer(
     })
 }
 
+async fn insert_answer_row(
+    pool: &sqlx::SqlitePool,
+    job: &AnswerJob,
+    output: &str,
+    verdict: &crate::llm::Verdict,
+    critique: &crate::llm::Verdict,
+) -> Result<(), sqlx::Error> {
+    // One INSERT per answer: concurrent streams never contend on a shared
+    // row, and busy_timeout absorbs the burst instead of locking.
+    sqlx::query(
+        "INSERT INTO answer (round_id, player_id, prompt, output, score, comment, quality_llm, quality_comment)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(job.round_id)
+    .bind(job.player_id)
+    .bind(&job.prompt)
+    .bind(output)
+    .bind(verdict.score)
+    .bind(&verdict.feedback)
+    .bind(critique.score)
+    .bind(&critique.feedback)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 // Fire-and-forget by design: the task owns pool/hub/llm clones, so dropping
 // the socket never cancels it and a reconnecting player sees done via seq bump.
 fn spawn_answer(state: AppState, job: AnswerJob) {
-    let player = job.player_name.clone();
-    job.hub.publish_event(WsOut::AnswerScoring {
-        player: player.clone(),
-    });
     tokio::spawn(async move {
+        let player = job.player_name.clone();
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let llm = state.llm.clone();
         let prompt = job.prompt.clone();
-        let stream_done = tokio::spawn(async move {
-            llm.stream_into(prompt, tx).await;
-        });
+        let stream_done = tokio::spawn(async move { llm.stream_into(prompt, tx).await });
         let mut full = String::new();
         while let Some(delta) = rx.recv().await {
             full.push_str(&delta);
@@ -151,73 +217,88 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 delta,
             });
         }
-        let _ = stream_done.await;
-        let verdict = state.llm.score(&job.prompt, &full, &job.target).await;
-        // One transaction, one INSERT: concurrent streams never contend on a
-        // shared row, and busy_timeout absorbs the burst instead of locking.
-        let persisted = async {
-            let mut dbtx = state.pool.begin().await?;
-            sqlx::query(
-                "INSERT INTO answer (round_id, player_id, prompt, output, score) VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(job.round_id)
-            .bind(job.player_id)
-            .bind(&job.prompt)
-            .bind(&full)
-            .bind(verdict.score)
-            .execute(&mut *dbtx)
-            .await?;
-            dbtx.commit().await?;
-            Ok::<_, sqlx::Error>(())
-        }
-        .await;
-        job.hub.release(job.round_id, job.player_id).await;
-        if persisted.is_err() {
-            job.hub.publish_event(WsOut::error("internal", "answer persist failed"));
-            return;
-        }
-        let seq = job.hub.next_seq().await;
-        // Snapshot rebuild needs the room code; recover it from the round row.
-        let room_code: Option<String> =
-            sqlx::query_scalar("SELECT room_code FROM round WHERE id = ?")
-                .bind(job.round_id)
-                .fetch_optional(&state.pool)
-                .await
-                .unwrap_or(None);
-        if let Some(rc) = room_code {
-            // Presence override keeps the live count across the rebuild.
-            if let Ok(fresh) =
-                rooms::room_snapshot(&state.pool, &rc, Some(job.hub.presence())).await
-            {
-                job.hub.publish_snapshot(seq, fresh).await;
+        let streamed = stream_done
+            .await
+            .unwrap_or_else(|e| Err(format!("play task panicked: {e}")));
+        let full = full.trim().to_string();
+        let outcome = match streamed {
+            Ok(truncated) => {
+                job.hub.publish_event(WsOut::AnswerScoring {
+                    player: player.clone(),
+                });
+                let verdict = state.llm.score(&job.prompt, &full, &job.target).await;
+                let critique = state.llm.grade_prompt(&job.prompt, &job.target).await;
+                insert_answer_row(&state.pool, &job, &full, &verdict, &critique)
+                    .await
+                    .map(|_| (verdict, truncated))
+                    .map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok((verdict, truncated)) => {
+                job.hub.release(job.round_id, job.player_id).await;
+                // The last online player to write opens the rating.
+                game::maybe_advance_phase(&state.pool, &job.code, &job.hub.online()).await;
+                let _ = job.hub.republish(&state.pool, &job.code).await;
+                job.hub.publish_event(WsOut::AnswerDone {
+                    player,
+                    score: verdict.score,
+                    feedback: verdict.feedback,
+                    truncated,
+                });
+            }
+            Err(e) => {
+                eprintln!("answer failed in room {}: {e}", job.code);
+                // A row still lands, scored 0 and marked: without it the
+                // round would wait for this player forever, and the summary
+                // says plainly what happened.
+                let marker = crate::llm::Verdict {
+                    score: 0,
+                    feedback: CRASH_NOTICE.into(),
+                };
+                if let Err(e) = insert_answer_row(&state.pool, &job, &full, &marker, &marker).await {
+                    eprintln!("fallback answer write failed in room {}: {e}", job.code);
+                }
+                job.hub.release(job.round_id, job.player_id).await;
+                job.hub.note_error(CRASH_NOTICE);
+                game::maybe_advance_phase(&state.pool, &job.code, &job.hub.online()).await;
+                let _ = job.hub.republish(&state.pool, &job.code).await;
+                job.hub.publish_event(WsOut::Error {
+                    code: "internal".into(),
+                    message: CRASH_NOTICE.into(),
+                    player: Some(player),
+                });
             }
         }
-        job.hub.publish_event(WsOut::AnswerDone {
-            player,
-            score: verdict.score,
-            feedback: verdict.feedback,
-        });
     });
 }
 
 // Owns the hub-side presence slot for one connected player socket. Drop
-// fires the decrement in a detached task: socket teardown runs inside the
-// recv loop where awaiting the snapshot rebuild would only hold the socket
-// open longer, and the pool/hub clones make the task self-sufficient.
+// only hands the socket back to the hub, which keeps the player online for
+// the grace period: every return path of the recv loop releases it.
 struct PresenceGuard {
     hub: Arc<RoomHub>,
     pool: sqlx::SqlitePool,
     code: String,
+    player_id: i64,
 }
 
 impl Drop for PresenceGuard {
     fn drop(&mut self) {
-        let hub = Arc::clone(&self.hub);
-        let pool = self.pool.clone();
-        let code = self.code.clone();
-        tokio::spawn(async move {
-            let _ = hub.refresh_presence(&pool, &code, -1).await;
-        });
+        self.hub
+            .player_disconnected(self.pool.clone(), self.code.clone(), self.player_id);
+    }
+}
+
+// The writer and fan-out tasks hold clones of each other's channels, so
+// neither ends on its own when the client leaves; the recv loop's exit
+// tears both down instead of waiting for the next broadcast to fail.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -247,24 +328,48 @@ async fn handle_socket(
     }
     // Answer identity is the player query token only: an admin-key or
     // cookie connection may watch but never answers for a player row.
-    let answer_token: Option<String> =
-        match validate(&state.pool, &code, &query_token).await {
-            Ok(Auth::Player(_)) => Some(query_token.clone()),
-            _ => None,
-        };
+    let (player_id, player_name) = match validate(&state.pool, &code, &query_token).await {
+        Ok(Auth::Player(p)) => (Some(p.id), Some(p.name)),
+        _ => (None, None),
+    };
+    let answer_token: Option<String> = player_id.map(|_| query_token.clone());
     let hub = get_hub(&state.hubs, &code).await;
     let (mut sender, mut receiver) = ws.split();
     // Single writer task: the recv loop and the hub fan-out both push WsOut
-    // here, so frames never interleave on the socket.
+    // here, so frames never interleave on the socket. It also owns the
+    // keepalive ping, the only frame the server sends unprompted.
     let (tx_out, mut rx_out) = mpsc::unbounded_channel::<WsOut>();
-    tokio::spawn(async move {
-        while let Some(msg) = rx_out.recv().await {
-            let text = serde_json::to_string(&msg).unwrap_or_else(|_| r#"{"type":"error"}"#.into());
-            if sender.send(Message::Text(text.into())).await.is_err() {
+    // Snapshots are shared by every socket; the per-viewer flags
+    // (`reveal.mine`, `ready.mine`) are resolved here, on the way out.
+    let _writer = AbortOnDrop(tokio::spawn(async move {
+        let mut ping = tokio::time::interval(SERVER_PING_EVERY);
+        ping.tick().await;
+        loop {
+            let frame = tokio::select! {
+                msg = rx_out.recv() => match msg {
+                    Some(WsOut::Error { player: Some(p), .. }) if player_name.as_deref() != Some(p.as_str()) => continue,
+                    Some(WsOut::Snapshot { seq, state }) => Message::Text(
+                        serde_json::to_string(&WsOut::Snapshot {
+                            seq,
+                            state: game::personalize(&state, player_id),
+                        })
+                        .unwrap_or_else(|_| r#"{"type":"error"}"#.into())
+                        .into(),
+                    ),
+                    Some(msg) => Message::Text(
+                        serde_json::to_string(&msg)
+                            .unwrap_or_else(|_| r#"{"type":"error"}"#.into())
+                            .into(),
+                    ),
+                    None => return,
+                },
+                _ = ping.tick() => Message::Ping(Vec::new().into()),
+            };
+            if sender.send(frame).await.is_err() {
                 return;
             }
         }
-    });
+    }));
     // Live answer frames reach every subscriber, including late joiners, via
     // the hub events channel rather than per-connection DB polls.
     let mut erx = hub.subscribe_events().await;
@@ -272,7 +377,7 @@ async fn handle_socket(
     let fwd_hub = Arc::clone(&hub);
     let fwd_code = code.clone();
     let fwd_pool = state.pool.clone();
-    tokio::spawn(async move {
+    let _forwarder = AbortOnDrop(tokio::spawn(async move {
         loop {
             match erx.recv().await {
                 Ok(ev) => {
@@ -284,16 +389,8 @@ async fn handle_socket(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     let (seq, snap) = fwd_hub.cached().await;
                     if snap.is_null() {
-                        if let Ok(fresh) =
-                            rooms::room_snapshot(&fwd_pool, &fwd_code, Some(fwd_hub.presence()))
-                                .await
-                        {
-                            let next = fwd_hub.next_seq().await;
-                            fwd_hub.publish_snapshot(next, fresh.clone()).await;
-                            if fwd_tx.send(WsOut::Snapshot { seq: next, state: fresh }).is_err() {
-                                return;
-                            }
-                        }
+                        // republish fans the fresh snapshot to this socket too.
+                        let _ = fwd_hub.republish(&fwd_pool, &fwd_code).await;
                     } else if fwd_tx.send(WsOut::Snapshot { seq, state: snap }).is_err() {
                         return;
                     }
@@ -301,14 +398,15 @@ async fn handle_socket(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
-    });
+    }));
     // Held from the first successful player hello until this socket drops;
     // admins and cookie connections never count, so theirs stays None.
     let mut present: Option<PresenceGuard> = None;
-    while let Some(msg) = receiver.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(_) => return,
+    loop {
+        let msg = match tokio::time::timeout(IDLE_TIMEOUT, receiver.next()).await {
+            Ok(Some(Ok(m))) => m,
+            // Closed, errored or silent past the timeout: all mean gone.
+            Ok(Some(Err(_))) | Ok(None) | Err(_) => return,
         };
         let text = match msg {
             Message::Text(t) => t.to_string(),
@@ -332,38 +430,29 @@ async fn handle_socket(
                     send_out(&tx_out, WsOut::error("bad_token", "bad token"));
                     return;
                 }
-                let (seq, snap) = hub.cached().await;
-                if snap.is_null() {
-                    // First subscriber builds the snapshot once; later ones clone it.
-                    match rooms::room_snapshot(&state.pool, &code, None).await {
-                        Ok(fresh) => {
-                            let next = hub.next_seq().await;
-                            hub.publish_snapshot(next, fresh.clone()).await;
-                            send_out(&tx_out, WsOut::Snapshot { seq: next, state: fresh });
-                        }
-                        Err(_) => {
-                            send_out(&tx_out, WsOut::error("unknown_room", "unknown room"));
-                        }
-                    }
-                } else {
-                    send_out(&tx_out, WsOut::Snapshot { seq, state: snap });
-                }
-                // First player hello registers presence and republishes the
-                // snapshot so the admin counter moves without another write.
-                if present.is_none()
-                    && matches!(validate(&state.pool, &code, &token).await, Ok(Auth::Player(_)))
-                {
-                    if let Some((pseq, pstate)) = hub
-                        .refresh_presence(&state.pool, &code, 1)
-                        .await
-                    {
-                        send_out(&tx_out, WsOut::Snapshot { seq: pseq, state: pstate });
+                // Presence first: when it changes, the republished snapshot
+                // already carries this player as online, so the reply below
+                // never shows them their own lamp off.
+                if present.is_none() {
+                    if let Some(id) = player_id {
+                        hub.player_connected(&state.pool, &code, id).await;
                         present = Some(PresenceGuard {
                             hub: Arc::clone(&hub),
                             pool: state.pool.clone(),
                             code: code.clone(),
+                            player_id: id,
                         });
                     }
+                }
+                let (seq, snap) = hub.cached().await;
+                if snap.is_null() {
+                    // First subscriber builds the snapshot once; later ones
+                    // clone it. republish also fans it to this socket.
+                    if hub.republish(&state.pool, &code).await.is_none() {
+                        send_out(&tx_out, WsOut::error("unknown_room", "unknown room"));
+                    }
+                } else {
+                    send_out(&tx_out, WsOut::Snapshot { seq, state: snap });
                 }
             }
             WsIn::Ping => send_out(&tx_out, WsOut::Pong),
@@ -396,6 +485,11 @@ mod tests {
         let state = AppState::new(pool.clone());
         rooms::create_room(&pool, "EF56").await.unwrap();
         let player = rooms::add_player(&pool, "EF56", "ana").await.unwrap();
+        // Prompts are only taken in the writing phase.
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'EF56'")
+            .execute(&pool)
+            .await
+            .unwrap();
         let hub = get_hub(&state.hubs, "EF56").await;
         let mut erx = hub.subscribe_events().await;
 
@@ -426,5 +520,74 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(err.code, "already_answered");
+    }
+
+    struct FailingSource;
+
+    impl crate::llm::LlmSource for FailingSource {
+        fn stream_into(
+            &self,
+            _prompt: String,
+            _tx: mpsc::UnboundedSender<String>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::StreamResult> + Send + '_>> {
+            Box::pin(async { Err("provider down".into()) })
+        }
+        fn score(
+            &self,
+            _p: &str,
+            _o: &str,
+            _t: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
+            unreachable!("a failed stream is never scored")
+        }
+        fn grade_prompt(
+            &self,
+            _p: &str,
+            _t: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
+            unreachable!("a failed stream is never graded")
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_model_call_records_marker_and_notifies_author_only() {
+        let pool = test_pool().await;
+        let mut state = AppState::new(pool.clone());
+        state.llm = Arc::new(FailingSource);
+        rooms::create_room(&pool, "FA11").await.unwrap();
+        let ana = rooms::add_player(&pool, "FA11", "ana").await.unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'FA11'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let hub = get_hub(&state.hubs, "FA11").await;
+        let mut erx = hub.subscribe_events().await;
+
+        // Validation runs before any model call.
+        for (prompt, msg) in [("   ", "prompt required"), (&*"x".repeat(501), "prompt too long")] {
+            match begin_answer(&state, "FA11", &ana.token, prompt).await {
+                Err(e) => assert_eq!(e.message, msg),
+                Ok(_) => panic!("{msg} must be refused"),
+            }
+        }
+
+        let job = begin_answer(&state, "FA11", &ana.token, "un prompt").await.unwrap();
+        spawn_answer(state.clone(), job);
+        let err = loop {
+            match erx.recv().await.unwrap() {
+                e @ WsOut::Error { .. } => break e,
+                _ => continue,
+            }
+        };
+        assert!(matches!(err, WsOut::Error { player: Some(ref p), .. } if p == "ana"));
+        // The marker row lands so the round does not wait on ana forever.
+        let (score, comment): (i64, String) =
+            sqlx::query_as("SELECT score, comment FROM answer WHERE player_id = ?")
+                .bind(ana.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((score, comment.as_str()), (0, CRASH_NOTICE));
+        assert_eq!(hub.cached().await.1["error"], CRASH_NOTICE);
     }
 }

@@ -6,13 +6,16 @@ import type { State } from './api'
 export type AnswerEvent =
   | { kind: 'chunk'; player: string; delta: string }
   | { kind: 'scoring'; player: string }
-  | { kind: 'done'; player: string; score: number; feedback: string }
+  | { kind: 'done'; player: string; score: number; feedback: string; truncated: boolean }
   | { kind: 'error'; code: string; message: string }
 
 export interface RoomWsHandlers {
   onSnapshot: (state: State) => void
   onAnswer: (event: AnswerEvent) => void
   onOpen: () => void
+  // Any frame at all, pongs included: proof the socket is alive even when the
+  // room itself is quiet.
+  onAlive: () => void
   // Closed but retrying: the readout goes stale, not dead.
   onDown: () => void
   // Closed and not retrying: bad token or unknown room, retrying cannot fix it.
@@ -54,6 +57,11 @@ export function connectRoomWs(code: string, token: string, handlers: RoomWsHandl
   let retryTimer: number | null = null
   let pingTimer: number | null = null
   let resyncTimer: number | null = null
+  // Highest snapshot seq seen on the current socket. The hello reply and the
+  // room broadcast travel different server paths, so an older snapshot can
+  // land after a newer one; applying it would roll the board back. Reset per
+  // socket because a restarted server counts from 1 again.
+  let lastSeq = 0
 
   function stopTimers() {
     if (retryTimer !== null) window.clearTimeout(retryTimer)
@@ -94,6 +102,7 @@ export function connectRoomWs(code: string, token: string, handlers: RoomWsHandl
 
     sock.onopen = () => {
       tries = 0
+      lastSeq = 0
       hello()
       if (pingTimer !== null) window.clearInterval(pingTimer)
       pingTimer = window.setInterval(() => send(JSON.stringify({ type: 'ping' })), PING_EVERY_MS)
@@ -107,14 +116,19 @@ export function connectRoomWs(code: string, token: string, handlers: RoomWsHandl
       } catch {
         return
       }
+      handlers.onAlive()
       switch (msg.type) {
-        case 'snapshot':
+        case 'snapshot': {
           if (resyncTimer !== null) {
             window.clearTimeout(resyncTimer)
             resyncTimer = null
           }
+          const seq = typeof msg.seq === 'number' ? msg.seq : 0
+          if (seq < lastSeq) break
+          lastSeq = seq
           handlers.onSnapshot(msg.state as State)
           break
+        }
         case 'patch':
           resyncSoon()
           break
@@ -130,6 +144,8 @@ export function connectRoomWs(code: string, token: string, handlers: RoomWsHandl
             player: msg.player as string,
             score: msg.score as number,
             feedback: msg.feedback as string,
+            // The token cap cut the answer short: the verdict screen says so.
+            truncated: msg.truncated === true,
           })
           break
         case 'pong':

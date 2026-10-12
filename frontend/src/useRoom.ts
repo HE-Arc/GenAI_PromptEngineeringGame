@@ -117,6 +117,11 @@ export function useRoom(code: string | null, token?: string | null) {
       onOpen: () => {
         lastBeat = Date.now()
       },
+      // The keepalive pong lands every 20 s, so a quiet lobby no longer looks
+      // like a dead socket and is not torn down (and re-counted) every minute.
+      onAlive: () => {
+        lastBeat = Date.now()
+      },
       onDown: () => {
         // A flap, not a verdict: the socket is already climbing its own backoff
         // ladder, and the player only needs to be told the readout is stale.

@@ -105,7 +105,9 @@ export default function Rating({
     setBusy(true)
     setErr('')
     try {
-      await post(`/api/rooms/${code}/rate`, { token: getToken(code), score: picked })
+      // The index pins the vote to the prompt on screen: a tap that lands as the reveal moves
+      // is refused rather than scored against a prompt this player has not read.
+      await post(`/api/rooms/${code}/rate`, { token: getToken(code), score: picked, index: promptAt })
       // The POST is the authority on its own outcome, exactly as it is on the Game screen: the
       // reveal moves for the room when everyone has scored, which is a frame away, and a
       // player who has just scored should not be able to score twice while it travels.

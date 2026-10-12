@@ -30,9 +30,20 @@ pub enum WsOut {
         player: String,
         score: i64,
         feedback: String,
+        // The token cap cut the answer short; the player is told so.
+        #[serde(default)]
+        truncated: bool,
     },
+    // `player` set: a refusal or failure that belongs to that player alone.
+    // The hub broadcasts it, and each socket's writer drops it unless the
+    // socket is that player's, so it never lands on another screen.
     #[serde(rename = "error")]
-    Error { code: String, message: String },
+    Error {
+        code: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        player: Option<String>,
+    },
     #[serde(rename = "pong")]
     Pong,
 }
@@ -42,6 +53,7 @@ impl WsOut {
         WsOut::Error {
             code: code.to_string(),
             message: message.to_string(),
+            player: None,
         }
     }
 }

@@ -3,6 +3,8 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
+# Quiz bank and round targets, compiled in via include_str!.
+COPY data ./data
 RUN cargo build --release
 
 FROM debian:bookworm-slim

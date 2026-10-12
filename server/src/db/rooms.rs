@@ -125,97 +125,13 @@ pub async fn player_by_token(pool: &SqlitePool, token: &str) -> Result<Option<Pl
     .await
 }
 
-// Snapshot keys match the documented Django room_state shape that
-// frontend/src/api.ts types as State: the player area reads
-// `state.online_count` and per-player objects (`p.online`, `p.name`), so a
-// bare name list renders the roster total ("sur 1 dans la pièce") with a
-// blank where the count belongs. Scores stay null until settling lands;
-// only the fields join-order and one answer lookup can state are filled.
-//
-// `presence` overrides online_count with the hub's live socket count;
-// callers without hub access pass None and fall back to roster length.
+// The full room_state lives with the rest of the game rules.
 pub async fn room_snapshot(
     pool: &SqlitePool,
     code: &str,
-    presence: Option<usize>,
+    online: Option<&std::collections::HashSet<i64>>,
 ) -> Result<serde_json::Value, sqlx::Error> {
-    let room = get_room(pool, code).await?;
-    // get_room does not select this column, and widening its SELECT would
-    // break its FromRow mapping; a scalar read keeps that query untouched.
-    let anonymous: i64 = sqlx::query_scalar("SELECT anonymous FROM room WHERE code = ?")
-        .bind(code)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(1);
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM round WHERE room_code = ?")
-        .bind(code)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-    let round = current_round(pool, code).await.ok().flatten();
-    let names: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, name FROM player WHERE room_code = ? ORDER BY id")
-            .bind(code)
-            .fetch_all(pool)
-            .await?;
-    let answered: Vec<i64> = match &round {
-        Some(r) => {
-            sqlx::query_scalar("SELECT player_id FROM answer WHERE round_id = ?")
-                .bind(r.id)
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default()
-        }
-        None => Vec::new(),
-    };
-    let players: Vec<serde_json::Value> = names
-        .iter()
-        .map(|(id, name)| {
-            serde_json::json!({
-                "name": name,
-                "score": null,
-                "round_score": null,
-                "answered": answered.contains(id),
-                "online": true,
-                "quiz_score": 0,
-                "quiz_done": false,
-                "proximity_total": null,
-                "quality_total": null,
-            })
-        })
-        .collect();
-    // Presence lives in RoomHub, not here: callers that hold the hub pass
-    // the live count, and this fallback keeps the count and the lamps in
-    // agreement for snapshot rebuilds that predate the first connection.
-    // Clamped to the roster so a lagged decrement cannot outnumber players.
-    let online_count = match presence {
-        Some(n) => n.min(players.len()),
-        None => players.len(),
-    };
-    let target: Option<String> = round.as_ref().and_then(|r| {
-        if r.target.is_empty() {
-            None
-        } else {
-            Some(r.target.clone())
-        }
-    });
-    Ok(serde_json::json!({
-        "code": room.code,
-        "phase": room.phase,
-        "current": room.current,
-        "total": total,
-        "target": target,
-        "target_image": null,
-        "anonymous": anonymous != 0,
-        "players": players,
-        "online_count": online_count,
-        "quiz": null,
-        "reveal": null,
-        "summary": null,
-        "ready": null,
-        "error": null,
-        "timer": null,
-    }))
+    crate::game::room_snapshot(pool, code, online).await
 }
 
 #[cfg(test)]

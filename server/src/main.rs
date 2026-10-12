@@ -15,6 +15,8 @@ async fn main() {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:server.sqlite3?mode=rwc".into());
     let pool = connect_pool(&url).await.expect("sqlite pool");
     let state = AppState::new(pool);
+    server::game::spawn_ticker(state.clone());
+    server::game::spawn_sweeper(state.clone());
 
     let app = build_router(state);
     let addr = format!("0.0.0.0:{port}");

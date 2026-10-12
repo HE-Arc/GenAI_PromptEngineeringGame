@@ -53,7 +53,7 @@ export default function Game({
     player: string
     text: string
     scoring: boolean
-    resolve: (v: { score: number; comment: string; text: string }) => void
+    resolve: (v: { score: number; comment: string; text: string; truncated: boolean }) => void
     reject: (e: unknown) => void
   } | null>(null)
 
@@ -208,7 +208,7 @@ export default function Game({
     // one the prompt was sent on — and the socket never truncates mid-frame.
     const roundNow = state.current
     try {
-      const done = await new Promise<{ score: number; comment: string; text: string }>(
+      const done = await new Promise<{ score: number; comment: string; text: string; truncated: boolean }>(
         (resolve, reject) => {
           // Armed before the send: the server may answer faster than React re-renders,
           // and a frame landing before the waiter exists would wait forever.
@@ -216,7 +216,7 @@ export default function Game({
           answerStart(sendPrompt, prompt)
         },
       )
-      const verdict = { score: done.score, comment: done.comment, output: done.text, truncated: false }
+      const verdict = { score: done.score, comment: done.comment, output: done.text, truncated: done.truncated }
       setResult({ score: verdict.score, comment: verdict.comment, output: verdict.output, round: roundNow, truncated: verdict.truncated })
       setLive(null)
       // Only the verdict earns the round its answer. Not the first chunk: the row does not exist
@@ -265,7 +265,7 @@ export default function Game({
       setLive({ text: w.text, scoring: true })
     } else if (answerEvent.kind === 'done') {
       waiterRef.current = null
-      w.resolve({ score: answerEvent.score, comment: answerEvent.feedback, text: w.text })
+      w.resolve({ score: answerEvent.score, comment: answerEvent.feedback, text: w.text, truncated: answerEvent.truncated })
     }
     // `answer` carries its own seq; depending on the object would miss repeat frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps

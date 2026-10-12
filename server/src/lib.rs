@@ -1,6 +1,7 @@
 pub mod admin_session;
 pub mod auth;
 pub mod db;
+pub mod game;
 pub mod hub;
 pub mod llm;
 pub mod rest;

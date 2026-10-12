@@ -43,6 +43,11 @@ async fn ws_answer_start_streams_chunks_then_done_and_rejects_replay() {
     let (base, pool) = spawn_app().await;
     rooms::create_room(&pool, "CD34").await.unwrap();
     let player = rooms::add_player(&pool, "CD34", "ana").await.unwrap();
+        // Prompts are only taken in the writing phase.
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'CD34'")
+            .execute(&pool)
+            .await
+            .unwrap();
     let url = format!("{base}/api/rooms/CD34/ws?token={}", player.token);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();

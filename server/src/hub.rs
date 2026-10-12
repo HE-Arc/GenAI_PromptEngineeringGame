@@ -1,8 +1,8 @@
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::db::rooms;
@@ -10,6 +10,28 @@ use crate::ws::protocol::WsOut;
 
 pub type SnapshotMsg = (u64, Value);
 pub type Hubs = RwLock<HashMap<String, Arc<RoomHub>>>;
+
+// A closed socket is not a gone player: a phone that locks, a tab in the
+// background or a Wi-Fi flap all drop the socket while the player is still
+// in the game. Only a player unreachable for this long is shown offline.
+pub const OFFLINE_GRACE: Duration = Duration::from_secs(60);
+
+// How long a room-wide failure notice stays in the snapshot.
+pub const ROOM_ERROR_TTL: Duration = Duration::from_secs(15);
+
+// One entry per player who is online or inside the grace window. `epoch`
+// changes on every connect, so a grace timer armed before a reconnect can
+// tell it is stale and must not evict the player.
+struct Seat {
+    sockets: usize,
+    epoch: u64,
+}
+
+#[derive(Default)]
+struct Presence {
+    seats: HashMap<i64, Seat>,
+    next_epoch: u64,
+}
 
 pub struct RoomHub {
     tx: broadcast::Sender<SnapshotMsg>,
@@ -20,9 +42,22 @@ pub struct RoomHub {
     // One live LLM stream per (round, player); replaces the Django
     // process-local _inflight set so every Tokio task sees the same claims.
     inflight: Mutex<HashSet<(i64, i64)>>,
-    // Connected player sockets (admins excluded). Atomic because connect
-    // and disconnect run on different Tokio tasks and share no await point.
-    presence: AtomicUsize,
+    // Online players by id (admins excluded). A std Mutex: every critical
+    // section is a few map ops with no await inside.
+    presence: std::sync::Mutex<Presence>,
+    // Transient failure notice (`state.error`): a French sentence and the
+    // instant it expires.
+    error: std::sync::Mutex<Option<(Instant, String)>>,
+    // Last instant this room was opened or had a player online; the idle
+    // sweep hides and deletes rooms by it.
+    last_seen: std::sync::Mutex<Instant>,
+    // Republish coalescing: `requested` counts calls, `built` is the request
+    // count covered by the last published build. Builds run one at a time
+    // under `build_lock`, so a snapshot read before a write can never be
+    // published after one read after it.
+    requested: std::sync::atomic::AtomicU64,
+    built: std::sync::atomic::AtomicU64,
+    build_lock: Mutex<()>,
 }
 
 impl RoomHub {
@@ -38,7 +73,12 @@ impl RoomHub {
             snapshot: RwLock::new((0, Value::Null)),
             events,
             inflight: Mutex::new(HashSet::new()),
-            presence: AtomicUsize::new(0),
+            presence: std::sync::Mutex::new(Presence::default()),
+            error: std::sync::Mutex::new(None),
+            last_seen: std::sync::Mutex::new(Instant::now()),
+            requested: std::sync::atomic::AtomicU64::new(0),
+            built: std::sync::atomic::AtomicU64::new(0),
+            build_lock: Mutex::new(()),
         }
     }
 
@@ -83,6 +123,11 @@ impl RoomHub {
         self.inflight.lock().await.remove(&(round_id, player_id));
     }
 
+    // A round's clock must not close it while an answer is still streaming.
+    pub async fn round_inflight(&self, round_id: i64) -> bool {
+        self.inflight.lock().await.iter().any(|(r, _)| *r == round_id)
+    }
+
     // Lagged receivers must resync from the cache, never panic on RecvError::Lagged.
     // Drains the stale queue; caller sends cached() as the fresh snapshot.
     pub fn resync_needed(&self, rx: &mut broadcast::Receiver<SnapshotMsg>) -> bool {
@@ -95,39 +140,137 @@ impl RoomHub {
         }
     }
 
-    // Player sockets only; admin/cookie connections never count.
+    // Players only; admin/cookie connections never count.
     pub fn presence(&self) -> usize {
-        self.presence.load(Ordering::Relaxed)
+        self.presence.lock().unwrap().seats.len()
     }
 
-    // Connect/disconnect mutate only the in-memory count, yet every
-    // subscriber (and the admin list) must see the new value live: rebuild
-    // the snapshot once per change and bump the seq like any other write.
-    // Returns the fresh (seq, state) so the hello sender can reply with it.
-    pub async fn refresh_presence(
-        &self,
-        pool: &SqlitePool,
-        code: &str,
-        delta: i64,
-    ) -> Option<SnapshotMsg> {
-        let prev = if delta > 0 {
-            self.presence.fetch_add(delta as usize, Ordering::Relaxed)
-        } else {
-            // usize counter, isize delta: saturate instead of panicking on underflow.
-            let cur = self.presence.load(Ordering::Relaxed);
-            let sub: usize = delta.unsigned_abs().try_into().unwrap_or(usize::MAX);
-            let next = cur.saturating_sub(sub);
-            self.presence.store(next, Ordering::Relaxed);
-            cur
-        };
-        let new = self.presence.load(Ordering::Relaxed);
-        if new == prev {
-            return None;
+    pub fn online(&self) -> HashSet<i64> {
+        self.presence.lock().unwrap().seats.keys().copied().collect()
+    }
+
+    // Snapshot rebuild with the live online set: the one way every writer
+    // builds a snapshot, so presence never regresses across a DB write.
+    //
+    // Callers republish AFTER their write commits. Under the lock, a build
+    // that started after this call's request already read that write, so a
+    // burst of N writes costs a handful of builds instead of N racing ones
+    // whose publish order no longer matches their read order.
+    pub async fn republish(&self, pool: &SqlitePool, code: &str) -> Option<SnapshotMsg> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mine = self.requested.fetch_add(1, SeqCst) + 1;
+        let _guard = self.build_lock.lock().await;
+        if self.built.load(SeqCst) >= mine {
+            return Some(self.cached().await);
         }
-        let snap = rooms::room_snapshot(pool, code, Some(new)).await.ok()?;
+        let covers = self.requested.load(SeqCst);
+        let online = self.online();
+        let mut snap = rooms::room_snapshot(pool, code, Some(&online)).await.ok()?;
+        snap["error"] = self.current_error().into();
+        self.built.store(covers, SeqCst);
         let seq = self.next_seq().await;
         self.publish_snapshot(seq, snap).await;
         Some(self.cached().await)
+    }
+
+    pub fn note_error(&self, message: &str) {
+        *self.error.lock().unwrap() = Some((Instant::now() + ROOM_ERROR_TTL, message.to_owned()));
+    }
+
+    // The live notice, clearing it once expired.
+    pub fn current_error(&self) -> Option<String> {
+        let mut e = self.error.lock().unwrap();
+        match e.as_ref() {
+            Some((expiry, msg)) if Instant::now() < *expiry => Some(msg.clone()),
+            _ => {
+                *e = None;
+                None
+            }
+        }
+    }
+
+    // A notice that has expired but is still on screen: the ticker
+    // republishes once so it disappears without another write.
+    pub fn error_needs_clearing(&self) -> bool {
+        matches!(self.error.lock().unwrap().as_ref(), Some((expiry, _)) if Instant::now() >= *expiry)
+    }
+
+    pub fn mark_seen(&self) {
+        *self.last_seen.lock().unwrap() = Instant::now();
+    }
+
+    // Seconds since the room was last opened or had someone online; an
+    // online room is "now".
+    pub fn idle_for(&self) -> Duration {
+        if self.presence() > 0 {
+            self.mark_seen();
+        }
+        self.last_seen.lock().unwrap().elapsed()
+    }
+
+    // Registers one more socket for this player. Republishes only when the
+    // player was not already online: a reconnect inside the grace window
+    // changes nothing anyone can see.
+    pub async fn player_connected(&self, pool: &SqlitePool, code: &str, player_id: i64) {
+        self.mark_seen();
+        let newly_online = {
+            let mut p = self.presence.lock().unwrap();
+            p.next_epoch += 1;
+            let epoch = p.next_epoch;
+            let newly_online = !p.seats.contains_key(&player_id);
+            let seat = p.seats.entry(player_id).or_insert(Seat { sockets: 0, epoch });
+            seat.epoch = epoch;
+            seat.sockets += 1;
+            newly_online
+        };
+        if newly_online {
+            let _ = self.republish(pool, code).await;
+        }
+    }
+
+    // Drops one socket. The last socket closing does not take the player
+    // offline: a timer does, after OFFLINE_GRACE, unless they came back.
+    pub fn player_disconnected(self: &Arc<Self>, pool: SqlitePool, code: String, player_id: i64) {
+        self.player_disconnected_after(pool, code, player_id, OFFLINE_GRACE);
+    }
+
+    fn player_disconnected_after(
+        self: &Arc<Self>,
+        pool: SqlitePool,
+        code: String,
+        player_id: i64,
+        grace: Duration,
+    ) {
+        let armed = {
+            let mut p = self.presence.lock().unwrap();
+            match p.seats.get_mut(&player_id) {
+                Some(seat) => {
+                    seat.sockets = seat.sockets.saturating_sub(1);
+                    (seat.sockets == 0).then_some(seat.epoch)
+                }
+                None => None,
+            }
+        };
+        let Some(epoch) = armed else { return };
+        let hub = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+            let evicted = {
+                let mut p = hub.presence.lock().unwrap();
+                let stale = matches!(
+                    p.seats.get(&player_id),
+                    Some(seat) if seat.sockets == 0 && seat.epoch == epoch
+                );
+                if stale {
+                    p.seats.remove(&player_id);
+                }
+                stale
+            };
+            if evicted {
+                hub.mark_seen();
+                let _ = hub.republish(&pool, &code).await;
+            }
+        });
     }
 }
 
@@ -174,34 +317,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn presence_increment_decrement_publishes_live_count() {
+    async fn disconnect_waits_for_grace_and_reconnect_cancels_it() {
         let pool = crate::db::test_pool().await;
         crate::db::rooms::create_room(&pool, "PR23").await.unwrap();
-        // Presence is clamped to the roster, so a player row must exist.
-        crate::db::rooms::add_player(&pool, "PR23", "ana").await.unwrap();
-        let hub = RoomHub::new();
-        assert_eq!(hub.presence(), 0);
+        let ana = crate::db::rooms::add_player(&pool, "PR23", "ana").await.unwrap();
+        let hub = Arc::new(RoomHub::new());
+        let grace = Duration::from_millis(50);
 
-        // Connect: one player socket => online_count 1 in the new snapshot.
-        let (seq1, snap1) = hub
-            .refresh_presence(&pool, "PR23", 1)
-            .await
-            .expect("snapshot");
-        assert_eq!(hub.presence(), 1);
+        hub.player_connected(&pool, "PR23", ana.id).await;
+        let (seq1, snap1) = hub.cached().await;
         assert_eq!(snap1["online_count"], 1);
-        assert!(seq1 >= 1);
+        assert_eq!(snap1["players"][0]["online"], true);
 
-        // Disconnect: count falls back to 0 and a fresh snapshot goes out.
-        let (seq2, snap2) = hub
-            .refresh_presence(&pool, "PR23", -1)
-            .await
-            .expect("snapshot");
+        // Socket drops, player comes back inside the grace window: no flap.
+        hub.player_disconnected_after(pool.clone(), "PR23".into(), ana.id, grace);
+        assert_eq!(hub.presence(), 1, "closed socket must not mean offline");
+        hub.player_connected(&pool, "PR23", ana.id).await;
+        tokio::time::sleep(grace * 3).await;
+        assert_eq!(hub.presence(), 1, "stale grace timer must not evict");
+        assert_eq!(hub.cached().await.0, seq1, "reconnect publishes nothing");
+
+        // Two sockets for one player count once; only the last close arms.
+        hub.player_connected(&pool, "PR23", ana.id).await;
+        hub.player_disconnected_after(pool.clone(), "PR23".into(), ana.id, grace);
+        tokio::time::sleep(grace * 3).await;
+        assert_eq!(hub.presence(), 1);
+
+        // Last socket gone and nobody returns: offline after the grace.
+        hub.player_disconnected_after(pool.clone(), "PR23".into(), ana.id, grace);
+        tokio::time::sleep(grace * 3).await;
         assert_eq!(hub.presence(), 0);
+        let (seq2, snap2) = hub.cached().await;
+        assert!(seq2 > seq1);
         assert_eq!(snap2["online_count"], 0);
-        assert!(seq2 > seq1, "disconnect must advance the snapshot seq");
-
-        // Saturating guard: a stale decrement can never panic or go negative.
-        let _ = hub.refresh_presence(&pool, "PR23", -1).await;
-        assert_eq!(hub.presence(), 0);
+        assert_eq!(snap2["players"][0]["online"], false);
     }
 }

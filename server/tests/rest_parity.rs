@@ -209,17 +209,12 @@ async fn admin_list_online_count_follows_ws_connect_and_disconnect() {
     assert!(saw_online, "player hello must bump online_count to 1");
     assert_eq!(list().await, 1, "admin list must read the live count");
 
-    // Disconnect: the decrement task republishes; poll past its spawn gap.
+    // Disconnect: a dropped socket is a flap, not a departure. The player
+    // stays online through the grace period (expiry is covered by the hub
+    // unit test, which shortens the grace).
     drop(ws);
-    let mut online = 1;
-    for _ in 0..100 {
-        online = list().await;
-        if online == 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert_eq!(online, 0, "socket drop must restore online_count 0");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(list().await, 1, "socket drop must not take the player offline at once");
 }
 
 #[tokio::test]

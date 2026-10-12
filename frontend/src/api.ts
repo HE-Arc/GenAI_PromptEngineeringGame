@@ -350,6 +350,7 @@ const REASONS: Record<string, string> = {
   "time's up": 'C’est fini pour cette question, la suivante arrive.',
   'not the current question': 'La classe est déjà passée à une autre question.',
   'already rated': 'Tu as déjà noté ce prompt. Le suivant arrive.',
+  'not the current prompt': 'La classe est passée au prompt suivant : note celui qui est affiché.',
   'not playing': "La partie n’est pas encore démarrée.",
   'quiz not open': 'Le didacticiel est fermé. L’animateur fait avancer la partie.',
   'not rating': 'La notation est fermée. L’animateur fait avancer la partie.',

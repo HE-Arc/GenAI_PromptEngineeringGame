@@ -14,3 +14,6 @@ server/target/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+
+# Python bytecode from the load-test harnesses importing each other.
+__pycache__/

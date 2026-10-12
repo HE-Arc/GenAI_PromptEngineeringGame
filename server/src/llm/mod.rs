@@ -17,17 +17,29 @@ pub struct Verdict {
 
 // Boxed futures keep the trait dyn-compatible so AppState holds one
 // Arc<dyn LlmSource> regardless of which backend the factory picks.
+// Ok(truncated): the stream ended, `true` when the token cap cut it short.
+// Err: no answer could be produced at all; the caller records a failure.
+pub type StreamResult = Result<bool, String>;
+
 pub trait LlmSource: Send + Sync + 'static {
     fn stream_into(
         &self,
         prompt: String,
         tx: mpsc::UnboundedSender<String>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = StreamResult> + Send + '_>>;
 
     fn score(
         &self,
         prompt: &str,
         output: &str,
+        target: &str,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
+
+    // The critic: rates the prompt's METHOD (role, context, format, length),
+    // never its output. Anchors the ±3 band the peer mean is held to.
+    fn grade_prompt(
+        &self,
+        prompt: &str,
         target: &str,
     ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
 }

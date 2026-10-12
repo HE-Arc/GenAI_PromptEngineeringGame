@@ -10,6 +10,7 @@ use sqlx::SqlitePool;
 
 use crate::admin_session;
 use crate::db::{answers, rooms};
+use crate::game;
 use crate::hub::get_hub;
 use crate::router::AppState;
 
@@ -17,12 +18,11 @@ use crate::router::AppState;
 // write, subscribers clone the cache instead of re-querying.
 async fn touch(state: &AppState, code: &str) {
     let hub = get_hub(&state.hubs, code).await;
-    let seq = hub.next_seq().await;
-    // Presence overrides the roster fallback so a DB write right after a
-    // connect/disconnect does not regress the live count.
-    if let Ok(fresh) = rooms::room_snapshot(&state.pool, code, Some(hub.presence())).await {
-        hub.publish_snapshot(seq, fresh).await;
-    }
+    let _ = hub.republish(&state.pool, code).await;
+}
+
+async fn online(state: &AppState, code: &str) -> std::collections::HashSet<i64> {
+    get_hub(&state.hubs, code).await.online()
 }
 
 fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -138,6 +138,11 @@ pub struct RateBody {
     pub token: String,
     #[serde(default)]
     pub score: Option<serde_json::Value>,
+    // The reveal index the player was looking at. Optional for old clients;
+    // when sent, a rating for a prompt the room has moved past is refused
+    // instead of landing on the next prompt nobody has read yet.
+    #[serde(default)]
+    pub index: Option<i64>,
 }
 
 pub async fn rate(
@@ -170,6 +175,9 @@ pub async fn rate(
     if list.is_empty() || round.revealed >= list.len() as i64 {
         return err(StatusCode::CONFLICT, "not rating").into_response();
     }
+    if body.index.is_some_and(|i| i != round.revealed) {
+        return err(StatusCode::CONFLICT, "not the current prompt").into_response();
+    }
     let target = &list[round.revealed as usize];
     if target.player_id == player.id {
         return err(StatusCode::CONFLICT, "your own prompt").into_response();
@@ -198,6 +206,7 @@ pub async fn rate(
             return err(StatusCode::CONFLICT, "already rated").into_response();
         }
     }
+    game::maybe_advance_phase(&state.pool, &code, &online(&state, &code).await).await;
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"ok": true}))).into_response()
 }
@@ -206,17 +215,6 @@ pub async fn rate(
 pub struct ReadyBody {
     #[serde(default)]
     pub token: String,
-}
-
-fn step_for(room: &rooms::Room, round: Option<&rooms::Round>) -> Option<String> {
-    if room.phase == "waiting" {
-        return Some("lobby".into());
-    }
-    if room.phase == "rating" {
-        let r = round?;
-        return Some(format!("rating:{}:{}", r.order, r.revealed));
-    }
-    None
 }
 
 pub async fn ready(
@@ -233,9 +231,12 @@ pub async fn ready(
         Err(e) => return e.into_response(),
     };
     let round = rooms::current_round(&state.pool, &code).await.ok().flatten();
-    let step = match step_for(&room, round.as_ref()) {
-        Some(s) => s,
-        None => return err(StatusCode::CONFLICT, "nothing to discuss").into_response(),
+    let step = match game::load(&state.pool, &code).await {
+        Ok(g) => game::current_step(&state.pool, &g).await,
+        Err(_) => None,
+    };
+    let Some(step) = step else {
+        return err(StatusCode::CONFLICT, "nothing to discuss").into_response();
     };
     if room.phase == "rating" {
         if let Some(r) = &round {
@@ -265,8 +266,10 @@ pub async fn ready(
         return err(StatusCode::CONFLICT, "already ready").into_response();
     }
     let _ = answers::add_ready(&state.pool, &code, player.id, &step).await;
+    game::maybe_advance_by_votes(&state.pool, &code, &online(&state, &code).await).await;
     touch(&state, &code).await;
-    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+    let ready = game::ready_for(&state, &code, player.id).await;
+    (StatusCode::OK, Json(json!({"ok": true, "ready": ready}))).into_response()
 }
 
 #[derive(Deserialize, Default)]
@@ -289,6 +292,7 @@ pub async fn quiz_get(
     }
     let questions: Vec<(i64, String, String)> =
         sqlx::query_as("SELECT \"order\", prompt, choices FROM quiz_question WHERE room_code = ? ORDER BY \"order\"")
+            .bind(&code)
             .fetch_all(&state.pool)
             .await
             .unwrap_or_default();
@@ -349,14 +353,8 @@ pub async fn quiz_post(
     if order != room.quiz_index {
         return err(StatusCode::CONFLICT, "not the current question").into_response();
     }
-    // NULL deadline is no window, not an open one; compare on the server clock.
-    let open: bool = sqlx::query_scalar(
-        "SELECT quiz_deadline IS NOT NULL AND datetime(quiz_deadline) > datetime('now') FROM room WHERE code = ?",
-    )
-    .bind(&code)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(false);
+    // NULL deadline is no window, not an open one; same clock as the snapshot.
+    let open = game::load(&state.pool, &code).await.is_ok_and(|g| g.quiz_open());
     if !open {
         return err(StatusCode::CONFLICT, "time's up").into_response();
     }
@@ -400,6 +398,7 @@ pub async fn quiz_post(
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
+    game::maybe_close_quiz_window(&state.pool, &code, &online(&state, &code).await).await;
     touch(&state, &code).await;
     (
         StatusCode::OK,
@@ -435,6 +434,10 @@ pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> im
     if !global_admin(&headers) {
         return err(StatusCode::FORBIDDEN, "admin only").into_response();
     }
+    // Same sweep as the background task, so the console never lists a room
+    // the next minute would delete.
+    let plan = game::sweep_plan(&state, state.boot).await;
+    game::delete_rooms(&state, &plan.dead).await;
     let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
         "SELECT code, phase, current, tutorial, anonymous FROM room ORDER BY code",
     )
@@ -442,7 +445,7 @@ pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> im
     .await
     .unwrap_or_default();
     let mut out = Vec::with_capacity(rows.len());
-    for (code, phase, current, tutorial, anonymous) in &rows {
+    for (code, phase, current, tutorial, anonymous) in rows.iter().filter(|r| !plan.hide.contains(&r.0)) {
         let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM round WHERE room_code = ?")
             .bind(code)
             .fetch_one(&state.pool)
@@ -519,25 +522,19 @@ pub async fn admin_create(
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     };
-    if let Some(t) = data.get("tutorial").and_then(|v| v.as_bool()) {
-        let _ = sqlx::query("UPDATE room SET tutorial = ? WHERE code = ?")
-            .bind(if t { 1 } else { 0 })
-            .bind(&code)
-            .execute(&state.pool)
-            .await;
-    }
-    // Bank of eight placeholder questions; content comes from quiz.py in Django.
-    for i in 0..8 {
-        let _ = answers::create_quiz_question(
-            &state.pool,
-            &code,
-            i,
-            &format!("question {i}"),
-            r#"["a","b","c","d"]"#,
-            0,
-            "",
-        )
-        .await;
+    let flag = |key: &str| data.get(key).and_then(|v| v.as_bool()).unwrap_or(true);
+    let _ = sqlx::query(
+        "UPDATE room SET tutorial = ?, anonymous = ?, round_seconds = ?, rate_seconds = ? WHERE code = ?",
+    )
+    .bind(flag("tutorial") as i64)
+    .bind(flag("anonymous") as i64)
+    .bind(game::clamp_seconds(data.get("round_seconds"), game::ROUND_SECONDS, game::ROUND_SECONDS_RANGE))
+    .bind(game::clamp_seconds(data.get("rate_seconds"), game::RATE_SECONDS, game::RATE_SECONDS_RANGE))
+    .bind(&code)
+    .execute(&state.pool)
+    .await;
+    if let Err(e) = game::create_bank(&state.pool, &code).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
     }
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"code": room.code}))).into_response()
@@ -557,35 +554,15 @@ pub async fn admin_start(
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM round WHERE room_code = ?")
-        .bind(&code)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(0);
-    // Rounds exist means the game already opened; restart owns the replay.
-    if room.phase != "waiting" || existing > 1 {
-        return err(StatusCode::CONFLICT, "already started").into_response();
+    let _ = room;
+    match game::start_game(&state.pool, &code).await {
+        Ok(true) => {}
+        Ok(false) => return err(StatusCode::CONFLICT, "already started").into_response(),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
-    if existing == 1 {
-        for order in 1..10 {
-            let _ = rooms::create_round(&state.pool, &code, order, "").await;
-        }
-    }
-    let tutorial: i64 = sqlx::query_scalar("SELECT tutorial FROM room WHERE code = ?")
-        .bind(&code)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(1);
-    let phase = if tutorial == 0 { "playing" } else { "quiz" };
-    let _ = sqlx::query(
-        "UPDATE room SET phase = ?, quiz_index = 0, quiz_deadline = datetime('now', '+30 seconds'), started_at = datetime('now') WHERE code = ?",
-    )
-    .bind(phase)
-    .bind(&code)
-    .execute(&state.pool)
-    .await;
     touch(&state, &code).await;
-    (StatusCode::OK, Json(json!({"ok": true, "total": 10, "phase": phase}))).into_response()
+    let phase = game::load(&state.pool, &code).await.map(|g| g.phase).unwrap_or_default();
+    (StatusCode::OK, Json(json!({"ok": true, "total": game::ROUNDS_PER_GAME, "phase": phase}))).into_response()
 }
 
 pub async fn admin_next(
@@ -597,52 +574,15 @@ pub async fn admin_next(
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    match room.phase.as_str() {
-        "quiz" => {
-            let _ = sqlx::query(
-                "UPDATE room SET quiz_index = quiz_index + 1, quiz_deadline = datetime('now', '+30 seconds') WHERE code = ?",
-            )
-            .bind(&code)
-            .execute(&state.pool)
-            .await;
-        }
-        "playing" => {
-            let round = rooms::current_round(&state.pool, &code).await.ok().flatten();
-            let n: i64 = match &round {
-                Some(r) => sqlx::query_scalar("SELECT COUNT(*) FROM answer WHERE round_id = ?")
-                    .bind(r.id)
-                    .fetch_one(&state.pool)
-                    .await
-                    .unwrap_or(0),
-                None => 0,
-            };
-            if n == 0 {
-                return err(
-                    StatusCode::CONFLICT,
-                    "Notation impossible : aucun prompt envoyé pour cette manche.",
-                )
-                .into_response();
-            }
-            let _ = sqlx::query("UPDATE room SET phase = 'rating' WHERE code = ?")
-                .bind(&code)
-                .execute(&state.pool)
-                .await;
-        }
-        "rating" => {
-            let _ = sqlx::query("UPDATE room SET phase = 'summary' WHERE code = ?")
-                .bind(&code)
-                .execute(&state.pool)
-                .await;
-        }
-        "summary" => {
-            let _ = sqlx::query("UPDATE room SET phase = 'playing', current = current + 1 WHERE code = ?")
-                .bind(&code)
-                .execute(&state.pool)
-                .await;
-        }
-        other => {
-            return err(StatusCode::CONFLICT, &format!("no advance from {other}")).into_response();
-        }
+    if room.phase == "playing" && !game::round_has_answers(&state.pool, &code).await {
+        return err(
+            StatusCode::CONFLICT,
+            "Notation impossible : aucun prompt envoyé pour cette manche.",
+        )
+        .into_response();
+    }
+    if let Err(e) = game::advance(&state.pool, &code).await {
+        return err(StatusCode::CONFLICT, &e).into_response();
     }
     touch(&state, &code).await;
     let phase: String = sqlx::query_scalar("SELECT phase FROM room WHERE code = ?")
@@ -671,6 +611,10 @@ pub async fn admin_restart(
         return err(StatusCode::NOT_FOUND, "unknown room").into_response();
     }
     // Idempotent wipe: players and tokens survive, rounds/attempts/votes go.
+    let _ = sqlx::query("DELETE FROM rating WHERE answer_id IN (SELECT answer.id FROM answer JOIN round ON round.id = answer.round_id WHERE round.room_code = ?)")
+        .bind(&code).execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM answer WHERE round_id IN (SELECT id FROM round WHERE room_code = ?)")
+        .bind(&code).execute(&state.pool).await;
     let _ = sqlx::query("DELETE FROM round WHERE room_code = ?").bind(&code).execute(&state.pool).await;
     let _ = sqlx::query("DELETE FROM quiz_attempt WHERE player_id IN (SELECT id FROM player WHERE room_code = ?)")
         .bind(&code).execute(&state.pool).await;
@@ -685,6 +629,7 @@ pub async fn admin_restart(
     }
     let _ = sqlx::query(&upd).bind(&code).execute(&state.pool).await;
     let _ = rooms::create_round(&state.pool, &code, 0, "").await;
+    get_hub(&state.hubs, &code).await.mark_seen();
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"ok": true, "phase": "waiting"}))).into_response()
 }

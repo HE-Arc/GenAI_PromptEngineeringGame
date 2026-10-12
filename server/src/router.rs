@@ -19,6 +19,8 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub hubs: Arc<RwLock<HashMap<String, Arc<RoomHub>>>>,
     pub llm: Arc<dyn LlmSource>,
+    // Process start: rooms with no hub yet count as idle since then.
+    pub boot: std::time::Instant,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
             pool,
             hubs: Arc::new(RwLock::new(HashMap::new())),
             llm: llm::from_env(),
+            boot: std::time::Instant::now(),
         }
     }
 }
