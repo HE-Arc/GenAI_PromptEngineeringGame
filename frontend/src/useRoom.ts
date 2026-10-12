@@ -91,7 +91,10 @@ export function useRoom(code: string | null, token?: string | null) {
     // 'connecting' before the attempt bump, and the first mount derives it from 'idle'.
     const conn = connectRoomWs(room, who, {
       onSnapshot: (state) => {
-        if (dead) return
+        // A server that was down answers the next hello like any other
+        // reconnect: the first snapshot revives a 'failed' board, so no
+        // reload is ever needed to see the game come back.
+        dead = false
         opened = true
         misses = 0
         lastBeat = Date.now()
