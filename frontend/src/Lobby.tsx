@@ -104,8 +104,8 @@ export default function Lobby({
 
           <div className="stack">
             <p className="prose prose--dim">
-              Lis ce code à voix haute pour que les autres te rejoignent. Quand tout le monde est
-              là, appuie sur « Je suis prêt » : c’est la classe qui démarre la partie.
+              Lis ce code à voix haute pour que les autres te rejoignent. Appuie sur « Je suis
+              prêt » : la partie démarre quand la majorité des joueurs présents est prête.
             </p>
 
             <div className="actions">

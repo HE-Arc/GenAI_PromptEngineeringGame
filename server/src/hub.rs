@@ -268,6 +268,9 @@ impl RoomHub {
             };
             if evicted {
                 hub.mark_seen();
+                // One fewer present player lowers the majority: the votes
+                // already cast may now be enough to move the room.
+                crate::game::maybe_advance_by_votes(&pool, &code, &hub.online()).await;
                 let _ = hub.republish(&pool, &code).await;
             }
         });

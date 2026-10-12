@@ -183,9 +183,10 @@ class Phone:
     def act(self, state):
         code, phase = self.room.code, state["phase"]
         if phase == "waiting":
-            # The lobby vote starts the game as soon as every CONNECTED player
-            # is ready, which locks out anyone not yet in the room. A class
-            # votes once everybody is there, so the phone waits for that.
+            # The game starts on a majority of the players present, and a
+            # player who arrives after the start is refused. Phones vote once
+            # the whole simulated class has joined, so every room keeps its
+            # full roster and the presence checks stay meaningful.
             self.room.all_in.wait()
             self.think(2, 15)
             self.post("ready", f"/api/rooms/{code}/ready", {"token": self.token})

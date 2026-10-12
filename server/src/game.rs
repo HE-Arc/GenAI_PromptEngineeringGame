@@ -92,13 +92,14 @@ pub fn quality(llm: Option<i64>, peers: &[i64]) -> i64 {
     }
 }
 
-// The lobby asks for everybody (they just arrived); a discussion asks for a
-// majority so a phone in a bag is not a veto.
-pub fn threshold(step: &str, n: usize) -> usize {
+// A majority of the players present, for every vote. The lobby used to ask
+// for everybody, which let the first few arrivals start the game as soon as
+// they were all ready and lock out the rest of the class. `n` is measured
+// when the vote is counted, so a player who joins the lobby meanwhile raises
+// the bar and the class still needs its majority.
+pub fn threshold(n: usize) -> usize {
     if n == 0 {
         0
-    } else if step == LOBBY_STEP {
-        n
     } else {
         n / 2 + 1
     }
@@ -594,7 +595,7 @@ pub async fn maybe_advance_by_votes(pool: &SqlitePool, code: &str, online: &Hash
     let Ok(room) = load(pool, code).await else { return };
     let Some(step) = current_step(pool, &room).await else { return };
     let voters = ready_voters(pool, &room, online).await;
-    let needed = threshold(&step, voters.len());
+    let needed = threshold(voters.len());
     if needed == 0 {
         return;
     }
@@ -1036,7 +1037,7 @@ pub async fn room_snapshot(
             json!({
                 "step": step,
                 "count": ids.intersection(&voters).count(),
-                "needed": threshold(&step, voters.len()),
+                "needed": threshold(voters.len()),
                 "mine": false,
             })
         }
@@ -1106,8 +1107,9 @@ mod tests {
         assert_eq!(quality(Some(5), &[]), 5);
         assert_eq!(quality(None, &[6, 7]), 7); // 6.5 rounds half up
         assert_eq!(quality(Some(2), &[10, 10]), 5); // held within +3 of the critic
-        assert_eq!(threshold(LOBBY_STEP, 3), 3);
-        assert_eq!(threshold("rating:0:0", 4), 3);
+        assert_eq!(threshold(3), 2);
+        assert_eq!(threshold(4), 3);
+        assert_eq!(threshold(0), 0);
     }
 
     #[tokio::test]
@@ -1215,6 +1217,37 @@ mod tests {
         assert_eq!(load(&pool, "CC44").await.unwrap().phase, "summary");
         futures_util::future::join_all((0..5).map(|_| advance(&pool, "CC44"))).await;
         assert_eq!(load(&pool, "CC44").await.unwrap().current, 1, "one round forward, not five");
+    }
+
+    #[tokio::test]
+    async fn lobby_starts_on_a_majority_that_counts_late_joiners() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "LB55").await.unwrap();
+        let mut online = HashSet::new();
+        let mut ids = Vec::new();
+        for name in ["a", "b", "c"] {
+            let id = crate::db::rooms::add_player(&pool, "LB55", name).await.unwrap().id;
+            online.insert(id);
+            ids.push(id);
+        }
+        let vote = |id: i64| crate::db::answers::add_ready(&pool, "LB55", id, LOBBY_STEP);
+        vote(ids[0]).await.unwrap();
+        maybe_advance_by_votes(&pool, "LB55", &online).await;
+        assert_eq!(load(&pool, "LB55").await.unwrap().phase, "waiting", "1 of 3 is not a majority");
+
+        // Two more arrive before the second vote: 2 of 5 is still short.
+        for name in ["d", "e"] {
+            online.insert(crate::db::rooms::add_player(&pool, "LB55", name).await.unwrap().id);
+        }
+        vote(ids[1]).await.unwrap();
+        maybe_advance_by_votes(&pool, "LB55", &online).await;
+        let snap = room_snapshot(&pool, "LB55", Some(&online)).await.unwrap();
+        assert_eq!((snap["ready"]["count"].as_i64(), snap["ready"]["needed"].as_i64()), (Some(2), Some(3)));
+        assert_eq!(snap["phase"], "waiting");
+
+        vote(ids[2]).await.unwrap();
+        maybe_advance_by_votes(&pool, "LB55", &online).await;
+        assert_eq!(load(&pool, "LB55").await.unwrap().phase, "quiz", "3 of 5 starts the game");
     }
 
     #[tokio::test]
