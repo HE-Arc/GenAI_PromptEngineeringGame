@@ -3,6 +3,7 @@ import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, PhaseClock, R
 import { fr, noun } from './format'
 import {
   absent,
+  answerStart,
   describe,
   getName,
   getToken,
@@ -10,11 +11,12 @@ import {
   present,
   StreamError,
   streamAnswer,
+  wsRefusal,
   type Player,
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
-import type { Link } from './useRoom'
+import type { AnswerFeed, Link } from './useRoom'
 
 type Result = { score: number; comment: string; output: string; round: number; truncated: boolean }
 
@@ -23,11 +25,17 @@ export default function Game({
   code,
   link,
   onRetry,
+  answer,
+  sendPrompt,
+  wsLive,
 }: {
   state: State
   code: string
   link: Link
   onRetry: () => void
+  answer: AnswerFeed | null
+  sendPrompt: (prompt: string) => void
+  wsLive: boolean
 }) {
   const [prompt, setPrompt] = useState('')
   const [result, setResult] = useState<Result | null>(null)
@@ -46,6 +54,17 @@ export default function Game({
   // Aborting the stream is not a failure and must not be reported as one: unmounting, or the
   // player leaving, closes the request mid-answer. Kept in a ref because it is never rendered.
   const abortRef = useRef<AbortController | null>(null)
+  // The verdict this screen is waiting on over the socket. The frames arrive on the room
+  // feed the hook owns, not on the send call, so the waiter parks the resolve/reject pair
+  // here and the effect below feeds it as frames land. One at a time: the composer is
+  // disabled while busy, so a second send cannot overwrite the first.
+  const waiterRef = useRef<{
+    player: string
+    text: string
+    scoring: boolean
+    resolve: (v: { score: number; comment: string; text: string }) => void
+    reject: (e: unknown) => void
+  } | null>(null)
 
   // A prompt belongs to the target it was written against, and an error to the round that
   // caused it, so both are cleared when the round moves on. This used to be an effect keyed
@@ -192,32 +211,52 @@ export default function Game({
     setErr('')
     setBusy(true)
     setLive({ text: '', scoring: false })
-    const ac = new AbortController()
-    abortRef.current = ac
-    // Accumulated here rather than read back off `live`: a state value captured by this closure
-    // is the value it had when the send started, so reading it after the awaits would hand the
-    // verdict an empty answer.
-    let text = ''
-    let scoring = false
+    // The socket path sends one frame and waits on the broadcast; the POST path streams
+    // its own reply. Same verdict shape out of both, so everything below the wait is one
+    // code path whichever transport spoke.
+    const roundNow = state.current
     try {
-      const res = await streamAnswer(
-        `/api/rooms/${code}/answer`,
-        { token: getToken(code), prompt },
-        {
-          chunk: (delta) => {
-            text += delta
-            setLive({ text, scoring })
+      let verdict: { score: number; comment: string; output: string; truncated: boolean }
+      if (wsLive) {
+        const done = await new Promise<{ score: number; comment: string; text: string }>(
+          (resolve, reject) => {
+            // Armed before the send: the server may answer faster than React re-renders,
+            // and a frame landing before the waiter exists would wait forever.
+            waiterRef.current = { player: myName, text: '', scoring: false, resolve, reject }
+            answerStart(sendPrompt, prompt)
           },
-          scoring: () => {
-            scoring = true
-            setLive({ text, scoring })
+        )
+        // The text the player watched, not a second copy from the payload: the server
+        // stored the same string and the judge scored the same string, so one truth
+        // reaches the screen. The `done` frame carries no round or truncation — the round
+        // is the one the prompt was sent on, and the socket never truncates mid-frame.
+        verdict = { score: done.score, comment: done.comment, output: done.text, truncated: false }
+      } else {
+        const ac = new AbortController()
+        abortRef.current = ac
+        // Accumulated here rather than read back off `live`: a state value captured by this closure
+        // is the value it had when the send started, so reading it after the awaits would hand the
+        // verdict an empty answer.
+        let text = ''
+        let scoring = false
+        const res = await streamAnswer(
+          `/api/rooms/${code}/answer`,
+          { token: getToken(code), prompt },
+          {
+            chunk: (delta) => {
+              text += delta
+              setLive({ text, scoring })
+            },
+            scoring: () => {
+              scoring = true
+              setLive({ text, scoring })
+            },
           },
-        },
-        ac.signal,
-      )
-      // The text the player watched, not a second copy from the payload: the server stored the
-      // same string and the judge scored the same string, so one truth reaches the screen.
-      setResult({ score: res.score, comment: res.comment, output: text, round: res.round, truncated: res.truncated })
+          ac.signal,
+        )
+        verdict = { score: res.score, comment: res.comment, output: text, truncated: res.truncated }
+      }
+      setResult({ score: verdict.score, comment: verdict.comment, output: verdict.output, round: roundNow, truncated: verdict.truncated })
       setLive(null)
       // Only the verdict earns the round its answer. Not the first chunk: the row does not exist
       // until the `done` frame, and a composer disabled on the strength of a delta would lock a
@@ -243,10 +282,47 @@ export default function Game({
     }
   }
 
+  // The socket's answer frames, dealt to the waiting send. Chunks accumulate here rather
+  // than read back off `live`: a state value captured by the send closure is the value it
+  // had when the send started. Frames for other players are the room's business, not this
+  // screen's — every phone in the room sees every chunk, but only the author waits on one.
+  // A refusal is always this screen's own: the server answers it on the sender's connection,
+  // never on the broadcast, so it needs no player check.
+  const answerSeq = answer?.seq ?? 0
+  const answerEvent = answer?.event ?? null
+  useEffect(() => {
+    const w = waiterRef.current
+    if (!w || !answerEvent) return
+    if (answerEvent.kind === 'error') {
+      waiterRef.current = null
+      w.reject(wsRefusal(answerEvent.code, answerEvent.message))
+      return
+    }
+    if (answerEvent.player !== w.player) return
+    if (answerEvent.kind === 'chunk') {
+      w.text += answerEvent.delta
+      setLive({ text: w.text, scoring: w.scoring })
+    } else if (answerEvent.kind === 'scoring') {
+      w.scoring = true
+      setLive({ text: w.text, scoring: true })
+    } else if (answerEvent.kind === 'done') {
+      waiterRef.current = null
+      w.resolve({ score: answerEvent.score, comment: answerEvent.feedback, text: w.text })
+    }
+    // `answer` carries its own seq; depending on the object would miss repeat frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answerSeq])
+
   // Cancel an answer still being written when this screen goes away. `busy` is deliberately not
   // in the deps: the effect must fire on unmount only, and a re-run on every send would abort
   // the request it was mounted for.
-  useEffect(() => () => abortRef.current?.abort(), [])
+  useEffect(
+    () => () => {
+      abortRef.current?.abort()
+      waiterRef.current = null
+    },
+    [],
+  )
 
   // The score lands where the eye already is, which takes three things that all used to be
   // missing. The verdict now sits above the composer in the document rather than under it; the

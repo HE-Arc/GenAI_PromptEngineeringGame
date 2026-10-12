@@ -376,6 +376,35 @@ export async function streamAnswer(
   throw new StreamError('La partie a planté côté serveur. Préviens l’animateur.')
 }
 
+// The answer, as the socket carries it. `answer.start` replaces the POST above it: one
+// frame on a connection that already knows the player, instead of a request that must
+// re-prove the token and then stream its own reply. The verdict still arrives as frames
+// (`answer.chunk`/`scoring`/`done`), which useRoom hands to the waiting screen.
+export type AnswerSender = (prompt: string) => void
+
+export function answerStart(send: AnswerSender, prompt: string): void {
+  send(prompt)
+}
+
+// A refusal off the socket, translated into the same ApiError the POST would have thrown,
+// so `describe` keeps saying the same French to the same failure: `already_answered` is
+// the 409 the POST answered before the stream started, and the unknown codes fall through
+// to the generic lines by status rather than inventing new wording per frame.
+export function wsRefusal(code: string, message: string): ApiError {
+  switch (code) {
+    case 'already_answered':
+      return new ApiError(409, 'already answered')
+    case 'bad_token':
+      return new ApiError(403, 'bad token')
+    case 'unknown_room':
+      return new ApiError(404, 'unknown room')
+    case 'inflight':
+      return new ApiError(409, message || 'answer already streaming')
+    default:
+      return new ApiError(500, message || 'answer failed')
+  }
+}
+
 export async function post<T>(path: string, body?: unknown): Promise<T> {
   return unwrap<T>(
     await fetch(path, {

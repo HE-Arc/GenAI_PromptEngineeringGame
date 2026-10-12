@@ -119,7 +119,7 @@ export default function App() {
   // token at all and connects anonymously, which is the difference between a missing
   // argument and a null one.
   const token = code ? getToken(code) : null
-  const { state, link, retry } = useRoom(code, token)
+  const { state, link, retry, answer, sendPrompt, wsLive } = useRoom(code, token)
 
   // The screen, resolved once. The URL is not enough: a round ending moves Game -> Results
   // without the address changing at all, which is the largest swap in the game and the one
@@ -280,7 +280,15 @@ export default function App() {
       return (
         <>
           <SkipLink />
-          <Game state={view.state} code={view.code} link={link} onRetry={retry} />
+          <Game
+            state={view.state}
+            code={view.code}
+            link={link}
+            onRetry={retry}
+            answer={answer}
+            sendPrompt={sendPrompt}
+            wsLive={wsLive}
+          />
         </>
       )
   }

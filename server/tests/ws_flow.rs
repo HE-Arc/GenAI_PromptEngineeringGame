@@ -1,0 +1,118 @@
+use futures_util::{SinkExt, StreamExt};
+use server::db::rooms;
+use server::router::{build_router, AppState};
+use server::ws::protocol::WsOut;
+use sqlx::SqlitePool;
+use sqlx::sqlite::SqlitePoolOptions;
+use tokio_tungstenite::tungstenite::Message;
+
+// Live loopback server: axum-test has no WS client, so bind an ephemeral
+// port and speak real WebSocket bytes via tokio-tungstenite.
+async fn spawn_app() -> (String, SqlitePool) {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("test pool");
+    sqlx::migrate!("./migrations").run(&pool).await.expect("migrate");
+    let app = build_router(AppState::new(pool.clone()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    (format!("ws://127.0.0.1:{port}"), pool)
+}
+
+async fn recv_json(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> WsOut {
+    let msg = ws.next().await.expect("frame").expect("no ws error");
+    let text = match msg {
+        Message::Text(t) => t.to_string(),
+        other => panic!("expected text, got {other:?}"),
+    };
+    serde_json::from_str(&text).expect("WsOut json")
+}
+
+#[tokio::test]
+async fn ws_answer_start_streams_chunks_then_done_and_rejects_replay() {
+    std::env::remove_var("OPENAI_API_KEY");
+    let (base, pool) = spawn_app().await;
+    rooms::create_room(&pool, "CD34").await.unwrap();
+    let player = rooms::add_player(&pool, "CD34", "ana").await.unwrap();
+    let url = format!("{base}/api/rooms/CD34/ws?token={}", player.token);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let hello = serde_json::json!({"type": "hello", "token": player.token}).to_string();
+    ws.send(Message::Text(hello.into())).await.unwrap();
+    let snap = recv_json(&mut ws).await;
+    assert!(matches!(snap, WsOut::Snapshot { .. }));
+
+    ws.send(Message::Text(r#"{"type":"answer.start","prompt":"first prompt"}"#.into()))
+        .await
+        .unwrap();
+    // scoring + at least one chunk, then exactly one done.
+    let mut chunks = 0;
+    let mut saw_scoring = false;
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), recv_json(&mut ws)).await {
+            Ok(WsOut::AnswerChunk { .. }) => chunks += 1,
+            Ok(WsOut::AnswerScoring { .. }) => saw_scoring = true,
+            Ok(WsOut::AnswerDone { score, .. }) => {
+                assert!(saw_scoring && chunks >= 1, "need scoring + chunks before done");
+                assert!(score >= 0);
+                break;
+            }
+            Ok(other) => panic!("unexpected frame while streaming: {other:?}"),
+            Err(_) => panic!("timed out waiting for answer.done"),
+        }
+    }
+    // Second start over the same socket => already_answered, not a stream.
+    ws.send(Message::Text(r#"{"type":"answer.start","prompt":"again"}"#.into()))
+        .await
+        .unwrap();
+    let err = recv_json(&mut ws).await;
+    assert!(
+        matches!(&err, WsOut::Error { code, .. } if code == "already_answered"),
+        "replay must yield already_answered, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn ws_hello_returns_snapshot_and_bad_token_closes() {
+    let (base, pool) = spawn_app().await;
+    rooms::create_room(&pool, "AB12").await.unwrap();
+    let player = rooms::add_player(&pool, "AB12", "ana").await.unwrap();
+    let url = format!("{base}/api/rooms/AB12/ws?token={}", player.token);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let hello = serde_json::json!({"type": "hello", "token": player.token}).to_string();
+    ws.send(Message::Text(hello.into())).await.unwrap();
+    let msg = recv_json(&mut ws).await;
+    assert!(
+        matches!(msg, WsOut::Snapshot { .. }),
+        "hello must yield snapshot, got {msg:?}"
+    );
+    // ping keepalive round-trips without touching the DB.
+    ws.send(Message::Text(r#"{"type":"ping"}"#.into())).await.unwrap();
+    let pong = recv_json(&mut ws).await;
+    assert!(matches!(pong, WsOut::Pong), "ping must yield pong, got {pong:?}");
+
+    // Bad query token: error bad_token then close 4403, mirroring REST 403.
+    let (mut bad, _) = tokio_tungstenite::connect_async(format!("{base}/api/rooms/AB12/ws?token=nope"))
+        .await
+        .unwrap();
+    let err = recv_json(&mut bad).await;
+    assert!(
+        matches!(&err, WsOut::Error { code, .. } if code == "bad_token"),
+        "bad token must yield bad_token error, got {err:?}"
+    );
+    let close = bad.next().await.expect("close frame").expect("no ws error");
+    match close {
+        Message::Close(Some(frame)) => assert_eq!(u16::from(frame.code), 4403),
+        other => panic!("expected close 4403, got {other:?}"),
+    }
+}

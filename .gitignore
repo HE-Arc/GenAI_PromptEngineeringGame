@@ -7,3 +7,4 @@
 # alongside the code because that is where the spec now lives. Git would otherwise list it as
 # untracked forever, and a `git add -A` would try to commit a nested repository as a directory.
 GenAI_PromptEngineeringGame.wiki/
+server/target/
