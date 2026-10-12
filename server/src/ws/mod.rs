@@ -1,13 +1,11 @@
 use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     response::IntoResponse,
-    Json,
 };
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -30,6 +28,7 @@ pub struct WsParams {
 }
 
 const CLOSE_BAD_TOKEN: u16 = 4403;
+const CLOSE_UNKNOWN_ROOM: u16 = 4404;
 // Same bound the composer enforces (`maxLength`), checked again server-side.
 const MAX_PROMPT_CHARS: usize = 500;
 // Player-facing, so French: shown to the author and as the room notice.
@@ -71,8 +70,24 @@ pub async fn ws_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    // An unknown room is refused INSIDE the socket, not with a 404 on the upgrade. A browser
+    // WebSocket cannot read the status of a handshake it was refused, so a 404 looked exactly like
+    // a server that is down: the client retried every ten seconds for ever (a phone whose room the
+    // sweeper deleted), and each refusal was a body the dev proxy wrote to a socket the browser had
+    // already dropped — the `ws proxy socket error: EPIPE` in Vite's log. Upgrading and sending the
+    // `unknown_room` frame tells the client the one thing it needs: stop, retrying cannot fix this.
     if rooms::get_room(&state.pool, &code).await.is_err() {
-        return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown room"}))).into_response();
+        return ws
+            .on_upgrade(|mut socket| async move {
+                send_direct(&mut socket, &WsOut::error("unknown_room", "unknown room")).await;
+                let _ = socket
+                    .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: CLOSE_UNKNOWN_ROOM,
+                        reason: "unknown room".into(),
+                    })))
+                    .await;
+            })
+            .into_response();
     }
     let state = state.clone();
     ws.on_upgrade(move |socket| handle_socket(socket, state, code, params.token, headers))

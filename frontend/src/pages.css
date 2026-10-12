@@ -207,6 +207,13 @@
   }
 }
 
+.maincol {
+  display: grid;
+  gap: var(--gap);
+  align-content: start;
+  min-width: 0;
+}
+
 .split {
   display: grid;
   gap: var(--gap);
@@ -260,7 +267,8 @@
     grid-column: 2;
     grid-row: 1;
   }
-  .screen--split > .playgrid {
+  .screen--split > .playgrid,
+  .screen--split > .maincol {
     grid-column: 1;
     grid-row: 1;
   }
@@ -276,6 +284,7 @@
     grid-column: 1 / -1;
   }
   .screen--split:has(> .notice, > .tally) > .playgrid,
+  .screen--split:has(> .notice, > .tally) > .maincol,
   .screen--split:has(> .notice, > .tally) > .stepwrap {
     grid-row: 2;
   }
@@ -300,6 +309,19 @@
   }
   .screen--split > .railcol {
     grid-column: 2;
+  }
+  /* The play column spans the step's row and the standings' row, and the second row is the
+   * flexible one: the round and its clock keep their own height at the top of the right column
+   * and the standings sit right under them, instead of starting below the whole target. Only
+   * when no notice has taken row one, which re-places everything below it. */
+  .screen--split:has(> .maincol):not(:has(> .notice)) {
+    grid-template-rows: auto 1fr;
+  }
+  .screen--split:has(> .maincol):not(:has(> .notice)) > .maincol {
+    grid-row: 1 / span 2;
+  }
+  .screen--split:has(> .maincol):not(:has(> .notice)) > .railcol {
+    grid-row: 2;
   }
   .playgrid {
     grid-template-columns: 1fr;
@@ -426,11 +448,8 @@
     padding-left: 2.5rem;
     border-left: 1px solid var(--rail);
   }
-  /* A measured composer. A 16px sans in a 1500px box is a 190-character line; this is the
-   * 80-character ceiling, and the form is what owns it so the button matches the field. */
-  .playgrid .form {
-    max-width: 46rem;
-  }
+  /* The composer takes the full width of the target card above it, so the two read as one
+   * block: the thing to reproduce and the prompt written against it, edge to edge. */
   .area {
     /* A phone field is 32 characters wide and a monitor's is eight words. This is the one
      * control that genuinely wants to be larger, not just wider. */

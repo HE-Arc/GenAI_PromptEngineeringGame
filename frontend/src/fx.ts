@@ -61,3 +61,33 @@ export function initials(name: string): string {
   const second = parts.length > 1 ? ([...parts[1]][0] ?? '') : ''
   return (first + second).toUpperCase()
 }
+
+// Puts text on the clipboard, on every origin the game is played from. The documented deployment
+// is plain http on a LAN address, which is not a secure context, so `navigator.clipboard` is
+// undefined there and `execCommand('copy')` — deprecated, but still present — is the only copy
+// that works. Throws when neither does, so the caller can say so instead of claiming success.
+export async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  // Laid out (a hidden textarea cannot be selected) but invisible, and pinned mid-viewport so iOS
+  // does not scroll the page to it.
+  ta.style.cssText = 'position:fixed;top:50%;left:50%;width:1px;height:1px;padding:0;border:0;opacity:0;'
+  // Selecting takes the focus; hand it back so a keyboard player stays on the control they pressed.
+  const back = document.activeElement as HTMLElement | null
+  document.body.appendChild(ta)
+  let ok = false
+  try {
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    ok = document.execCommand('copy')
+  } finally {
+    ta.remove()
+    back?.focus()
+  }
+  if (!ok) throw new Error('copy refused')
+}

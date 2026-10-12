@@ -1,7 +1,8 @@
 import { useId, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { countdown, fr, noun, nounOf } from './format'
-import { buzz, hueOf, initials, useWindowLength } from './fx'
+import { buzz, copyText, hueOf, initials, useWindowLength } from './fx'
+import { TargetText } from './ModelOutput'
 import { useQuizWindow, type ServerWindow } from './serverClock'
 import { linkWord, type Link } from './useRoom'
 import { SCALE_MAX, type Player, type ReadyState } from './api'
@@ -62,10 +63,22 @@ export function ConsoleBar({
 }) {
   return (
     <header className="railbar">
-      <span className="railbar__mark">
+      {/* The logo goes home, as a logo does. A real link for the address and the context menu,
+          but routed in place: App listens to `popstate`, so pushing the path and announcing it is
+          a screen change with no reload, exactly like « Quitter la partie ». */}
+      <a
+        className="railbar__mark"
+        href="/"
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+          e.preventDefault()
+          history.pushState(null, '', '/')
+          dispatchEvent(new PopStateEvent('popstate'))
+        }}
+      >
         <span className="railbar__spark" aria-hidden="true">✦</span>
         Jeu GenAi
-      </span>
+      </a>
       {meta && <span className="railbar__meta">{meta}</span>}
       {link && <StatusLamp link={link} onRetry={onRetry} />}
     </header>
@@ -375,22 +388,55 @@ export function Readout({
     // `.readout[data-size=…] .readout__value` and win on specificity rather than on
     // whichever order the stylesheet happens to be in.
     <div className="readout" data-size={size}>
-      <span className="readout__label">{label}</span>
       {code ? (
-        // One tile per character, like letters on a game board. The full code stays readable as
-        // one word for a screen reader through the label on the paragraph.
-        <p className="readout__value readout__value--code" aria-label={value}>
-          {[...value].map((ch, i) => (
-            <span className="codechar" key={i} aria-hidden="true" style={{ '--i': i } as CSSProperties}>
-              {ch}
-            </span>
-          ))}
-        </p>
+        <CodeTiles label={label} value={value} />
       ) : (
-        <p className="readout__value">{value}</p>
+        <>
+          <span className="readout__label">{label}</span>
+          {/* Markdown, so an exercise's lists, emphasis and formulas render as they were written. */}
+          <TargetText className="readout__value" text={value} />
+        </>
       )}
       {image && <img className="readout__image" src={image} alt="Image de l’exercice" />}
     </div>
+  )
+}
+
+// The room code as letter tiles, and the tiles are a copy button. Selecting the tiles by hand used
+// to copy one letter per line — four boxes are four blocks to the clipboard — so a tap now copies
+// the four letters as one word, and the label says it worked.
+function CodeTiles({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState<'no' | 'yes' | 'failed'>('no')
+  async function copy() {
+    buzz()
+    try {
+      await copyText(value)
+      setCopied('yes')
+    } catch {
+      setCopied('failed')
+    }
+    setTimeout(() => setCopied('no'), 1800)
+  }
+  return (
+    <>
+      <span className={`readout__label${copied === 'yes' ? ' readout__label--ok' : ''}`} aria-live="polite">
+        {copied === 'yes' ? '✓ Code copié' : copied === 'failed' ? 'Copie impossible' : label}
+      </span>
+      <button
+        type="button"
+        className="readout__value readout__value--code readout__copy"
+        onClick={() => void copy()}
+        aria-label={`Copier le code ${value}`}
+        title="Copier le code"
+      >
+        {[...value].map((ch, i) => (
+          <span className="codechar" key={i} aria-hidden="true" style={{ '--i': i } as CSSProperties}>
+            {ch}
+          </span>
+        ))}
+      </button>
+      <span className="readout__hint" aria-hidden="true">Touche le code pour le copier</span>
+    </>
   )
 }
 

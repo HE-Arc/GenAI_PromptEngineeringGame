@@ -18,6 +18,8 @@
 }
 .railbar__mark {
   display: inline-flex;
+  text-decoration: none;
+  border-radius: 6px;
   align-items: center;
   gap: 0.35rem;
   font: 900 1.25rem/1 var(--font-display);
@@ -171,6 +173,69 @@
 .readout:has(.readout__value--code) {
   text-align: center;
 }
+/* The tiles are one button: no chrome of its own, the tiles are the face. */
+.readout__copy {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.readout__copy:active .codechar {
+  transform: translateY(3px);
+  box-shadow: inset 0 3px 0 var(--edge-warm), 0 2px 0 var(--signal-deep);
+}
+.readout__label--ok {
+  background: var(--good-wash);
+  color: var(--good);
+}
+.readout__hint {
+  display: block;
+  margin-top: 0.4rem;
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* ---- markdown inside a target ----------------------------------------------------------
+ * The target card sets the face and the size; this only spaces the blocks. Em-based, so the
+ * rhythm follows whichever tier the card is in. */
+.mdt > :first-child { margin-top: 0; }
+.mdt > :last-child { margin-bottom: 0; }
+.mdt p { margin: 0 0 0.65em; }
+.mdt ul,
+.mdt ol { margin: 0 0 0.65em; padding-left: 1.35em; }
+.mdt li { margin: 0.2em 0; }
+.mdt li::marker { color: var(--signal); }
+.mdt h1, .mdt h2, .mdt h3, .mdt h4 { margin: 0.4em 0 0.3em; font-size: 1.15em; line-height: 1.15; }
+.mdt strong { color: var(--signal-lit); }
+.mdt code { font-family: ui-monospace, monospace; font-size: 0.85em; }
+.mdt pre {
+  margin: 0 0 0.65em;
+  padding: 0.6em 0.75em;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  font-size: 0.85em;
+}
+.mdt table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 0.65em; }
+.mdt th, .mdt td { border: 1px solid var(--rail-lit); padding: 0.25em 0.5em; text-align: left; }
+.mdt a { color: var(--cool-lit); }
+/* Formulas. KaTeX sets its own face; it is held in the text's colour, slightly smaller than a
+ * display-tier paragraph so a sum does not tower over the line, and a display formula wider than
+ * a phone scrolls inside the card instead of widening the page. */
+.mdt .katex { font-size: 1.05em; }
+.readout[data-size='text'] .mdt .katex { font-size: 0.95em; }
+.mdt .katex-display,
+.md .katex-display {
+  margin: 0.4em 0 0.75em;
+  padding: 0.35em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 
 .readout[data-size='phrase'] .readout__value {
   font-size: clamp(1.6rem, 7vw, 2.1rem);
@@ -184,10 +249,9 @@
   font-size: 1.25rem;
   line-height: 1.3;
   letter-spacing: 0.01em;
-  max-width: 34rem;
+  max-width: 44rem;
   text-shadow: none;
   text-wrap: pretty;
-  white-space: pre-wrap;
 }
 
 @media (min-width: 64rem) {
@@ -803,7 +867,6 @@
   font-size: 0.9375rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 .readout__image,
 .ratehead__image {

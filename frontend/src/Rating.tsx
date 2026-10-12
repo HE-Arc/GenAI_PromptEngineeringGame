@@ -3,6 +3,7 @@ import { AnswerMeter, ConsoleBar, PhaseClock, ReadyBar, RoundTrack, ScoreScale }
 import { ApiError, describe, getName, getToken, post, postReady, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
 import { buzz } from './fx'
+import { TargetText } from './ModelOutput'
 
 /* The cross-rating screen. The most constrained surface in the console, and the constraints are
  * the feature: a prompt, the target it was written against, and one number to give. */
@@ -162,7 +163,7 @@ export default function Rating({
             what was asked, and the panel is the console's own way of drawing a fixed fact. */}
         <div className="ratehead">
           <p className="label">La cible du tour</p>
-          <p className="ratehead__target">{state.target ?? '—'}</p>
+          <TargetText className="ratehead__target" text={state.target ?? '—'} />
           {state.target_image && (
             <img className="ratehead__image" src={state.target_image} alt="Image de l’exercice" />
           )}

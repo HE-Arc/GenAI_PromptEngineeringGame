@@ -181,3 +181,23 @@ async fn ws_hello_returns_snapshot_and_bad_token_closes() {
         other => panic!("expected close 4403, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn ws_unknown_room_upgrades_then_refuses_in_band() {
+    // A 404 on the handshake is invisible to a browser WebSocket, which then retries for ever;
+    // the refusal has to arrive as a frame the client can act on.
+    let (base, _pool) = spawn_app().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("{base}/api/rooms/ZZZZ/ws?token=x"))
+        .await
+        .expect("unknown room must still upgrade");
+    let err = recv_json(&mut ws).await;
+    assert!(
+        matches!(&err, WsOut::Error { code, .. } if code == "unknown_room"),
+        "unknown room must yield unknown_room error, got {err:?}"
+    );
+    let close = ws.next().await.expect("close frame").expect("no ws error");
+    match close {
+        Message::Close(Some(frame)) => assert_eq!(u16::from(frame.code), 4404),
+        other => panic!("expected close 4404, got {other:?}"),
+    }
+}

@@ -6,7 +6,7 @@
  },
  {
   "category": "maths_fourier",
-  "text": "Faites un prompt afin de vous aider pour cet exercice de math.\n\nProblème\nOn considère la fonction périodique f(x) définie sur [−π, π] par :\nf(x) = x\net prolongée périodiquement avec une période 2π.\n\n1. Montrer que sa série de Fourier ne contient que des termes en sinus.\n2. Déterminer les coefficients bₙ.\n3. En déduire que :\n   x = 2 \\sum_{n=1}^{\\infty} (-1)^{n+1} \\, \\frac{\\sin(nx)}{n}\n4. Utiliser cette série pour obtenir une approximation de π.\n\nNotions utilisées : intégrales, fonctions périodiques, coefficients de Fourier et séries infinies.",
+  "text": "Faites un prompt afin de vous aider pour cet exercice de math.\n\nProblème\nOn considère la fonction périodique f(x) définie sur $[-\\pi, \\pi]$ par :\n\n$$\nf(x) = x\n$$\n\net prolongée périodiquement avec une période $2\\pi$.\n\n1. Montrer que sa série de Fourier ne contient que des termes en sinus.\n2. Déterminer les coefficients $b_n$.\n3. En déduire que :\n\n   $$\n   x = 2 \\sum_{n=1}^{\\infty} (-1)^{n+1} \\, \\frac{\\sin(nx)}{n}\n   $$\n\n4. Utiliser cette série pour obtenir une approximation de $\\pi$.\n\nNotions utilisées : intégrales, fonctions périodiques, coefficients de Fourier et séries infinies.",
   "image": null
  },
  {
