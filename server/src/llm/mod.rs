@@ -32,13 +32,16 @@ pub trait LlmSource: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
 }
 
-// OPENAI_API_KEY set => billed streaming client, else the deterministic stub.
-// Tests never set the key, so they always exercise the stub path.
+// A key from either contract (plain OPENAI_API_KEY or the endpoint pair
+// LLM_BASE_URL + LLM_API_KEY) enables the billed streaming client; otherwise
+// the deterministic stub. Tests never set a key, so they always hit the stub.
 pub fn from_env() -> Arc<dyn LlmSource> {
-    match std::env::var("OPENAI_API_KEY")
-        .map(|k| !k.trim().is_empty())
-        .unwrap_or(false)
-    {
+    let has_key = |name: &str| {
+        std::env::var(name)
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false)
+    };
+    match has_key("OPENAI_API_KEY") || has_key("LLM_API_KEY") {
         true => Arc::new(openai::OpenAiSource::from_env()),
         false => Arc::new(StubSource),
     }
