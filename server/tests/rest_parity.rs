@@ -123,7 +123,7 @@ async fn write_invalidates_snapshot_seq() {
     res.assert_status_ok();
     let (seq, snap) = hub.cached().await;
     assert_eq!(seq, s0 + 1);
-    assert!(snap["players"].as_array().unwrap().iter().any(|p| p == "ana"));
+    assert!(snap["players"].as_array().unwrap().iter().any(|p| p["name"] == "ana"));
 }
 
 #[tokio::test]

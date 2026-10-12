@@ -107,12 +107,12 @@ mod tests {
     #[tokio::test]
     async fn subscriber_gets_cached_snapshot_without_db_hit() {
         let hub = RoomHub::new();
-        hub.publish_snapshot(1, json!({"players": ["ana"]})).await;
+        hub.publish_snapshot(1, json!({"players": [{"name": "ana", "online": true}]})).await;
         let (seq, snap) = hub.cached().await;
-        assert_eq!((seq, snap["players"][0].clone()), (1, json!("ana")));
+        assert_eq!((seq, snap["players"][0]["name"].clone()), (1, json!("ana")));
         // Second subscriber clones the cache; no DB call exists on this path by construction.
         let (seq2, snap2) = hub.cached().await;
-        assert_eq!((seq2, snap2["players"][0].clone()), (1, json!("ana")));
+        assert_eq!((seq2, snap2["players"][0]["name"].clone()), (1, json!("ana")));
     }
 
     #[tokio::test]
