@@ -144,10 +144,16 @@ impl super::LlmSource for OpenAiSource {
         prompt: String,
         tx: mpsc::UnboundedSender<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        // Reasoning effort low: muse-spark defaults to high-effort thinking
+        // that delays the first visible chunk and burns the whole budget in
+        // reasoning tokens — a classroom wants speed, not a wall of thought.
+        // Caps mirror the Django-era limits (PLAY 1600).
         let body = serde_json::json!({
             "model": self.play_model,
             "input": prompt,
             "stream": true,
+            "max_output_tokens": 1600,
+            "reasoning": { "effort": "low" },
         });
         let config = self.client.config();
         Box::pin(async move {
@@ -231,9 +237,12 @@ impl super::LlmSource for OpenAiSource {
         target: &str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
         let grading = format!("prompt: {prompt}\nreponse_obtenue: {output}\ncible: {target}");
+        // Same reasoning/cap discipline as the play call (JUDGE 1200).
         let body = serde_json::json!({
             "model": self.judge_model,
             "input": grading,
+            "max_output_tokens": 1200,
+            "reasoning": { "effort": "low" },
         });
         let config = self.client.config();
         Box::pin(async move {
