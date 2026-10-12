@@ -43,9 +43,13 @@ impl RoomHub {
     }
 
     // Single snapshot build per mutation; subscribers clone the cache.
+    // The socket forwarder listens on `events` only, so the snapshot must be
+    // fanned there too — otherwise phase changes never reach a live client
+    // and players only see them after a reload.
     pub async fn publish_snapshot(&self, seq: u64, state: Value) {
         *self.snapshot.write().await = (seq, state.clone());
-        let _ = self.tx.send((seq, state));
+        let _ = self.tx.send((seq, state.clone()));
+        let _ = self.events.send(WsOut::Snapshot { seq, state });
     }
 
     // Next seq derived from the cache so concurrent writers cannot go backwards.
