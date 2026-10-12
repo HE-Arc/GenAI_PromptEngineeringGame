@@ -33,6 +33,9 @@ const CLOSE_UNKNOWN_ROOM: u16 = 4404;
 const MAX_PROMPT_CHARS: usize = 500;
 // Player-facing, so French: shown to the author and as the room notice.
 const CRASH_NOTICE: &str = "La partie a planté côté serveur. Préviens l'animateur.";
+// Stored and shown in place of a silent answer: a blank output box reads as
+// a display bug, and the judge would score "" without saying why.
+const EMPTY_ANSWER_NOTICE: &str = "(le modèle n'a rien répondu)";
 // Protocol-level pings are answered by the browser's network stack, not by
 // page JS, so a backgrounded tab with throttled timers still answers them.
 // That makes them the right probe for "is this player still reachable".
@@ -235,9 +238,18 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
         let streamed = stream_done
             .await
             .unwrap_or_else(|e| Err(format!("play task panicked: {e}")));
-        let full = full.trim().to_string();
+        let mut full = full.trim().to_string();
         let outcome = match streamed {
             Ok(truncated) => {
+                // A reasoning model can finish "completed" with only hidden
+                // reasoning when the prompt asks for nothing it can do.
+                if full.is_empty() {
+                    full = EMPTY_ANSWER_NOTICE.into();
+                    job.hub.publish_event(WsOut::AnswerChunk {
+                        player: player.clone(),
+                        delta: full.clone(),
+                    });
+                }
                 job.hub.publish_event(WsOut::AnswerScoring {
                     player: player.clone(),
                 });

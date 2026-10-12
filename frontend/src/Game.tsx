@@ -262,27 +262,37 @@ export default function Game({
   // screen's — every phone in the room sees every chunk, but only the author waits on one.
   // A refusal is always this screen's own: the server answers it on the sender's connection,
   // never on the broadcast, so it needs no player check.
+  //
+  // Every frame past the cursor is replayed, not just the newest: several frames can land
+  // between two renders, and skipping any of them cut words out of the answer on screen.
   const answerSeq = answer?.seq ?? 0
-  const answerEvent = answer?.event ?? null
+  const seenRef = useRef(answerSeq)
   useEffect(() => {
+    if (!answer) return
+    const first = answer.seq - answer.events.length
+    const fresh = answer.events.slice(Math.max(0, seenRef.current - first))
+    seenRef.current = answer.seq
+    for (const ev of fresh) {
+      const w = waiterRef.current
+      if (!w) return
+      if (ev.kind === 'error') {
+        waiterRef.current = null
+        w.reject(wsRefusal(ev.code, ev.message))
+        return
+      }
+      if (ev.player !== w.player) continue
+      if (ev.kind === 'chunk') {
+        w.text += ev.delta
+      } else if (ev.kind === 'scoring') {
+        w.scoring = true
+      } else if (ev.kind === 'done') {
+        waiterRef.current = null
+        w.resolve({ score: ev.score, comment: ev.feedback, text: w.text, truncated: ev.truncated })
+        return
+      }
+    }
     const w = waiterRef.current
-    if (!w || !answerEvent) return
-    if (answerEvent.kind === 'error') {
-      waiterRef.current = null
-      w.reject(wsRefusal(answerEvent.code, answerEvent.message))
-      return
-    }
-    if (answerEvent.player !== w.player) return
-    if (answerEvent.kind === 'chunk') {
-      w.text += answerEvent.delta
-      setLive({ text: w.text, scoring: w.scoring })
-    } else if (answerEvent.kind === 'scoring') {
-      w.scoring = true
-      setLive({ text: w.text, scoring: true })
-    } else if (answerEvent.kind === 'done') {
-      waiterRef.current = null
-      w.resolve({ score: answerEvent.score, comment: answerEvent.feedback, text: w.text, truncated: answerEvent.truncated })
-    }
+    if (w) setLive({ text: w.text, scoring: w.scoring })
     // `answer` carries its own seq; depending on the object would miss repeat frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [answerSeq])

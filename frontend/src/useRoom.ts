@@ -38,13 +38,19 @@ const WATCH_EVERY_MS = 4_000
 // which is nothing.
 const SILENCE_IS_DEATH_MS = 60_000
 
-// The answer stream, as the room broadcasts it. One event per frame plus a sequence
-// number, because two chunks for the same player carry identical shapes and a screen
-// awaiting a verdict must wake once per frame rather than once per distinct value.
+// The answer stream, as the room broadcasts it: a log, not a slot. React batches the
+// setState calls of frames that land between two renders, so a single `event` field kept
+// only the last of a burst and the reader lost chunks at the start of a stream and just
+// before its `done`. `seq` counts every frame ever appended; `events` holds the most
+// recent ones, the first of which is frame number `seq - events.length`. A reader keeps
+// its own cursor and replays every frame past it.
 export interface AnswerFeed {
-  event: AnswerEvent
+  events: AnswerEvent[]
   seq: number
 }
+
+// Far beyond any burst between two renders; only bounds a long game's memory.
+const FEED_KEEP = 1000
 
 export function useRoom(code: string | null, token?: string | null) {
   // The snapshot carries the code it was fetched for, so a route change to another room
@@ -112,7 +118,7 @@ export function useRoom(code: string | null, token?: string | null) {
           setWsUp(false)
           return
         }
-        setFeed((f) => ({ event, seq: (f?.seq ?? 0) + 1 }))
+        setFeed((f) => ({ events: [...(f?.events ?? []), event].slice(-FEED_KEEP), seq: (f?.seq ?? 0) + 1 }))
       },
       onOpen: () => {
         lastBeat = Date.now()
