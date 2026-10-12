@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use axum::http::HeaderMap;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -8,9 +10,20 @@ pub const COOKIE_NAME: &str = "genai_admin";
 // password, not an identity. Stealing it equals stealing Django's cookie.
 const SIGNED_BODY: &[u8] = b"genai-admin-v1";
 
-fn secret() -> String {
-    // Never logged: a secret in a log is a password in a log.
-    std::env::var("ADMIN_SECRET").unwrap_or_else(|_| "dev-only-insecure".into())
+fn secret() -> &'static str {
+    // Ephemeral per-process key, generated once on first use: a restart
+    // signs every admin out, which is what a classroom session wants, and
+    // nothing to misconfigure or leak beats a committed default. ADMIN_SECRET
+    // remains as an explicit override for multi-process deployments, where
+    // every replica must share one key.
+    static SECRET: OnceLock<String> = OnceLock::new();
+    SECRET.get_or_init(|| {
+        std::env::var("ADMIN_SECRET").unwrap_or_else(|_| {
+            let mut buf = [0u8; 32];
+            getrandom::fill(&mut buf).expect("OS RNG unavailable");
+            hex(&buf)
+        })
+    })
 }
 
 fn hex(bytes: &[u8]) -> String {
