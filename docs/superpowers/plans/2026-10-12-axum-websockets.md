@@ -24,7 +24,7 @@ Phase 4: Django removed.
 
 ## Tech Stack
 
-- Rust 1.80+, Axum 0.7, Tokio full, tokio-tungstenite via `axum::extract::WebSocketUpgrade`, `tokio::sync::broadcast` (capacity 256) + `RwLock<HashMap<RoomCode, RoomHub>>`.
+- Rust 1.89+, Axum 0.7, Tokio full, tokio-tungstenite via `axum::extract::WebSocketUpgrade`, `tokio::sync::broadcast` (capacity 256) + `RwLock<HashMap<RoomCode, RoomHub>>`.
 - sqlx 0.8 with `sqlite` + `postgres` features, `sqlx::migrate!()` from `server/migrations/`. SQLite with `journal_mode=WAL; synchronous=NORMAL; busy_timeout=5000`.
 - `async-openai` 0.26 for OpenAI streaming; `OPENAI_API_KEY` absent => deterministic stub (6 words per chunk, mirrors `llm.py` stub).
 - Frontend: native `WebSocket` in `frontend/src/ws.ts` (new), `useRoom.ts` migrated, `api.ts` `streamAnswer` kept as fallback until Phase 3 answer cut.
