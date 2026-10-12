@@ -3,7 +3,9 @@ use server::router::{build_router, AppState};
 
 #[tokio::main]
 async fn main() {
-    let port = std::env::args()
+    // Local runs read server/.env like compose's env_file does; already-set
+    // vars win, so a real environment can always override the file.
+    let _ = dotenvy::dotenv();    let port = std::env::args()
         .nth(2)
         .filter(|_| std::env::args().nth(1).as_deref() == Some("--port"))
         .and_then(|p| p.parse::<u16>().ok())

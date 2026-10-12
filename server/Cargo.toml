@@ -15,6 +15,8 @@ tower = { version = "0.5", features = ["util"] }
 hmac = "0.13.0"
 sha2 = "0.11.0"
 getrandom = "0.4"
+reqwest = "0.12"
+dotenvy = "0.15"
 
 [dev-dependencies]
 axum-test = "=16"
