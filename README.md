@@ -5,7 +5,7 @@ Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/G
 ## Lancer avec Docker
 
 ```bash
-cp server/.env.example server/.env   # remplir OPENAI_API_KEY, ADMIN_PASSWORD et ADMIN_SECRET
+cp server/.env.example server/.env   # remplir LLM_API_KEY (passerelle OpenCode Go) et ADMIN_PASSWORD
 docker compose up --build
 ```
 
