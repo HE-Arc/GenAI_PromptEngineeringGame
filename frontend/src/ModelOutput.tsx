@@ -60,12 +60,35 @@ export default function ModelOutput({ text, streaming = false }: { text: string;
 // (it sits inside the target card, which already is one), and a single newline is a line break.
 // Exercises are written as plain text — an email's signature, a problem's numbered lines — and
 // standard markdown would fold those lines into one paragraph.
+//
+// Targets carry a generic instruction first ("Faites un prompt pour…") then the specific
+// exercise after a blank line. The lead is split out so it can wear the accent while the body
+// stays body text. Single-paragraph targets (short answers, QCM prompts) render untouched.
 export function TargetText({ text, className }: { text: string; className?: string }) {
+  const cut = text.search(/\n\s*\n/)
+  if (cut < 0) {
+    return (
+      <div className={`mdt${className ? ` ${className}` : ''}`}>
+        <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
+          {text}
+        </Markdown>
+      </div>
+    )
+  }
+  const lead = text.slice(0, cut)
+  const rest = text.slice(cut).trim()
   return (
     <div className={`mdt${className ? ` ${className}` : ''}`}>
-      <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
-        {text}
-      </Markdown>
+      <div className="mdt__lead">
+        <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
+          {lead}
+        </Markdown>
+      </div>
+      <div className="mdt__body">
+        <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
+          {rest}
+        </Markdown>
+      </div>
     </div>
   )
 }

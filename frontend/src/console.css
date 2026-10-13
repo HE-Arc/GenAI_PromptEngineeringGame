@@ -212,6 +212,22 @@
 .mdt li::marker { color: var(--signal); }
 .mdt h1, .mdt h2, .mdt h3, .mdt h4 { margin: 0.4em 0 0.3em; font-size: 1.15em; line-height: 1.15; }
 .mdt strong { color: var(--signal-lit); }
+/* The generic instruction heading a target ("Faites un prompt pour…"): the theme accent,
+// semibold, separated from the exercise body by space and a faint rule. The body keeps the
+// card's own colour, so the two never compete. Only paints when TargetText split a lead out,
+// single-paragraph targets are untouched. */
+.mdt__lead {
+  margin: 0 0 0.7em;
+  padding-bottom: 0.65em;
+  border-bottom: 1px solid var(--rail);
+  color: var(--signal-lit);
+  font-weight: 600;
+}
+.mdt__lead > :first-child { margin-top: 0; }
+.mdt__lead > :last-child { margin-bottom: 0; }
+.mdt__lead p { margin: 0; }
+.mdt__body > :first-child { margin-top: 0; }
+.mdt__body > :last-child { margin-bottom: 0; }
 .mdt code { font-family: ui-monospace, monospace; font-size: 0.85em; }
 .mdt pre {
   margin: 0 0 0.65em;
@@ -252,6 +268,11 @@
   max-width: 44rem;
   text-shadow: none;
   text-wrap: pretty;
+}
+/* Holds the accent inside a white paragraph card: same specificity as the rule above,
+// later in the file, so the instruction stays gold while the exercise stays white. */
+.readout[data-size='text'] .mdt__lead {
+  color: var(--signal-lit);
 }
 
 @media (min-width: 64rem) {
