@@ -10,8 +10,19 @@
 // No raw HTML is rendered: `react-markdown` escapes what comes from the source, so a player
 // whose prompt asks for `<img onerror>` gets the text of the tag, not a tag. That is the whole
 // reason for this library rather than an innerHTML assignment over a plain `<div>`.
-import Markdown, { type Components } from 'react-markdown'
+import Markdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import remarkBreaks from 'remark-breaks'
+import rehypeKatex from 'rehype-katex'
+// KaTeX's stylesheet, and through it its fonts: Vite bundles both from node_modules, so the
+// formulas render on a LAN with no internet, like the rest of the game's fonts.
+import 'katex/dist/katex.min.css'
+
+// `$…$` and `$$…$$` become typeset formulas. KaTeX escapes what it renders and is not given
+// `trust`, so a `\href{javascript:…}` in a model's answer stays inert. `throwOnError: false`
+// prints a malformed formula as red source rather than blanking the whole answer.
+const REHYPE: Options['rehypePlugins'] = [[rehypeKatex, { throwOnError: false, strict: false }]]
 
 // Every component receives a `node` prop carrying the hast element. It MUST be stripped before
 // spreading onto a DOM node, or React warns once per element per render. This is the only reason
@@ -38,7 +49,23 @@ export default function ModelOutput({ text, streaming = false }: { text: string;
           the model for `<img onerror>` should SEE the tag it emitted. Dropping it would hide the
           very thing worth reading. `urlTransform` is left at its default, which strips
           `javascript:` URLs — do not override it. */}
-      <Markdown remarkPlugins={[remarkGfm]} components={BLOCKS}>{text}</Markdown>
+      <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={REHYPE} components={BLOCKS}>
+        {text}
+      </Markdown>
+    </div>
+  )
+}
+
+// A target or a question, as markdown. Two differences from a model's answer: no frame of its own
+// (it sits inside the target card, which already is one), and a single newline is a line break.
+// Exercises are written as plain text — an email's signature, a problem's numbered lines — and
+// standard markdown would fold those lines into one paragraph.
+export function TargetText({ text, className }: { text: string; className?: string }) {
+  return (
+    <div className={`mdt${className ? ` ${className}` : ''}`}>
+      <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
+        {text}
+      </Markdown>
     </div>
   )
 }

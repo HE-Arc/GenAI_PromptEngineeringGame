@@ -1,4 +1,4 @@
-/* Jeu GenAi — the console.
+/* Jeu GenAi — the game skin.
  *
  * Three layers, imported in this order by main.tsx: tokens + reset + controls here, the
  * instrument components in console.css, per-screen layout in pages.css. Every colour, font
@@ -69,149 +69,83 @@
     U+2C60-2C7F, U+A720-A7FF;
 }
 
+
+/* ---- tokens ------------------------------------------------------------------------------
+ * A game-show night palette: deep violet stage, one gold "press me / yours" accent, a cyan for
+ * other people, and saturated right/wrong colours. Every colour lives here; component sheets
+ * only reference tokens. Text tokens are held at AA (4.5:1) on --panel, the lightest surface. */
 :root {
   color-scheme: dark;
 
-  /* The field. Hue 214, held a step bluer and a step lighter than a tinted black, because
-   * this is painted steel in a dark room, not an OLED-off page. */
-  --deck: #131a25;
-  --panel: #1a2330;
-  --well: #101722;
-  --rail: #2a3746;
-  --rail-lit: #3d4d61;
-  /* The edge of something that means something: the outline of a control the player has to
-   * hit, or of a slot they read a value out of — an unfilled track tick, meter segment, score
-   * tick or leaderboard bar. --rail is a divider, and a divider only has to be visible enough
-   * to separate; this one is the boundary of an interactive or informative element, so it owes
-   * the 3:1 of WCAG 1.4.11.
-   *
-   * It has to clear that against three adjacent surfaces, not one, and that is the whole
-   * reason the value is where it is: the segments sit on --well, a plain button sits on its
-   * own --panel, and a ghost button sits on --deck. #5a6c82 cleared the first and the third
-   * (3.34:1, 3.25:1) and missed --panel at 2.94, which would have been a control that looked
-   * fixed and still failed. #5f7187 clears all three: 3.60:1 on --well, 3.49:1 on --deck,
-   * 3.16:1 on --panel. One token rather than two, because it is one idea; the three surfaces
-   * are an accident of the layout, not a second meaning. */
-  --track-edge: #5f7187;
+  --stage-1: #12082f;
+  --stage-2: #2a0f63;
+  --stage-3: #0c2a5c;
+  --deck: transparent;
+  --panel: #2b1b66;
+  --panel-2: #36227d;
+  --panel-hi: #452e98;
+  --well: #1a0e47;
+  --rail: rgba(255, 255, 255, 0.12);
+  --rail-lit: rgba(255, 255, 255, 0.24);
+  /* Edge of a control: 3:1 against the panels it sits on (WCAG 1.4.11). */
+  --track-edge: rgba(255, 255, 255, 0.42);
 
-  --ink: #dfe7f0;
-  --ink-dim: #7e8fa4;
-  /* Fainter again, for text sitting inside a control. A placeholder has to lose to the
-   * value the player typed, and it still has to be legible to find the field at all.
-   *
-   * The separation that matters is against --ink, not against --ink-dim: the placeholder and
-   * the typed value are the only two things ever on screen in the same box. 2.81:1 against
-   * --ink, and 5.13:1 / 4.98:1 / 4.51:1 against the three surfaces a text ink can land on
-   * (--well, --deck, --panel), which is AA for the 16px this renders at everywhere and not
-   * just where it is used today. A real value is --ink at 14.41:1 on --well, so the typed
-   * value still carries 2.8x the contrast the placeholder does: the ordering survives the
-   * move, which is the only thing the ordering had to survive.
-   *
-   * It used to be #5a6a7d, at 3.25:1 on --well. A decorative use does not need this token —
-   * the rules and lamp rings that could have used it keep --rail, and the borders that
-   * carry meaning use --track-edge below — so it carries text only and can be held to the
-   * text threshold outright.
-   *
-   * It was then #748699, which cleared --well (4.807) and --deck (4.669) and missed --panel at
-   * 4.230. That surface had no consumer, which is exactly why it is worth fixing rather than
-   * documenting: the next person to put a field on --panel inherits a fail nobody would
-   * notice until it shipped. Moving it down rather than qualifying it costs 4% of its
-   * separation from --ink (2.998 to 2.811) and nothing anywhere else — every surface it lands
-   * on gains, --well and --deck included — and it moves it toward --ink-dim (1.132 to 1.061),
-   * which is the one relationship the value above explicitly does not depend on. The hue is
-   * held: it is #748699's own channels scaled by 1.034, so it is the same colour, not a
-   * second one. */
-  --ink-faint: #788b9e;
+  --ink: #ffffff;
+  --ink-dim: #cfc5f7;
+  --ink-faint: #ada1e3;
 
-  /* Sodium. The one live/hot colour: the target, the primary action, a score, and you.
-   * It is the tally lamp on a mixing desk, and the colour of a filament under load. */
-  --signal: #ffa724;
-  --signal-lit: #ffc46b;
-  --signal-ink: #131a25;
-  /* One cool desaturated partner for everything that belongs to other people or to waiting.
-   * Two steps of the same hue, never a second accent: --cool fills a lamp, --cool-lit carries
-   * type large enough to read at arm's length across a noisy room. */
-  --cool: #5f7d96;
-  --cool-lit: #8fafc9;
-  /* A fault lamp. Deliberately outside the accent budget: an error painted in the same
-   * sodium as a score of 7/10 would tell a red-green colourblind player the opposite of
-   * the truth. Used in exactly two places, never as decoration. */
-  --fault: #e5614a;
-  --fault-wash: rgba(229, 97, 74, 0.09);
-  --fault-tint: rgba(229, 97, 74, 0.12);
+  /* Gold: the primary action, the target, your own score — "yours / press me". */
+  --signal: #ffc83d;
+  --signal-lit: #ffd970;
+  --signal-deep: #c48600;
+  --signal-ink: #2b1700;
+  /* Cyan: other people, waiting, information. */
+  --cool: #33bdf0;
+  --cool-lit: #93e3ff;
+  --cool-deep: #137fae;
+  /* Hot pink: urgency and celebration (last seconds of a clock, confetti, headline gradient). */
+  --hot: #ff4fa3;
+  --hot-deep: #c41f72;
+  --fault: #ff6b84;
+  --fault-deep: #c42a4c;
+  --fault-wash: rgba(255, 107, 132, 0.14);
+  --fault-tint: rgba(255, 107, 132, 0.2);
+  --good: #3ee39a;
+  --good-deep: #149c5e;
+  --good-wash: rgba(62, 227, 154, 0.16);
 
-  /* Green: the right answer. The one hue this console had no word for, and the didacticiel's
-   * whole reveal hung on borrowing sodium for it — an answer lit in the same colour as a score
-   * of 7/10, on the argument that a reader who cannot separate the hues can read the word beside
-   * it. That is a real argument, but it is an argument for a SECOND colour, not against one:
-   * the QCM already carries a red for "not this one", and painting both of its outcomes in one
-   * hue is what forced the word to do all the work.
-   *
-   * Hue 144 — a green pulled toward blue, not toward yellow. That is the whole decision, and it
-   * was made against two neighbours rather than on contrast alone:
-   *
-   *   --signal at hue 36 is the accent. Under deuteranopia a yellow-green collapses onto it: the
-   *   lime #a3e635 sits 60 away from sodium once simulated, where this console's OWN
-   *   sodium/fault pair sits 74. So lime was rejected on the metric the palette already
-   *   established, before its pleasantness counted for anything. At 144 this green is 138 from
-   *   sodium under the same simulation — nearly twice the separation the palette's existing
-   *   right/wrong pair manages, which is the bar that mattered, since the two colours are
-   *   neighbours on the same screen at the same moment.
-   *
-   *   --cool-lit is the "other people, or waiting" lamp. A green pushed much past 150 starts
-   *   reading as a brighter --cool, and 164 (#2dd4a7) was rejected for exactly that: 110 away
-   *   from --cool against 67 here, on a hue that is a member of the same family. Cool and good
-   *   are never adjacent — one is a roster lamp, the other is a verdict — so the closer pair was
-   *   the right trade, and the further one would have spent a second meaning on a hue that
-   *   already has one.
-   *
-   * Contrast, measured on all three surfaces a coloured element in this console lands on:
-   * 9.15:1 on --panel, 10.10:1 on --deck, 10.40:1 on --well. That clears 1.4.11's 3:1 for the
-   * border and rule it is mostly drawn as, clears AA at every size it is ever set at, and comes
-   * out slightly AHEAD of --signal's own 8.14:1 on --panel — the thing it replaces was the
-   * brighter of the two. That ordering is deliberate: the reveal has to survive a phone in a
-   * bright classroom, and a success colour that is merely legible in a dark room is not one.
-   *
-   * --good-wash is the same kind of fill as --fault-wash, at --fault-tint's 12%: --good on it is
-   * 7.39:1 over --panel and --ink on it is 10.24:1, so the wash costs the text nothing.
-   *
-   * And it is never a fill behind --ink (1.39:1 between the two): a solid block of this green
-   * with body text on it would be a paragraph nobody can read, so the reveal uses the wash and
-   * a rule, like every other state in this palette. */
-  --good: #74d99c;
-  --good-wash: rgba(116, 217, 156, 0.12);
+  /* Quiz-show answer tiles. Dark enough for white bold text at 17px. */
+  --k0: #e0294a;
+  --k0-deep: #9c1530;
+  --k1: #1f6fd6;
+  --k1-deep: #12489a;
+  --k2: #b07200;
+  --k2-deep: #774c00;
+  --k3: #23880f;
+  --k3-deep: #155a07;
 
-  /* Light catching an edge. A one-pixel inset, never a blurred drop shadow. Each tint is the
-   * specular of the surface it sits on: cool on a cool lamp, warm on a sodium one, and a
-   * plain darkening where a surface is sunk rather than lit. */
-  --bevel: rgba(206, 226, 255, 0.07);
-  --edge-cool: rgba(214, 234, 255, 0.2);
-  --edge-warm: rgba(255, 236, 200, 0.45);
-  --edge-sunk: rgba(0, 0, 0, 0.4);
-  --edge-dark: rgba(0, 0, 0, 0.5);
-  --glow: rgba(255, 167, 36, 0.24);
-
-  /* The illuminated panel's own light falloff: warm at the top edge, cold at the bottom, the
-   * way a lit face on an unlit box behaves. The only gradient in the console, held here so
-   * the surface and its light can never drift apart. */
-  --readout-face: linear-gradient(180deg, #2b2014 0%, #1a1e28 62%, #151b25 100%);
-  /* Broadcast glass: a three-pixel scanline, not a texture image. Faint, because it darkens
-   * every other row of the glyphs too and the target has to stay readable in a dim room. */
-  --scan: rgba(0, 0, 0, 0.16);
+  --bevel: rgba(255, 255, 255, 0.14);
+  --edge-cool: rgba(147, 227, 255, 0.35);
+  --edge-warm: rgba(255, 236, 200, 0.6);
+  --edge-sunk: rgba(0, 0, 0, 0.35);
+  --edge-dark: rgba(0, 0, 0, 0.45);
+  --glow: rgba(255, 200, 61, 0.35);
+  --shadow: 0 10px 30px -12px rgba(5, 0, 30, 0.8);
 
   --font-display: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
   --font-ui: 'Barlow', system-ui, sans-serif;
 
-  --pad: 1.25rem;
-  --gap: 1.15rem;
-  --radius: 2px;
+  --pad: 1rem;
+  --gap: 1rem;
+  --radius: 16px;
+  --radius-sm: 10px;
 }
 
 html {
-  /* iOS inflates text in landscape unless this is set, and a player holding the phone on
-   * its side to read a long target should not get a different layout from that alone. */
+  /* iOS inflates text in landscape unless told not to. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  background: var(--stage-1);
 }
 
 *,
@@ -222,12 +156,31 @@ html {
 
 body {
   margin: 0;
-  background: var(--well);
+  min-height: 100dvh;
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: 1rem;
   line-height: 1.5;
-  -webkit-text-size-adjust: 100%;
+  /* The stage: two coloured spotlights over violet. Fixed so it does not scroll with content. */
+  background:
+    radial-gradient(60rem 40rem at 110% -10%, rgba(255, 79, 163, 0.28), transparent 60%),
+    radial-gradient(50rem 40rem at -20% 30%, rgba(51, 189, 240, 0.22), transparent 60%),
+    linear-gradient(180deg, var(--stage-2) 0%, var(--stage-1) 55%, var(--stage-3) 100%);
+  background-attachment: fixed;
+  /* No horizontal page scroll on a phone, ever: a sideways wobble under the thumb feels broken. */
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+/* A faint dot grid over the stage, for texture. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1.4px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(180deg, #000, transparent 85%);
 }
 
 h1,
@@ -238,23 +191,38 @@ figure {
   margin: 0;
 }
 
-/* Every box below is a class, never a bare element selector. A `label { padding }` and a
- * `.field { padding }` fighting each other is the classic way a stylesheet rots. */
 .deck {
   width: 100%;
   max-width: 40rem;
   min-height: 100dvh;
   margin-inline: auto;
-  background: var(--deck);
+  /* Safety net: nothing animated inside a screen may widen the page. `clip`, not `hidden`, so
+   * it creates no scroll container and the sticky rail keeps working. */
+  overflow-x: clip;
   display: grid;
   grid-template-rows: auto 1fr;
   align-content: start;
+}
+
+/* A rounded surface: the base of every card on every screen. */
+.card {
+  padding: 1.1rem var(--pad) 1.2rem;
+  border: 1px solid var(--rail);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  box-shadow: inset 0 1px 0 var(--bevel), var(--shadow);
 }
 
 .label {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--ink-dim);
+}
+h2.label {
+  font: 800 1.125rem/1.1 var(--font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
 }
 
 .prose {
@@ -268,18 +236,15 @@ figure {
   font-size: 0.875rem;
   line-height: 1.45;
 }
-/* Calm information about people, not about faults. Used for "these players are not on the
- * stream" and nothing else, so that a sleeping phone never looks like a fault. */
 .prose--cool {
   color: var(--cool-lit);
 }
 
-/* A rendered model output. The same tokens as `.prose` — no colour of its own — and the job
- * is done by the spacing: markdown with no margin between blocks is one unreadable wall. */
+/* A rendered model output. */
 .md {
-  padding: 0.7rem 0.8rem;
+  padding: 0.75rem 0.85rem;
   border: 1px solid var(--rail);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--well);
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -293,7 +258,7 @@ figure {
 .md blockquote {
   margin: 0.6rem 0;
   padding-left: 0.7rem;
-  border-left: 2px solid var(--cool);
+  border-left: 3px solid var(--cool);
   color: var(--ink-dim);
 }
 .md code {
@@ -304,37 +269,28 @@ figure {
   margin: 0.6rem 0;
   padding: 0.6rem 0.7rem;
   overflow-x: auto;
-  background: var(--well);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
 }
-/* `--rail`, the border colour `.slot` and `.tally__more` already draw with: a table is a set of
- * rules, not a second design language, and there is no `--line` token to reach for. */
 .md pre code { font-size: 0.8125rem; }
-.md table { border-collapse: collapse; margin: 0.6rem 0; }
+/* Wide tables scroll inside the card rather than pushing the page sideways. */
+.md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.6rem 0; }
 .md th, .md td { border: 1px solid var(--rail); padding: 0.3rem 0.5rem; text-align: left; }
 .md a { color: var(--cool-lit); }
-/* While generating: the text arrives raw, without tags. Same face as the rendered markdown, so
- * the switch at the end is not a change of size. */
 .md--raw { margin: 0; font-family: inherit; white-space: pre-wrap; }
-/* The raw answer carries `.slot` as well as `.md`, so the frame is drawn once and does not
- * appear when the text stops being raw — a border flashing in at the end of an answer is a
- * flash nobody asked for. The margin under the summary's disclosure is the one `.slot` had. */
 .tally__more .md { margin-bottom: 0.5rem; }
 
-/* A frozen snapshot beats a spinner, but only if it says it is frozen. This is the label for
- * everything the server told us that we may no longer trust. */
+/* Information that may be stale, or a rule of the game: calm cyan, never alarming. */
 .notice {
-  padding: 0.55rem 0.7rem;
-  border-left: 2px solid var(--cool);
-  background: none;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--edge-cool);
+  background: rgba(51, 189, 240, 0.12);
   color: var(--cool-lit);
   font-size: 0.875rem;
   line-height: 1.4;
 }
 
-/* Every number that changes gets tabular figures, so a score ticking up does not shuffle
- * the layout sideways. It deliberately sets no size, colour or line-height: it is a
- * typographic utility that has to sit on top of whatever sized thing it lands in, and a
- * `font` shorthand here would fight the control rules below for the same properties. */
 .num {
   font-family: var(--font-display);
   font-weight: 800;
@@ -342,129 +298,98 @@ figure {
   letter-spacing: 0.01em;
 }
 
-/* 48px, a clear margin over the 44px minimum: this is the only control on the screen a
- * player has to hit while holding the phone in one hand and reading with the other. */
+/* ---- buttons: chunky, with a physical press ----------------------------------------------
+ * 48px floor for one-thumb use. The coloured "depth" under each button is a solid offset
+ * shadow; pressing moves the face down into it, which is the tactile cue a game button gives. */
 .btn {
+  --depth: #160b40;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  min-height: 3rem;
-  padding: 0.7rem 1.1rem;
-  /* The same argument as the input: this is the edge a thumb is aimed at. --rail-lit was
-   * 1.83:1 on the --panel it sits on, which is a suggestion of a border rather than one.
-   * An unavailable button drops back to --rail-lit further down, which is how the disabled
-   * state still reads as unavailable now that every live one is this much brighter. */
-  border: 1px solid var(--track-edge);
-  border-radius: var(--radius);
-  background: var(--panel);
+  min-height: 3.25rem;
+  padding: 0.75rem 1.15rem;
+  border: 0;
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-2));
   color: var(--ink);
-  font: 600 1rem/1.2 var(--font-ui);
+  font: 700 1.0625rem/1.2 var(--font-ui);
   text-align: center;
   cursor: pointer;
+  box-shadow: inset 0 0 0 1px var(--track-edge), inset 0 2px 0 var(--bevel), 0 4px 0 var(--depth);
+  transform: translateY(0);
+  transition: transform 90ms ease-out, box-shadow 90ms ease-out, background-color 120ms linear,
+    filter 120ms linear, opacity 160ms linear;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
-  transition: background-color 120ms linear, border-color 120ms linear, color 120ms linear;
 }
-/* Hover lives behind a capability query. On a touch screen iOS leaves :hover stuck on the
- * last thing tapped, so a player who pressed a ghost button would keep seeing it lit for the
- * rest of the round. Nothing here is load-bearing, so the rule is a nicety, not a state. */
+.btn:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: inset 0 0 0 1px var(--track-edge), inset 0 2px 0 var(--bevel), 0 1px 0 var(--depth);
+}
 @media (hover: hover) and (pointer: fine) {
   .btn:hover:not(:disabled) {
-    border-color: var(--ink-dim);
-  }
-  .btn--signal:hover:not(:disabled) {
-    background: var(--signal-lit);
-    border-color: var(--signal-lit);
-  }
-  .btn--ghost:hover:not(:disabled) {
-    color: var(--ink);
+    filter: brightness(1.1);
   }
 }
-/* Disabled here is a state worth reading, not a switch thrown in the dark. On the Game screen
- * this is the button that says "Réponse envoyée", which is the one sentence in the loop a
- * player is waiting for, and it used to render at 45% — which composites the label against
- * the panel under it and lands it near 2.8:1. The state that most needs reading was the least
- * readable thing on the screen.
- *
- * So the opacity fade is gone and replaced by a lamp that is off: the sodium fill drops, the
- * panel and the label stay, and the border keeps --rail-lit so an unavailable control still
- * shows the player where the control is. Losing the accent is the whole signal, and it is a
- * stronger one than a fade — sodium means "you can press this" everywhere else in this
- * console, so an unlit button cannot be misread as a live one. The label goes to --ink-dim at
- * 4.79:1 on --panel: still plainly the dimmer of the two, never the illegible one. Where the
- * button sits on the illuminated panel rather than the deck, 6.93:1. */
+.btn--signal {
+  --depth: var(--signal-deep);
+  background: linear-gradient(180deg, var(--signal-lit), var(--signal));
+  color: var(--signal-ink);
+  font-weight: 800;
+  box-shadow: inset 0 2px 0 var(--edge-warm), 0 4px 0 var(--depth), 0 8px 24px -8px var(--glow);
+}
+.btn--signal:active:not(:disabled) {
+  box-shadow: inset 0 2px 0 var(--edge-warm), 0 1px 0 var(--depth);
+}
+.btn--ghost {
+  --depth: transparent;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink-dim);
+  box-shadow: inset 0 0 0 2px var(--rail-lit);
+}
+.btn--ghost:active:not(:disabled) {
+  box-shadow: inset 0 0 0 2px var(--rail-lit);
+}
+/* Unavailable: the face sinks flat, loses its colour and its depth. The label stays legible
+ * (--ink-dim on --panel is AA), because "Réponse envoyée" is a state a player reads. */
 .btn:disabled {
   background: var(--panel);
-  border-color: var(--rail-lit);
   color: var(--ink-dim);
+  box-shadow: inset 0 0 0 1px var(--rail-lit);
+  transform: translateY(3px);
   cursor: not-allowed;
 }
-/* Every reason the send button is disabled on the Game screen is a wait: the model is
- * thinking, the room is still answering, or this player has already sent. The console already
- * has a colour for that — the cool one on the status lamp and on `.notice` — so a waiting
- * send borrows it rather than inventing a second meaning, and the sodium is left to mean
- * only "armed". */
+/* A waiting primary borrows the cyan of "waiting on others". */
 .btn--signal:disabled {
   color: var(--cool-lit);
 }
-.btn--signal {
-  background: var(--signal);
-  border-color: var(--signal);
-  color: var(--signal-ink);
-}
-.btn--ghost {
-  background: none;
-  color: var(--ink-dim);
-}
-/* The confirm step on the one action that cannot be taken back. The fault colour that
- * usually means "something is wrong" is the right one here too: this button is armed. */
 .btn--danger {
-  background: none;
-  border-color: var(--fault);
+  --depth: var(--fault-deep);
+  background: var(--fault-wash);
   color: var(--fault);
-}
-@media (hover: hover) and (pointer: fine) {
-  .btn--danger:hover:not(:disabled) {
-    background: var(--fault-tint);
-    border-color: var(--fault);
-    color: var(--fault);
-  }
+  box-shadow: inset 0 0 0 2px var(--fault), 0 4px 0 var(--depth);
 }
 .btn--wide {
   width: 100%;
 }
 
-/* The class's own bar on a discussion. One component, four screens, so it is one block: an
- * instruction, a full-width button, the count under it. On a phone held in one hand the button is
- * the target and the count is what the teacher standing in front of the room reads off the
- * students' phones.
- *
- * No `min-height` here: `.btn` already carries the 3rem floor, and a second declaration of the
- * same number in a descendant selector is a rule that can disagree with the one it copies.
- *
- * The count is centred because the button it belongs to is. The two are one object read in that
- * order — target, then state — and a centred sentence under a centred button with a left edge
- * hanging off it reads as two things that happen to be stacked. */
+/* ---- the class's "ready" bar ------------------------------------------------------------- */
 .ready {
   display: grid;
-  gap: 0.4rem;
-  margin-top: 1rem;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.9rem var(--pad) 0.8rem;
+  border-radius: var(--radius);
+  border: 1px dashed var(--rail-lit);
+  background: rgba(255, 255, 255, 0.04);
 }
-
 .ready .prose {
   text-align: center;
 }
-
-/* What the class is being asked to do, above the button. No panel and no rule around it, and
- * that is this console's own position rather than a saving: `.prompt` already established that
- * on a screen the display face is what separates the thing you are here to read from the sentence
- * around it, "without a box around either". A rule here would also be a second edge for the eye,
- * one row above the sodium slab it is meant to be quieter than.
- *
- * Centred on the button's account, for the count's reason. `balance` because this is two runs of
- * different length more often than one: left alone, a one-word verb strands the clause it opens
- * on a short last line, and a short last line under a centred line reads as an afterthought rather
- * than as one sentence. */
 .ready__ask {
   color: var(--ink);
   font-size: 1rem;
@@ -473,54 +398,32 @@ figure {
   text-wrap: balance;
   overflow-wrap: anywhere;
 }
-
-/* The verb is the one word that has to arrive from across a classroom, and the display face is
- * what buys that without eating the line: Big Shoulders runs about 30% narrower than Barlow at the
- * same size, so set a size larger and heavier it takes LESS width than the sentence it opens than
- * it would in the UI face. That is the only way this word can outrank the prose beside it inside
- * a 350px column, and it is why this is the one line of prose in the console not set in Barlow.
- *
- * 800, not the 600 `.prompt` uses, because that split is already the console's own: 600 is a thing
- * read at one's own pace on a phone of one's own, 800 is a value a room reads at distance, which is
- * this word's job. 1.5rem, the room-code step rather than `.prompt`'s 1.25rem, for the same reason.
- *
- * `inline-block` keeps it in the line and on the sentence's baseline instead of making it a block
- * that reads as a heading with a caption under it — which is the failure a two-part instruction
- * gets for free if the type is allowed to break the line. The 0.1em is the word space: it belongs
- * to the paragraph, so it is set at 1rem against a 24px glyph, and the condensation closes the gap
- * more than the size opens it. */
 .ready__verb {
   display: inline-block;
   margin-inline-end: 0.1em;
   font-family: var(--font-display);
-  font-weight: 800;
+  font-weight: 900;
   font-size: 1.5rem;
   line-height: 1;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
+  color: var(--signal);
+  text-transform: uppercase;
 }
 
-/* 1rem and never smaller. iOS Safari zooms the whole page in on focus below 16px and does
- * not zoom back out, which would leave the player navigating a magnified console after a
- * single tap on a field they were told to read.
- *
- * 48px, the same floor `.btn` already holds, because these are the two fields a player has
- * to hit first and last with one thumb while reading with the other: the room code they were
- * given, and the prompt they came to write. Padded, they came out at 46.8px — over the 44px
- * minimum by accident, and two pixels under the step this console already takes elsewhere. */
+/* ---- fields ------------------------------------------------------------------------------
+ * 16px text minimum, or iOS zooms the page on focus and never zooms back. */
 .input,
 .area {
   width: 100%;
-  min-height: 3rem;
-  padding: 0.7rem 0.8rem;
-  /* --track-edge, not --rail: this border is what tells a thumb where the field is, so it is
-   * the boundary of a control and owes 3:1 (WCAG 1.4.11). At --rail it was 1.48:1 against the
-   * --well it is drawn on — an outline you can only find by looking for it. */
-  border: 1px solid var(--track-edge);
-  border-radius: var(--radius);
+  min-height: 3.25rem;
+  padding: 0.75rem 0.9rem;
+  border: 2px solid var(--rail-lit);
+  border-radius: 12px;
   background: var(--well);
   color: var(--ink);
-  font: 400 1rem/1.4 var(--font-ui);
-  box-shadow: inset 0 1px 0 var(--edge-sunk);
+  font: 500 1rem/1.4 var(--font-ui);
+  box-shadow: inset 0 2px 6px var(--edge-sunk);
+  transition: border-color 120ms linear, box-shadow 120ms linear;
   -webkit-appearance: none;
   appearance: none;
 }
@@ -529,44 +432,28 @@ figure {
   color: var(--ink-faint);
 }
 .area {
-  min-height: 7.5rem;
+  min-height: 8rem;
   resize: vertical;
 }
-/* The room code, typed. Same face as the illuminated panel it becomes, so the letters a
- * player enters are already the letters the room will read. Lives next to `.input` rather
- * than relying on `.num` coming later in the file, which is the kind of source-order
- * dependency that survives exactly until someone reorders the stylesheet. */
 .input--code {
   font-family: var(--font-display);
-  font-weight: 800;
-  font-size: 1.5rem;
-  letter-spacing: 0.14em;
+  font-weight: 900;
+  font-size: 1.75rem;
+  letter-spacing: 0.3em;
+  text-align: center;
   text-transform: uppercase;
+  color: var(--signal);
 }
-/* A field the player cannot change, shown the way this console shows a fixed thing: the
- * letters are there to be read, and the dashed bezel says so. `--ink-dim` is 5.44:1 on the
- * `--well` behind it, dimmer than a value you typed (14.41:1) and never in danger of being
- * illegible, which is the same relationship `--ink-faint` has to a placeholder.
- *
- * Not `disabled`, and the distinction is not cosmetic: the value in a read-only field is
- * still submitted, so marking it disabled would be a lie the screen reader repeats. The
- * `:not(:disabled)` is here anyway so that if an element ever does land on both, the two
- * do not compound into a 0.5-opacity --ink-dim field. */
+.input--code::placeholder {
+  color: rgba(255, 200, 61, 0.35);
+}
 .input:read-only:not(:disabled) {
   border-style: dashed;
-  color: var(--ink-dim);
   cursor: default;
 }
 .input:disabled {
   opacity: 0.5;
 }
-/* The composer after the answer has been sent. The field is cleared on submit, so at 0.5 the
- * placeholder was the only thing left in the box and it was rendering at about 2.2:1 — the
- * one sentence confirming the round closed, at a fifth of the contrast the same placeholder
- * carries while the field is live. The signal that the field is closed moves to the bezel,
- * which is what it was actually for: the border steps back to --rail, exactly as the
- * disabled send button's does, and the resizer goes away because there is nothing left to
- * resize. The placeholder itself stays at its full 4.81:1. */
 .area:disabled {
   opacity: 1;
   border-color: var(--rail);
@@ -574,198 +461,152 @@ figure {
   resize: none;
 }
 
-/* An error box is not decorative, so its border is a meaningful boundary and owes the 3:1 of
- * WCAG 1.4.11 — measured, and it clears it with room to spare, which is why the border is
- * still --fault and was never darkened or thickened to get there.
- *
- * The wash is the number that matters, because it is the surface the border is drawn against:
- * rgba(229, 97, 74, 0.09) over --deck composites to #262028, and --fault on that is 4.638:1.
- * On the --deck itself, which is what `.err--inline` has behind it, it is 5.108:1. The text is
- * --fault at the same 4.638:1 on the wash, so the sentence inside the box clears AA at 14px as
- * well as the edge around it clearing 1.4.11.
- *
- * That the border clears 1.4.11 comfortably is also the answer to "an error that shouts is
- * its own usability problem": it does not have to shout. The restraint costs nothing here,
- * because --fault is already a 78%-luminance red against a 1.6%-luminance deck — the ratio is
- * carried by the hue being light, not by the fill being saturated, so nothing had to be
- * pushed. */
 .err {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.5rem;
   margin: 0;
-  padding: 0.6rem 0.75rem;
+  padding: 0.7rem 0.85rem;
   border: 1px solid var(--fault);
-  border-left-width: 3px;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--fault-wash);
   color: var(--fault);
   font-size: 0.875rem;
+  font-weight: 600;
   line-height: 1.4;
 }
-/* The same fault colour with the fill and the outline taken away: where the alert belongs is
- * under the control that caused it rather than in a box of its own, and the box is what made
- * it read as a separate object. A 2px left rule is the whole of the signal now, and it is the
- * same 5.108:1 against --deck that the outline above has — thinner, but it is the only
- * boundary this variant has, so it is the one that has to carry the contrast alone. */
 .err--inline {
   border: 0;
-  border-left: 2px solid var(--fault);
+  border-left: 3px solid var(--fault);
   border-radius: 0;
   background: none;
   padding: 0.15rem 0 0.15rem 0.6rem;
 }
 
-/* A keyboard focus is the only way some players will ever move around this console, and on
- * a phone held in one hand it is the difference between a screen and a maze. */
 :focus-visible {
-  outline: 2px solid var(--signal);
-  outline-offset: 2px;
+  outline: 3px solid var(--signal);
+  outline-offset: 3px;
 }
-.input:focus-visible,
-.area:focus-visible {
+.input:focus,
+.area:focus {
+  outline: none;
   border-color: var(--signal);
-  outline-offset: 1px;
+  box-shadow: inset 0 2px 6px var(--edge-sunk), 0 0 0 4px rgba(255, 200, 61, 0.2);
 }
 
-/* The four answers of the didacticiel. A button like any other — same 48px floor, same rail
- * border — because they are pressed with the same thumb as everything else, and a QCM option
- * that is easier to miss than the send button is a QCM option some players will skip. */
+/* ---- quiz answer tiles --------------------------------------------------------------------
+ * Four coloured buzzers with a shape and a letter. The shape is the colour-blind channel. */
 .choice {
+  --k: var(--panel-hi);
+  --kd: var(--well);
   justify-content: flex-start;
+  min-height: 4rem;
+  gap: 0.8rem;
+  padding: 0.8rem 0.9rem;
   text-align: left;
-  gap: 0.75rem;
+  color: #fff;
+  font-weight: 700;
+  background: var(--k);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25), 0 5px 0 var(--kd);
 }
-/* The letter, in the display face at display weight, so the four rows have a spine the eye can
- * run down before it reads a word of them. `aria-hidden` because the answer's own text is what
- * a screen reader should say, and "A" on its own is noise. */
+.choice[data-k='0'] { --k: var(--k0); --kd: var(--k0-deep); }
+.choice[data-k='1'] { --k: var(--k1); --kd: var(--k1-deep); }
+.choice[data-k='2'] { --k: var(--k2); --kd: var(--k2-deep); }
+.choice[data-k='3'] { --k: var(--k3); --kd: var(--k3-deep); }
+.choice:active:not(:disabled) {
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25), 0 1px 0 var(--kd);
+}
+/* Locked (answered or closed): still the colour, lowered and dimmed. */
+.btn.choice:disabled {
+  background: var(--k);
+  color: #fff;
+  opacity: 0.6;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.15), 0 2px 0 var(--kd);
+}
 .choice__k {
   flex: none;
-  width: 1.6rem;
-  height: 1.6rem;
-  border: 1px solid var(--track-edge);
-  border-radius: var(--radius);
-  color: var(--ink-dim);
-  font: 800 1rem/1.5 var(--font-display);
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  min-width: 2.6rem;
+  height: 2.3rem;
+  padding: 0 0.35rem;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  font: 900 1.125rem/1 var(--font-display);
+}
+.choice__shape {
+  font-size: 0.8rem;
+  opacity: 0.9;
 }
 .choice__t {
   flex: 1;
   overflow-wrap: anywhere;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
 }
-/* Right and wrong are --good and --fault, a pair the palette now has words for. Green is here
- * for the right answer rather than sodium for it, and that is the correction: sodium is the "live
- * and lit" accent — the target, the primary action, your own score — so spending it on a correct
- * answer made the most expensive colour in the console carry the least consequential news. It
- * also left right and wrong sharing one hue and differing by a word, which is a signal that
- * depends entirely on the reader separating sodium from fault red.
- *
- * Three signals, and not one of them is the colour. The rule and the letter chip are green or
- * red, and the mark is a tick or a cross, because a shape is the one channel a colourblind
- * reader and a monochrome print both still have. The sentence that used to sit in a pill beside
- * that mark is gone, and not because the hue was judged sufficient: `.revealnote` under the list
- * already says "Tu as juste" or "Pas celle-là" in the largest type on the screen and names the
- * letters, so a pill restating it in 11px was the same sentence a second time on the same sweep
- * — and on a 390px phone it also cost the answer text a wrapped line.
- * `prefers-reduced-motion` is honoured in this console, so nothing here may be carried by a fade.
- *
- * A rule and not a fill: the choice is still a row of text to read, and four rows that turn
- * into four colour blocks would be four paragraphs to read again.
- *
- * Every rule repeats `:disabled`, and not for tidiness. A answered choice is a disabled button,
- * and `.btn:disabled` wins on specificity — so without this the reveal would happen and the two
- * signals that say right and wrong would be the two things the disabled state took away. The
- * answer to that is not `!important` and not a state the component has to model; it is a rule
- * written at the weight it has to beat. */
+.choice__mark {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: #fff;
+  font: 900 1.1rem/1 var(--font-ui);
+}
+/* Your pick, before the reveal: ringed and lifted, nothing about right or wrong. */
+.btn.choice--picked:disabled {
+  opacity: 1;
+  transform: scale(1.02);
+  box-shadow: 0 0 0 3px #fff, 0 0 0 7px rgba(255, 255, 255, 0.25), 0 3px 0 var(--kd);
+}
+/* After the reveal: the key glows, the rest fade, a wrong pick is ringed in red. */
 .btn.choice--right,
 .btn.choice--right:disabled {
-  border-color: var(--good);
-  background: var(--panel);
-  box-shadow: inset 3px 0 0 var(--good);
-  color: var(--ink);
+  opacity: 1;
+  transform: scale(1.03);
+  box-shadow: 0 0 0 3px var(--good), 0 0 28px 2px rgba(62, 227, 154, 0.55), 0 4px 0 var(--kd);
 }
-.btn.choice--right .choice__k,
-.btn.choice--right:disabled .choice__k {
-  border-color: var(--good);
-  color: var(--good);
+.btn.choice--right .choice__mark {
+  color: var(--good-deep);
 }
 .btn.choice--miss,
 .btn.choice--miss:disabled {
-  border-color: var(--fault);
-  background: var(--panel);
-  box-shadow: inset 3px 0 0 var(--fault);
-  color: var(--ink);
+  opacity: 0.85;
+  box-shadow: 0 0 0 3px var(--fault), 0 2px 0 var(--kd);
 }
-.btn.choice--miss .choice__k,
-.btn.choice--miss:disabled .choice__k {
-  border-color: var(--fault);
-  color: var(--fault);
+.btn.choice--miss .choice__mark {
+  color: var(--fault-deep);
 }
-/* The chosen-and-right row is already the right row, so this spends a second rule and not a
- * second hue on it — and the tick above lands on this row exactly as it does on the key row,
- * which is the whole point: past the reveal they are the same row. */
-.btn.choice--yours:disabled {
-  box-shadow: inset 3px 0 0 var(--good), inset 0 0 0 1px var(--good-wash);
-}
-/* The mark, alone, with no pill around it. A bordered, padded box around a single glyph is a
- * second object inside a row that is already an object, and the row's inset rule and its hue
- * have said which row this is before the eye reaches the far edge. `flex: none` so the row's
- * text keeps its width, and the mark stays under the 1.6rem letter chip in height, so gaining
- * or losing one cannot move a row's edge — the four stay a stack of identical lines. */
-.choice__mark {
-  flex: none;
-  color: var(--ink-dim);
-  font: 800 1rem/1 var(--font-ui);
-}
-/* `aria-hidden` in the markup, and the reason has changed with the copy: the sentence a screen
- * reader should say is no longer the word beside the mark, it is the verdict under the list, so
- * "check mark" on its own would be strictly worse than nothing. */
-.choice--right .choice__mark,
-.btn.choice--right:disabled .choice__mark {
-  color: var(--good);
-}
-.btn.choice--miss .choice__mark,
-.btn.choice--miss:disabled .choice__mark {
-  color: var(--fault);
+.btn.choice--faded:disabled {
+  opacity: 0.28;
+  filter: saturate(0.4);
 }
 
-/* What the reveal says about YOU, in a row of its own above the explanation.
- *
- * This is the line that has to work when nothing else does. A green row and a red row say
- * something, but they say it to part of the class, and this room is played on phones held in
- * bright light by people who will read the outcome once. So the verdict is set in the display
- * face at the largest size the screen allows, and the sentence under it names the LETTERS, which
- * is the one fact about this question that is unambiguous to a reader with no colour at all.
- *
- * The wash is what makes it a block rather than a caption, and it is 12% of the same green the
- * rule is, over the same surface: --good on it is 7.39:1 and --ink on it 10.24:1, so nothing
- * inside is traded away to get the fill. Never a solid green behind --ink, which would be 1.39:1
- * — a paragraph nobody can read, which is why this is a wash and a rule like every other state
- * in this palette.
- *
- * The unmodified rule is the THIRD case, and it is the only one that is neither right nor wrong:
- * the server has an attempt on this question and the screen was not told what it was, which is a
- * fact about the rules of the room rather than about the answer. So it takes --cool, the colour
- * this console already gives to "that is how this works", and no wash at all — which also keeps it
- * distinct from the sodium-ruled explanation panel directly underneath it. */
+/* The verdict banner after a reveal. */
 .revealnote {
   display: grid;
-  gap: 0.2rem;
-  padding: 0.7rem var(--pad) 0.8rem;
-  border-left: 3px solid var(--cool);
-  border-radius: 0 var(--radius) var(--radius) 0;
+  gap: 0.25rem;
+  padding: 0.9rem var(--pad);
+  border-radius: var(--radius);
+  border: 2px solid var(--edge-cool);
+  background: rgba(51, 189, 240, 0.12);
+  text-align: center;
 }
 .revealnote--good {
-  border-left-color: var(--good);
-  background: var(--good-wash);
+  border-color: var(--good);
+  background: linear-gradient(180deg, rgba(62, 227, 154, 0.28), rgba(62, 227, 154, 0.1));
 }
 .revealnote--miss {
-  border-left-color: var(--fault);
-  background: var(--fault-wash);
+  border-color: var(--fault);
+  background: linear-gradient(180deg, rgba(255, 107, 132, 0.25), rgba(255, 107, 132, 0.08));
 }
 .revealnote__t {
   color: var(--ink);
-  font: 800 1.375rem/1.1 var(--font-display);
-  letter-spacing: 0.01em;
+  font: 900 2rem/1.05 var(--font-display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 .revealnote__s {
   color: var(--ink);
@@ -773,47 +614,30 @@ figure {
   line-height: 1.4;
 }
 
-/* The two flags a room is created with. Native checkboxes with the accent rather than buttons
- * drawn to look like checkboxes: the whole cost of that choice is that the box cannot be styled
- * to match the panel, and what it buys is a real control with real keyboard, real focus and a
- * real checked state, which three divs would each have to re-implement.
- *
- * `accent-color` rather than a hand-painted box is the whole implementation, and it is the
- * point: the console's sodium says "this one is on" and it says it here too, with no new token
- * and no new meaning. */
+/* ---- admin checkboxes ---------------------------------------------------------------------- */
 .checks {
   display: grid;
   gap: 0.75rem;
   padding-top: var(--pad);
   border-top: 1px solid var(--rail);
 }
-/* The two time limits, side by side when there is room for both labels. */
 .timers {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: 0.75rem;
 }
 .check {
-  /* 48px, the floor every other control in the console holds: this label is the whole target,
-   * and a checkbox in the corner of a line of text is not a target a thumb can be aimed at on
-   * a phone. */
   display: flex;
   align-items: center;
   gap: 0.75rem;
   min-height: 3rem;
-  padding: 0.5rem 0.7rem;
+  padding: 0.6rem 0.8rem;
   border: 1px solid var(--track-edge);
-  border-radius: var(--radius);
+  border-radius: 12px;
   background: var(--panel);
   color: var(--ink);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  transition: border-color 120ms linear;
-}
-@media (hover: hover) and (pointer: fine) {
-  .check:hover {
-    border-color: var(--ink-dim);
-  }
 }
 .check__box {
   flex: none;
@@ -828,9 +652,6 @@ figure {
   gap: 0.15rem;
   font: 600 1rem/1.3 var(--font-ui);
 }
-/* The consequence, under the flag. A label alone ("anonyme pendant la notation") does not tell
- * an admin what they are choosing between, and this decision is made once, at creation, for
- * everyone in the room. */
 .check__hint {
   color: var(--ink-dim);
   font-size: 0.8125rem;
@@ -838,51 +659,46 @@ figure {
   line-height: 1.35;
 }
 
-/* The ten notes of the cross-rating grid. Five by two on the phone, ten by one above 40rem.
- * A `.btn` in every respect — the 48px floor is what makes it usable standing up — with the
- * number set in the display face so the grid reads as a scale at arm's length rather than as a
- * numeric keypad. The selected state borrows `.btn--signal`, so "chosen" is the console's own
- * sodium and cannot mean anything else. */
+/* ---- rating grid: ten number tiles on a red-to-green ramp ---------------------------------- */
 .rate {
+  --depth: hsl(var(--h) 70% 20%);
+  min-height: 3.5rem;
   padding: 0 0.2rem;
-  font: 800 1.375rem/1 var(--font-display);
+  background: linear-gradient(180deg, hsl(var(--h) 65% 42%), hsl(var(--h) 70% 33%));
+  color: #fff;
+  font: 900 1.6rem/1 var(--font-display);
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25), 0 4px 0 var(--depth);
+}
+.btn.rate:disabled {
+  background: linear-gradient(180deg, hsl(var(--h) 25% 34%), hsl(var(--h) 25% 28%));
+  color: rgba(255, 255, 255, 0.75);
+}
+.btn.rate--on,
+.btn.rate--on:disabled {
+  background: linear-gradient(180deg, var(--signal-lit), var(--signal));
+  color: var(--signal-ink);
+  text-shadow: none;
+  transform: translateY(-3px) scale(1.08);
+  box-shadow: 0 0 0 3px #fff, 0 4px 0 var(--signal-deep), 0 8px 22px -4px var(--glow);
+  z-index: 1;
 }
 
-/* The skip link, and the reason it is not built out of `.visually-hidden`. That class is a
- * permanent 1px clip: correct for a heading, fatal for a link, because a control a keyboard
- * user can land on and cannot see is a trap, and one left permanently on screen is a banner
- * in front of a game. So this one is a real element, parked above the top edge of the
- * viewport, and pulled back down on focus.
- *
- * `transform` rather than a negative `top` or `clip`, deliberately: none of the three take it
- * out of the tab order or the accessibility tree, and it costs no reflow when it comes back.
- * It is never `display: none` and never `visibility: hidden`, so it is always the first tab
- * stop on every screen — which is the only reason a skip link is worth having.
- *
- * The panel and the 14px label are not decoration: 12.68:1 and 8.14:1 against the --panel it
- * lands on, so the one screen a sighted keyboard user never gets to see is also the one they
- * can read. */
+/* ---- accessibility utilities --------------------------------------------------------------- */
 .skiplink {
   position: fixed;
   top: 0;
   left: 0;
   z-index: 10;
   padding: 0.6rem 0.9rem;
-  border: 1px solid var(--track-edge);
-  border-top: 0;
-  border-radius: 0 0 var(--radius) var(--radius);
-  background: var(--panel);
-  box-shadow: 0 2px 10px -4px var(--edge-dark);
+  border-radius: 0 0 12px 0;
+  background: var(--panel-hi);
   color: var(--ink);
   font: 600 0.875rem/1.2 var(--font-ui);
   text-decoration: none;
-  transform: translateY(-120%);
+  transform: translateY(-150%);
 }
-/* `:focus` and not `:focus-visible`: the reveal has to happen for a keyboard, and has to
- * happen for a screen reader's virtual cursor and for anything that focuses programmatically
- * without a pointer event behind it. The ring itself is still the `:focus-visible` one below,
- * so a mouse click does not leave a sodium outline behind. */
 .skiplink:focus {
   transform: none;
 }

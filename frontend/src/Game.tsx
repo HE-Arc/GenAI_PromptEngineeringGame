@@ -1,33 +1,50 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
+import { AnswerMeter, Board, Confetti, ConsoleBar, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
   absent,
+  answerStart,
   describe,
   getName,
-  getToken,
-  isAbort,
   present,
-  StreamError,
-  streamAnswer,
+  wsRefusal,
   type Player,
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
-import type { Link } from './useRoom'
+import { buzz, useCountUp } from './fx'
+import type { AnswerFeed, Link } from './useRoom'
 
 type Result = { score: number; comment: string; output: string; round: number; truncated: boolean }
+
+// The one-word reaction over the score, the way a game shouts "Excellent !" before the number.
+function cheer(score: number): string {
+  if (score >= 9) return 'Parfait !'
+  if (score >= 7) return 'Excellent !'
+  if (score >= 5) return 'Pas mal !'
+  if (score >= 3) return 'Peut mieux faire'
+  return 'Aïe…'
+}
+
+// The score ticking up to its value. A component of its own so the hook restarts per verdict.
+function ScoreUp({ score }: { score: number }) {
+  return <>{useCountUp(score)}</>
+}
 
 export default function Game({
   state,
   code,
   link,
   onRetry,
+  answer,
+  sendPrompt,
 }: {
   state: State
   code: string
   link: Link
   onRetry: () => void
+  answer: AnswerFeed | null
+  sendPrompt: (prompt: string) => void
 }) {
   const [prompt, setPrompt] = useState('')
   const [result, setResult] = useState<Result | null>(null)
@@ -37,15 +54,23 @@ export default function Game({
   // which is holding the keyboard, and the verdict, which is what the submit earned.
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const verdictRef = useRef<HTMLDivElement>(null)
-  // True the moment the POST has answered, before the stream has said so. See `send`.
+  // True the moment the `done` frame lands, before the next snapshot says so. See `send`.
   const [sent, setSent] = useState(false)
   // The answer as it is being written, and then the verdict. Two pieces of one thing rather
   // than two, because the player's question — « where is my note » — has one answer, and a
   // screen that could show either would have to say which half is on.
   const [live, setLive] = useState<{ text: string; scoring: boolean } | null>(null)
-  // Aborting the stream is not a failure and must not be reported as one: unmounting, or the
-  // player leaving, closes the request mid-answer. Kept in a ref because it is never rendered.
-  const abortRef = useRef<AbortController | null>(null)
+  // The verdict this screen is waiting on over the socket. The frames arrive on the room
+  // feed the hook owns, not on the send call, so the waiter parks the resolve/reject pair
+  // here and the effect below feeds it as frames land. One at a time: the composer is
+  // disabled while busy, so a second send cannot overwrite the first.
+  const waiterRef = useRef<{
+    player: string
+    text: string
+    scoring: boolean
+    resolve: (v: { score: number; comment: string; text: string; truncated: boolean }) => void
+    reject: (e: unknown) => void
+  } | null>(null)
 
   // A prompt belongs to the target it was written against, and an error to the round that
   // caused it, so both are cleared when the round moves on. This used to be an effect keyed
@@ -54,7 +79,7 @@ export default function Game({
   // it out. The round is the trigger, and a render is where React resets state on a trigger.
   //
   // The result is normally kept. The push that closes the round lands after this player's
-  // own POST, so clearing it took away the last player's score, comment and output within a
+  // own answer, so clearing it took away the last player's score, comment and output within a
   // second of earning them. It is kept instead and labelled with the round it belongs to,
   // which is what stops the misreading the reset was originally for — an unlabelled note
   // sitting under a different round's target.
@@ -108,10 +133,10 @@ export default function Game({
   // Derived from the phase rather than from `answered`, because "this player already sent" is
   // true at the end of every round and says nothing about whether the round is still open.
   const scored = state.phase === 'summary'
-  // This player's own send, OR the stream. The stream alone is the event that put the score
-  // below the fold: the button label is the only feedback still inside the viewport after a
-  // submit, and it sat unchanged for the length of a model call, waiting on an SSE frame that
-  // this same POST has already made unnecessary. The POST is the authority on its own outcome.
+  // This player's own send, OR the snapshot. The snapshot alone is the event that put the
+  // score below the fold: the button label is the only feedback still inside the viewport
+  // after a submit, and it sat unchanged for the length of a model call. The `done` frame
+  // is the authority on its own outcome.
   const alreadyDone = sent || (me?.answered ?? false)
 
   // The meter counts players who are present, so it can actually finish; the ones who are not
@@ -136,8 +161,7 @@ export default function Game({
   // is still empty. This is also the exact condition the server closes a round on, so the
   // line is never more or less true than the game is.
   // `busy` is in the first test, not the second: a player who has pressed send is waiting on
-  // the jury, not being told to answer again. Before the stream existed the POST only came
-  // back at the very end, so this line had ten seconds of nothing to be wrong about.
+  // the jury, not being told to answer again.
   const caption = (() => {
     if (!alreadyDone && !busy) return left === 1 ? 'À toi de répondre' : 'Réponses envoyées'
     return left === 0 ? 'Tout le monde a répondu' : `En attente de ${noun(left, 'joueur', 'joueurs')}`
@@ -158,7 +182,7 @@ export default function Game({
         : ''
 
   // The server refuses anything past 500 characters, so the composer enforces the same
-  // bound before the POST: a submit the server would reject is a billed round-trip for nothing.
+  // bound before sending: a submit the server would reject is a billed round-trip for nothing.
   const tooLong = prompt.trim().length > 500
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
@@ -184,40 +208,32 @@ export default function Game({
   async function send(e: FormEvent) {
     e.preventDefault()
     // Re-checked here, not only on the button: the bound is also enforced by `maxLength`,
-    // but a value set past it must fail closed rather than ride a POST the server rejects.
+    // but a value set past it must fail closed rather than ride a send the server rejects.
     if (tooLong) {
       setErr('Ton prompt est trop long (500 caractères maximum).')
       return
     }
     setErr('')
+    buzz()
     setBusy(true)
     setLive({ text: '', scoring: false })
-    const ac = new AbortController()
-    abortRef.current = ac
-    // Accumulated here rather than read back off `live`: a state value captured by this closure
-    // is the value it had when the send started, so reading it after the awaits would hand the
-    // verdict an empty answer.
-    let text = ''
-    let scoring = false
+    // One frame on the live socket, and the verdict comes back as frames on the
+    // same feed. The text the player watched is the verdict's text: the server
+    // stored the same string and the judge scored the same string, so one truth
+    // reaches the screen. The `done` frame carries no round — the round is the
+    // one the prompt was sent on — and the socket never truncates mid-frame.
+    const roundNow = state.current
     try {
-      const res = await streamAnswer(
-        `/api/rooms/${code}/answer`,
-        { token: getToken(code), prompt },
-        {
-          chunk: (delta) => {
-            text += delta
-            setLive({ text, scoring })
-          },
-          scoring: () => {
-            scoring = true
-            setLive({ text, scoring })
-          },
+      const done = await new Promise<{ score: number; comment: string; text: string; truncated: boolean }>(
+        (resolve, reject) => {
+          // Armed before the send: the server may answer faster than React re-renders,
+          // and a frame landing before the waiter exists would wait forever.
+          waiterRef.current = { player: myName, text: '', scoring: false, resolve, reject }
+          answerStart(sendPrompt, prompt)
         },
-        ac.signal,
       )
-      // The text the player watched, not a second copy from the payload: the server stored the
-      // same string and the judge scored the same string, so one truth reaches the screen.
-      setResult({ score: res.score, comment: res.comment, output: text, round: res.round, truncated: res.truncated })
+      const verdict = { score: done.score, comment: done.comment, output: done.text, truncated: done.truncated }
+      setResult({ score: verdict.score, comment: verdict.comment, output: verdict.output, round: roundNow, truncated: verdict.truncated })
       setLive(null)
       // Only the verdict earns the round its answer. Not the first chunk: the row does not exist
       // until the `done` frame, and a composer disabled on the strength of a delta would lock a
@@ -226,27 +242,71 @@ export default function Game({
       setSent(true)
       setPrompt('')
     } catch (e) {
-      // An abort says nothing to the player: the screen went away, or the player did. There is
-      // no error line to write and no state to undo, because a cancel writes nothing server-side
-      // either — the generation keeps running and the round closes on the answers that do land.
-      if (!isAbort(e)) {
-        setErr(e instanceof StreamError ? e.message : describe(e))
-        // Nothing was persisted, so the composer must stay usable and must stop claiming the
-        // answer is sent — otherwise a failed send locks the player out of a round they never
-        // answered, and there is nothing on screen saying why.
-        setSent(false)
-        setLive(null)
-      }
+      // A refusal off the socket lands here through the waiter: nothing was
+      // persisted, so the composer stays usable instead of locking the player
+      // out of a round they never answered.
+      setErr(describe(e))
+      // Nothing was persisted, so the composer must stay usable and must stop claiming the
+      // answer is sent — otherwise a failed send locks the player out of a round they never
+      // answered, and there is nothing on screen saying why.
+      setSent(false)
+      setLive(null)
     } finally {
-      abortRef.current = null
       setBusy(false)
     }
   }
 
-  // Cancel an answer still being written when this screen goes away. `busy` is deliberately not
-  // in the deps: the effect must fire on unmount only, and a re-run on every send would abort
-  // the request it was mounted for.
-  useEffect(() => () => abortRef.current?.abort(), [])
+  // The socket's answer frames, dealt to the waiting send. Chunks accumulate here rather
+  // than read back off `live`: a state value captured by the send closure is the value it
+  // had when the send started. Frames for other players are the room's business, not this
+  // screen's — every phone in the room sees every chunk, but only the author waits on one.
+  // A refusal is always this screen's own: the server answers it on the sender's connection,
+  // never on the broadcast, so it needs no player check.
+  //
+  // Every frame past the cursor is replayed, not just the newest: several frames can land
+  // between two renders, and skipping any of them cut words out of the answer on screen.
+  const answerSeq = answer?.seq ?? 0
+  const seenRef = useRef(answerSeq)
+  useEffect(() => {
+    if (!answer) return
+    const first = answer.seq - answer.events.length
+    const fresh = answer.events.slice(Math.max(0, seenRef.current - first))
+    seenRef.current = answer.seq
+    for (const ev of fresh) {
+      const w = waiterRef.current
+      if (!w) return
+      if (ev.kind === 'error') {
+        waiterRef.current = null
+        w.reject(wsRefusal(ev.code, ev.message))
+        return
+      }
+      if (ev.player !== w.player) continue
+      if (ev.kind === 'chunk') {
+        w.text += ev.delta
+      } else if (ev.kind === 'scoring') {
+        w.scoring = true
+      } else if (ev.kind === 'done') {
+        waiterRef.current = null
+        w.resolve({ score: ev.score, comment: ev.feedback, text: w.text, truncated: ev.truncated })
+        return
+      }
+    }
+    const w = waiterRef.current
+    if (w) setLive({ text: w.text, scoring: w.scoring })
+    // `answer` carries its own seq; depending on the object would miss repeat frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answerSeq])
+
+  // Dropping a waiter whose screen went away: the generation keeps running
+  // server-side and the round closes on the answers that do land, so there is
+  // nothing to cancel, only a promise nobody will read. `busy` is deliberately
+  // not in the deps: the effect must fire on unmount only.
+  useEffect(
+    () => () => {
+      waiterRef.current = null
+    },
+    [],
+  )
 
   // The score lands where the eye already is, which takes three things that all used to be
   // missing. The verdict now sits above the composer in the document rather than under it; the
@@ -308,229 +368,239 @@ export default function Game({
             place in the document, so the text never jumps. Deliberately WITHOUT a score: a `0`
             or a `—` in the score slot while the text arrives would be a number nobody gave, and
             the slot is the loudest thing on the screen. */}
-        {live && (
-          <div className="verdict" ref={verdictRef} tabIndex={-1}>
-            <div>
-              <p className="label">
-                {live.scoring ? 'Le jury délibère…' : 'Le modèle a répondu'}
-              </p>
-              <ModelOutput text={live.text} streaming={!live.scoring} />
-            </div>
-          </div>
-        )}
-
-        {result && (
-          <div className="verdict" ref={verdictRef} tabIndex={-1}>
-            <div className="verdict__top">
-              <span className="verdict__score num">{result.score}</span>
-              <span className="verdict__den">sur 10</span>
-              <span className="verdict__round">manche {result.round + 1}</span>
-            </div>
-            <ScoreScale score={result.score} />
-            <p className="prose prose--sm">{result.comment}</p>
-            <div>
-              <p className="label">Le modèle a répondu</p>
-              <ModelOutput text={result.output} />
-              {/* Said here because the truncation is a fact about the answer, not about the
-                  game: the note below was given for a text that stops mid-sentence, and a class
-                  reading a bad score deserves to know the answer is why. */}
-              {result.truncated && (
-                <p className="prose prose--sm prose--dim">
-                  La réponse s’arrête ici : le modèle a atteint sa limite de longueur. C’est ce
-                  texte, coupé à cet endroit, que le jury a noté.
+        {/* The play column: everything the player reads and does, in one box, so the wide layout can
+            put it on the left and the standings on the right. As loose children of the screen grid
+            they filled whichever cell was free next — on a desktop the meter took the right-hand
+            column, the standings fell under the composer, and a score on screen pushed the target
+            into the narrow column. */}
+        <div className="maincol">
+          {live && (
+            <div className="verdict verdict--live" ref={verdictRef} tabIndex={-1}>
+              <div>
+                <p className="label verdict__livelabel">
+                  <span className="spinner" aria-hidden="true" />
+                  {live.scoring ? 'Le jury délibère…' : 'Le modèle écrit…'}
                 </p>
-              )}
+                <ModelOutput text={live.text} streaming={!live.scoring} />
+              </div>
             </div>
-          </div>
-        )}
-
-        {/* The synthesis of the round that has just been scored, above the target rather than
-            on a screen of its own. It stays here because the player is still in the middle of
-            writing ten prompts: what came of the last one is the reading they do while the next
-            one waits, not a different activity that deserves its own tab.
-            It prints every term the note is made of, in one sentence, because the numbers only
-            mean anything together: proximity and the retained quality are the two inputs, and
-            the critic's score and the peers' average are the two the quality itself is made of.
-            A note stated alone asks a class to accept an arithmetic result they cannot check.
-            The weights are named because the note is no longer an even split — proximity counts
-            for a third and quality for two thirds — so the same two inputs give a different note
-            than the old mean did, and a player comparing rounds deserves to know why.
-            Every figure goes through `fr`, because the note is a real division and the server
-            stopped pretending otherwise: a round of proximity 7 and quality 6 is 5, and a
-            sentence that printed "5.0" would be the only Americanism in a French room.
-            The peer half is dropped for a plain clause when `quality_peers` is null — a round
-            where nobody rated — so the note never names a peer score nobody gave. */}
-        {scored && state.summary && (
-          <section className="tally">
-            <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
-            {(() => {
-              const mine = state.summary!.rows.find((row) => row.author === myName)
-              if (!mine) return <p className="prose prose--dim">Tu n’as pas répondu à cette manche.</p>
-              return (
-                <div className="tally__row tally__row--in" key={mine.author}>
-                  <div className="tally__head">
-                    <PlayerName
-                      name={mine.author}
-                      isMe={true}
-                      className="board__name board__name--me"
-                    />
-                  </div>
-                  {/* The score as the sentence it is, with all four numbers and their weights.
-                      `role="status"` is the pattern the rest of the screen already uses for text
-                      that changes with the phase. */}
-                  <p className="prose" role="status">
-                    Proximité (poids 1/3) : <span className="num">{fr(mine.proximity)}</span>/10
-                    {' · '}
-                    Qualité retenue (poids 2/3) : <span className="num">{fr(mine.quality)}</span>/10
-                    {' ('}le LLM <span className="num">{fr(mine.quality_llm)}</span>
-                    {mine.quality_peers === null ? (
-                      ', les joueurs n’ont pas noté'
-                    ) : (
-                      <>
-                        , les joueurs <span className="num">{fr(mine.quality_peers)}</span>
-                      </>
-                    )}
-                    {') → '}
-                    Ta note finale :{' '}
-                    {/* The number and its unit are one nowrap unit, and the space between them
-                        is a real text node: JSX drops whitespace that sits between two tags on
-                        different lines, which is what rendered "6sur 10". */}
-                    <span className="num tally__round">
-                      {fr(mine.round_score)}
-                      <span className="tally__roundden">{' '}sur 10</span>
-                    </span>
-                    .
-                  </p>
-                  <pre className="slot tally__prompt">{mine.prompt}</pre>
-                  <details className="tally__more">
-                    <summary className="tally__morebtn">Voir la réponse du modèle</summary>
-                    <ModelOutput text={mine.output} />
-                  </details>
-                </div>
-              )
-            })()}
-          </section>
-        )}
-
-        {/* The next round is the admin's button alone: the class has no vote on a summary. */}
-        {scored && (
-          <p className="prose prose--sm prose--dim" role="status">
-            L’admin lance la manche suivante.
-          </p>
-        )}
-
-        {/* The target and the field it is written against, kept as one block: on a phone
-            turned sideways they sit side by side, on a phone held upright they are the first
-            two things on the screen, and on a desktop they head the column. A player is
-            always composing against the words they can actually see.
-
-            The summary phase is the one place there is a target and no field. The round is
-            closed — it has been written, revealed and rated — so a live composer under it
-            could only ever fail, and for a player who has already sent it reads as a second
-            prompt of the round they are still credited for. What the player does during a
-            summary is read the numbers and argue about them, so that is what the space says. */}
-        <div className="playgrid">
-          {/* The one illuminated panel. The label says what the words below are for, which
-              is the piece the old "Reponse a atteindre" never did: this is not a response to
-              match, it is the answer you have to make the model produce. */}
-          <Readout
-            label={
-              scored
-                ? `La cible de la manche ${state.current + 1}`
-                : 'Le modèle doit répondre'
-            }
-            value={state.target ?? '—'}
-            image={state.target_image}
-          />
-
-          {!scored && (
-            <>
-              {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
-                  reaching for the mouse is a textarea half-used. Cmd/Ctrl+Enter submits; a bare
-                  Enter does not, because a prompt is instruction text and often wants line
-                  breaks. The chord is also the guard the shortcut needs: it cannot be hit by
-                  accident while a thumb or a hand is mid-word, which a bare-Enter submit could. */}
-              <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
-                <div className="field">
-                  <label className="label" htmlFor="prompt">
-                    Ton prompt
-                  </label>
-                  <textarea
-                    id="prompt"
-                    ref={areaRef}
-                    className="area"
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="Décris la scène, le ton, la longueur…"
-                    maxLength={500}
-                    // The prompt is a piece of instruction, not prose. Autocorrect and the
-                    // spellchecker are both actively hostile to it: they "fix" the deliberate
-                    // misspellings and the invented vocabulary that make a model produce
-                    // something specific, and they do it while the player is mid-word.
-                    autoCapitalize="sentences"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    disabled={alreadyDone}
-                    // The message is a sentence about this field, so the field points at it. The
-                    // prompt is never cleared on a failure — it is the work, and a rejected
-                    // submission that ate it would be the real defect.
-                    aria-invalid={err ? true : undefined}
-                    aria-describedby={err ? 'prompt-err' : undefined}
-                  />
-                </div>
-                {err && (
-                  <p className="err err--inline" id="prompt-err" role="alert">
-                    {err}
-                  </p>
-                )}
-                <button
-                  type="submit"
-                  className="btn btn--signal btn--wide"
-                  disabled={busy || alreadyDone || stale || !prompt.trim() || tooLong}
-                >
-                  {submitLabel}
-                </button>
-                <p className="hint">
-                  {prompt.length} / 500
-                </p>
-                <p className="hint">
-                  <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
-                </p>
-              </form>
-            </>
           )}
 
+          {result && (
+            <div className="verdict verdict--done" ref={verdictRef} tabIndex={-1} data-tier={result.score >= 7 ? 'high' : result.score >= 4 ? 'mid' : 'low'}>
+              {result.score >= 7 && <Confetti key={`${result.round}-${result.score}`} />}
+              <p className="verdict__cheer" aria-hidden="true">{cheer(result.score)}</p>
+              <div className="verdict__top">
+                <span className="verdict__score num"><ScoreUp score={result.score} /></span>
+                <span className="verdict__den">sur 10</span>
+                <span className="verdict__round">manche {result.round + 1}</span>
+              </div>
+              <ScoreScale score={result.score} />
+              <p className="prose prose--sm">{result.comment}</p>
+              <div>
+                <p className="label">Le modèle a répondu</p>
+                <ModelOutput text={result.output} />
+                {/* Said here because the truncation is a fact about the answer, not about the
+                    game: the note below was given for a text that stops mid-sentence, and a class
+                    reading a bad score deserves to know the answer is why. */}
+                {result.truncated && (
+                  <p className="prose prose--sm prose--dim">
+                    La réponse s’arrête ici : le modèle a atteint sa limite de longueur. C’est ce
+                    texte, coupé à cet endroit, que le jury a noté.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* The synthesis of the round that has just been scored, above the target rather than
+              on a screen of its own. It stays here because the player is still in the middle of
+              writing ten prompts: what came of the last one is the reading they do while the next
+              one waits, not a different activity that deserves its own tab.
+              It prints every term the note is made of, in one sentence, because the numbers only
+              mean anything together: proximity and the retained quality are the two inputs, and
+              the critic's score and the peers' average are the two the quality itself is made of.
+              A note stated alone asks a class to accept an arithmetic result they cannot check.
+              The weights are named because the note is no longer an even split — proximity counts
+              for a third and quality for two thirds — so the same two inputs give a different note
+              than the old mean did, and a player comparing rounds deserves to know why.
+              Every figure goes through `fr`, because the note is a real division and the server
+              stopped pretending otherwise: a round of proximity 7 and quality 6 is 5, and a
+              sentence that printed "5.0" would be the only Americanism in a French room.
+              The peer half is dropped for a plain clause when `quality_peers` is null — a round
+              where nobody rated — so the note never names a peer score nobody gave. */}
+          {scored && state.summary && (
+            <section className="tally">
+              <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
+              {(() => {
+                const mine = state.summary!.rows.find((row) => row.author === myName)
+                if (!mine) return <p className="prose prose--dim">Tu n’as pas répondu à cette manche.</p>
+                return (
+                  <div className="tally__row tally__row--in" key={mine.author}>
+                    <div className="tally__head">
+                      <PlayerName
+                        name={mine.author}
+                        isMe={true}
+                        className="board__name board__name--me"
+                      />
+                    </div>
+                    {/* The score as the sentence it is, with all four numbers and their weights.
+                        `role="status"` is the pattern the rest of the screen already uses for text
+                        that changes with the phase. */}
+                    <p className="prose" role="status">
+                      Proximité (poids 1/3) : <span className="num">{fr(mine.proximity)}</span>/10
+                      {' · '}
+                      Qualité retenue (poids 2/3) : <span className="num">{fr(mine.quality)}</span>/10
+                      {' ('}le LLM <span className="num">{fr(mine.quality_llm)}</span>
+                      {mine.quality_peers === null ? (
+                        ', les joueurs n’ont pas noté'
+                      ) : (
+                        <>
+                          , les joueurs <span className="num">{fr(mine.quality_peers)}</span>
+                        </>
+                      )}
+                      {') → '}
+                      Ta note finale :{' '}
+                      {/* The number and its unit are one nowrap unit, and the space between them
+                          is a real text node: JSX drops whitespace that sits between two tags on
+                          different lines, which is what rendered "6sur 10". */}
+                      <span className="num tally__round">
+                        {fr(mine.round_score)}
+                        <span className="tally__roundden">{' '}sur 10</span>
+                      </span>
+                      .
+                    </p>
+                    <pre className="slot tally__prompt">{mine.prompt}</pre>
+                    <details className="tally__more">
+                      <summary className="tally__morebtn">Voir la réponse du modèle</summary>
+                      <ModelOutput text={mine.output} />
+                    </details>
+                  </div>
+                )
+              })()}
+            </section>
+          )}
+
+          {/* The next round is the admin's button alone: the class has no vote on a summary. */}
           {scored && (
-            <p className="prose prose--dim">
-              La manche {state.current + 1} est commentée. L’animateur ouvre la suivante quand
-              la classe a fini.
+            <p className="prose prose--sm prose--dim" role="status">
+              L’admin lance la manche suivante.
+            </p>
+          )}
+
+          {/* The target and the field it is written against, kept as one block: on a phone
+              turned sideways they sit side by side, on a phone held upright they are the first
+              two things on the screen, and on a desktop they head the column. A player is
+              always composing against the words they can actually see.
+
+              The summary phase is the one place there is a target and no field. The round is
+              closed — it has been written, revealed and rated — so a live composer under it
+              could only ever fail, and for a player who has already sent it reads as a second
+              prompt of the round they are still credited for. What the player does during a
+              summary is read the numbers and argue about them, so that is what the space says. */}
+          <div className="playgrid">
+            {/* The one illuminated panel. The label says what the words below are for, which
+                is the piece the old "Reponse a atteindre" never did: this is not a response to
+                match, it is the answer you have to make the model produce. */}
+            <Readout
+              label={
+                scored
+                  ? `La cible de la manche ${state.current + 1}`
+                  : 'Le modèle doit répondre'
+              }
+              value={state.target ?? '—'}
+              image={state.target_image}
+            />
+
+            {!scored && (
+              <>
+                {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
+                    reaching for the mouse is a textarea half-used. Cmd/Ctrl+Enter submits; a bare
+                    Enter does not, because a prompt is instruction text and often wants line
+                    breaks. The chord is also the guard the shortcut needs: it cannot be hit by
+                    accident while a thumb or a hand is mid-word, which a bare-Enter submit could. */}
+                <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
+                  <div className="field">
+                    <label className="label" htmlFor="prompt">
+                      Ton prompt
+                    </label>
+                    <textarea
+                      id="prompt"
+                      ref={areaRef}
+                      className="area"
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      placeholder="Décris la scène, le ton, la longueur…"
+                      maxLength={500}
+                      // The prompt is a piece of instruction, not prose. Autocorrect and the
+                      // spellchecker are both actively hostile to it: they "fix" the deliberate
+                      // misspellings and the invented vocabulary that make a model produce
+                      // something specific, and they do it while the player is mid-word.
+                      autoCapitalize="sentences"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      disabled={alreadyDone}
+                      // The message is a sentence about this field, so the field points at it. The
+                      // prompt is never cleared on a failure — it is the work, and a rejected
+                      // submission that ate it would be the real defect.
+                      aria-invalid={err ? true : undefined}
+                      aria-describedby={err ? 'prompt-err' : undefined}
+                    />
+                  </div>
+                  {err && (
+                    <p className="err err--inline" id="prompt-err" role="alert">
+                      {err}
+                    </p>
+                  )}
+                  <button
+                    type="submit"
+                    className="btn btn--signal btn--wide"
+                    disabled={busy || alreadyDone || stale || !prompt.trim() || tooLong}
+                  >
+                    {submitLabel}
+                  </button>
+                  <p className="hint">
+                    {prompt.length} / 500
+                  </p>
+                  <p className="hint">
+                    <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
+                  </p>
+                </form>
+              </>
+            )}
+
+            {scored && (
+              <p className="prose prose--dim">
+                La manche {state.current + 1} est commentée. L’animateur ouvre la suivante quand
+                la classe a fini.
+              </p>
+            )}
+          </div>
+
+          {/* The wait after submitting used to be nothing at all: a disabled button and a dead
+              screen for the several seconds the two model calls take. This is the thing that
+              fills instead, and it is the same condition the round closes on — which is also why
+              it is the reason not to dawdle. `mine` is not gated on having submitted: a segment
+              now means "this person is on the stream", so the sodium one has to say "that one is
+              me" whether or not I have hit send, and the fill still carries the answer. */}
+          <AnswerMeter lit={lit} total={here.length} mine={mine} caption={caption} />
+          {/* Anonymous presence derived from the meter itself: no names, no backend field.
+              Shown only while some answered and some are still writing. */}
+          {!scored && lit.length > 0 && left > 0 && (
+            <PresenceDots label={`${noun(left, 'joueur écrit', 'joueurs écrivent')}…`} />
+          )}
+
+          {/* Stated plainly and without alarm, because it is usually a lock screen and not a
+              problem. The second half is the part that matters: a round closes on the answers of
+              the players who are here, so somebody dropping out does not hold the game up — and
+              if they come back they can still answer the round that is open. */}
+          {gone.length > 0 && (
+            <p className="prose prose--sm prose--cool">
+              {gone.length === 1 ? 'Un joueur est hors ligne' : `${gone.length} joueurs sont hors ligne`}{' '}
+              — la manche avance sans attendre.
             </p>
           )}
         </div>
-
-        {/* The wait after submitting used to be nothing at all: a disabled button and a dead
-            screen for the several seconds the two model calls take. This is the thing that
-            fills instead, and it is the same condition the round closes on — which is also why
-            it is the reason not to dawdle. `mine` is not gated on having submitted: a segment
-            now means "this person is on the stream", so the sodium one has to say "that one is
-            me" whether or not I have hit send, and the fill still carries the answer. */}
-        <AnswerMeter lit={lit} total={here.length} mine={mine} caption={caption} />
-        {/* Anonymous presence derived from the meter itself: no names, no backend field.
-            Shown only while some answered and some are still writing. */}
-        {!scored && lit.length > 0 && left > 0 && (
-          <PresenceDots label={`${noun(left, 'joueur écrit', 'joueurs écrivent')}…`} />
-        )}
-
-        {/* Stated plainly and without alarm, because it is usually a lock screen and not a
-            problem. The second half is the part that matters: a round closes on the answers of
-            the players who are here, so somebody dropping out does not hold the game up — and
-            if they come back they can still answer the round that is open. */}
-        {gone.length > 0 && (
-          <p className="prose prose--sm prose--cool">
-            {gone.length === 1 ? 'Un joueur est hors ligne' : `${gone.length} joueurs sont hors ligne`}{' '}
-            — la manche avance sans attendre.
-          </p>
-        )}
 
         <div className="railcol">
           {/* Rule one, as a render decision rather than as a rule: during the rating phase the

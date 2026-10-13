@@ -1,16 +1,38 @@
 services:
-  backend:
-    build: ./backend
+  server:
+    build: ./server
     ports:
-      - "8000:8000"
+      - "3001:3001"
     env_file:
-      - path: ./backend/.env
+      - path: ./server/.env
         required: false
+    # Shared cookie-signing key: every replica must see the same value or
+    # admin sessions created on one are rejected on the others. Generate once
+    # (openssl rand -hex 32) and put it in server/.env as ADMIN_SECRET.
+    # RUST_LOG defaults to info; set e.g. debug for per-request tracing.
     environment:
-      # Enables the idle-room sweeper thread inside the server process.
-      GENAI_SWEEP: "1"
+      ADMIN_SECRET: ${ADMIN_SECRET:-}
+      RUST_LOG: ${RUST_LOG:-info}
+      # Pinned here (beats env_file) so a stale relative DATABASE_URL in a
+      # local server/.env cannot pull the db back onto the overlay.
+      DATABASE_URL: sqlite:/data/server.sqlite3?mode=rwc
     volumes:
       - sqlite_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
 
   frontend:
     build: ./frontend
@@ -18,9 +40,11 @@ services:
       - "5173:5173"
     environment:
       # Reachable name inside the compose network; falls back to localhost outside Docker.
-      BACKEND_URL: http://backend:8000
+      AXUM_URL: http://server:3001
     depends_on:
-      - backend
+      server:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   sqlite_data:

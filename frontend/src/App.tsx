@@ -61,7 +61,7 @@ function SkipLink() {
 // Reached when the stream has failed three times over without ever opening. The browser
 // retries on its own and we let it, so this is the state for a room that is not answering at
 // all, with a way back instead of an indefinite "Connexion…". It deliberately does not claim
-// the room is missing: EventSource cannot read a status code, so all we know is that nothing
+// the room is missing: the socket cannot report a status for a connection that never opened,
 // came back, and a server restarting on a laptop looks exactly like a bad code. It never asks
 // for a code or a name — reconnecting is the server's job and needs nothing from the player.
 function Fault({ code, onRetry, onLeave }: { code: string; onRetry: () => void; onLeave: () => void }) {
@@ -119,7 +119,7 @@ export default function App() {
   // token at all and connects anonymously, which is the difference between a missing
   // argument and a null one.
   const token = code ? getToken(code) : null
-  const { state, link, retry } = useRoom(code, token)
+  const { state, link, retry, answer, sendPrompt } = useRoom(code, token)
 
   // The screen, resolved once. The URL is not enough: a round ending moves Game -> Results
   // without the address changing at all, which is the largest swap in the game and the one
@@ -280,7 +280,14 @@ export default function App() {
       return (
         <>
           <SkipLink />
-          <Game state={view.state} code={view.code} link={link} onRetry={retry} />
+          <Game
+            state={view.state}
+            code={view.code}
+            link={link}
+            onRetry={retry}
+            answer={answer}
+            sendPrompt={sendPrompt}
+          />
         </>
       )
   }

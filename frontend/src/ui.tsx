@@ -1,5 +1,8 @@
 import { useId, useState, type CSSProperties, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { countdown, fr, noun, nounOf } from './format'
+import { buzz, copyText, hueOf, initials, useWindowLength } from './fx'
+import { TargetText } from './ModelOutput'
 import { useQuizWindow, type ServerWindow } from './serverClock'
 import { linkWord, type Link } from './useRoom'
 import { SCALE_MAX, type Player, type ReadyState } from './api'
@@ -60,7 +63,22 @@ export function ConsoleBar({
 }) {
   return (
     <header className="railbar">
-      <span className="railbar__mark">Jeu GenAi</span>
+      {/* The logo goes home, as a logo does. A real link for the address and the context menu,
+          but routed in place: App listens to `popstate`, so pushing the path and announcing it is
+          a screen change with no reload, exactly like « Quitter la partie ». */}
+      <a
+        className="railbar__mark"
+        href="/"
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+          e.preventDefault()
+          history.pushState(null, '', '/')
+          dispatchEvent(new PopStateEvent('popstate'))
+        }}
+      >
+        <span className="railbar__spark" aria-hidden="true">✦</span>
+        Jeu GenAi
+      </a>
       {meta && <span className="railbar__meta">{meta}</span>}
       {link && <StatusLamp link={link} onRetry={onRetry} />}
     </header>
@@ -161,7 +179,7 @@ export function Roster({ players, online, myName }: { players: Player[]; online:
   return (
     <div>
       {/* The roster moves on every arrival, every departure and every reconnect, all of it
-          pushed by SSE and none of it in response to anything the player did — so the eye has
+          pushed by the socket and none of it in response to anything the player did — so the eye has
           nothing to catch it on and a screen reader has nothing at all. The echo says the same
           sentence the panel says, in the panel's own terms. `polite`, because a player who is
           mid-word does not want a reconnect to talk over them. */}
@@ -241,7 +259,10 @@ export function RosterList({ players, myName }: { players: Player[]; myName: str
       {players.map((p) => (
         <div className="rosterlist__row" key={p.name}>
           <span className={`lamp lamp--${p.online ? 'on' : 'off'}`} aria-hidden="true" />
-          <PlayerName name={p.name} isMe={p.name === myName} className="rosterlist__name" />
+          <span className="rosterlist__who">
+            <Avatar name={p.name} dim={!p.online} />
+            <PlayerName name={p.name} isMe={p.name === myName} className="rosterlist__name" />
+          </span>
           {/* The ranking total, after the name: the only number in this row, printed by `fr`.
               That is the whole null story here, and it is worth being exact about it — the dash
               `fr` prints for a null is NOT reached in this component today, because the
@@ -367,10 +388,55 @@ export function Readout({
     // `.readout[data-size=…] .readout__value` and win on specificity rather than on
     // whichever order the stylesheet happens to be in.
     <div className="readout" data-size={size}>
-      <span className="readout__label">{label}</span>
-      <p className={`readout__value${code ? ' readout__value--code' : ''}`}>{value}</p>
+      {code ? (
+        <CodeTiles label={label} value={value} />
+      ) : (
+        <>
+          <span className="readout__label">{label}</span>
+          {/* Markdown, so an exercise's lists, emphasis and formulas render as they were written. */}
+          <TargetText className="readout__value" text={value} />
+        </>
+      )}
       {image && <img className="readout__image" src={image} alt="Image de l’exercice" />}
     </div>
+  )
+}
+
+// The room code as letter tiles, and the tiles are a copy button. Selecting the tiles by hand used
+// to copy one letter per line — four boxes are four blocks to the clipboard — so a tap now copies
+// the four letters as one word, and the label says it worked.
+function CodeTiles({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState<'no' | 'yes' | 'failed'>('no')
+  async function copy() {
+    buzz()
+    try {
+      await copyText(value)
+      setCopied('yes')
+    } catch {
+      setCopied('failed')
+    }
+    setTimeout(() => setCopied('no'), 1800)
+  }
+  return (
+    <>
+      <span className={`readout__label${copied === 'yes' ? ' readout__label--ok' : ''}`} aria-live="polite">
+        {copied === 'yes' ? '✓ Code copié' : copied === 'failed' ? 'Copie impossible' : label}
+      </span>
+      <button
+        type="button"
+        className="readout__value readout__value--code readout__copy"
+        onClick={() => void copy()}
+        aria-label={`Copier le code ${value}`}
+        title="Copier le code"
+      >
+        {[...value].map((ch, i) => (
+          <span className="codechar" key={i} aria-hidden="true" style={{ '--i': i } as CSSProperties}>
+            {ch}
+          </span>
+        ))}
+      </button>
+      <span className="readout__hint" aria-hidden="true">Touche le code pour le copier</span>
+    </>
   )
 }
 
@@ -439,7 +505,7 @@ export function Board({
       className={`board${columns.length ? ' board--cols' : ''}`}
       style={
         columns.length
-          ? { gridTemplateColumns: `1.4rem minmax(0, 1fr) repeat(${columns.length + 1}, auto)` }
+          ? { gridTemplateColumns: `2rem minmax(0, 1fr) repeat(${columns.length + 1}, auto)` }
           : undefined
       }
     >
@@ -458,14 +524,25 @@ export function Board({
         </div>
       )}
       {players.map((p, i) => (
-        <div className="board__row" key={p.name}>
-          <span className="board__rank">{i + 1}</span>
-          <PlayerName
-            name={p.name}
-            isMe={p.name === myName}
-            className={p.name === myName ? 'board__name board__name--me' : 'board__name'}
-          />
-          {badges[p.name] && <span className="board__tag board__tag--fun">{badges[p.name]}</span>}
+        <div
+          className={`board__row${p.name === myName ? ' board__row--me' : ''}`}
+          key={p.name}
+          style={{ '--i': i } as CSSProperties}
+        >
+          <span className="board__rank" data-medal={i < 3 ? i + 1 : undefined}>
+            {i + 1}
+          </span>
+          {/* Avatar, name and fun badge are ONE cell: the badge used to be a grid item of its own,
+              which shifted every following cell one column right and scrambled the final board. */}
+          <span className="board__who">
+            <Avatar name={p.name} />
+            <PlayerName
+              name={p.name}
+              isMe={p.name === myName}
+              className={p.name === myName ? 'board__name board__name--me' : 'board__name'}
+            />
+            {badges[p.name] && <span className="board__tag board__tag--fun">{badges[p.name]}</span>}
+          </span>
           {/* The dimension columns, through the same formatter as the total. `proximity_total`
               and `quality_total` are sums over settled rounds, and a round is a mean of two
               out-of-ten numbers, so both are as fractional as the rounds that made them. */}
@@ -670,6 +747,7 @@ export function ReadyBar({ ready, onReady }: { ready: ReadyState | null; onReady
         aria-describedby={askId}
         className={`btn${settled ? ' btn--ghost' : ' btn--signal'} btn--wide`}
         onClick={async () => {
+          buzz()
           setBusy(true)
           setOptimistic(ready.step)
           try {
@@ -719,13 +797,14 @@ export function Section({ title, children }: { title: string; children: ReactNod
 // same seconds as the rest of the room. Renders nothing when the phase has no clock.
 export function PhaseClock({ timer, what }: { timer: ServerWindow | null; what: string }) {
   const { open, left } = useQuizWindow(timer)
+  const length = useWindowLength(timer?.deadline_ms ?? null, open ? left : 0)
   if (!timer) return null
   const secs = countdown(left)
   return (
     <p className="qclock" data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
       {open ? (
         <>
-          <span className="qclock__n num">{secs}</span>
+          <Ring left={left} length={length} secs={secs} />
           <span className="qclock__t">
             {secs > 1 ? 'secondes' : 'seconde'} {what}
           </span>
@@ -734,5 +813,100 @@ export function PhaseClock({ timer, what }: { timer: ServerWindow | null; what: 
         <span className="qclock__t qclock__t--closed">Temps écoulé</span>
       )}
     </p>
+  )
+}
+
+// A player's token: a coloured disc with their initials, the same hue on every phone because it
+// is derived from the name. Decorative — the name always sits next to it.
+export function Avatar({ name, size = 'sm', dim = false }: { name: string; size?: 'sm' | 'md' | 'lg'; dim?: boolean }) {
+  return (
+    <span
+      className={`avatar avatar--${size}${dim ? ' avatar--dim' : ''}`}
+      style={{ '--h': hueOf(name) } as CSSProperties}
+      aria-hidden="true"
+    >
+      {initials(name)}
+    </span>
+  )
+}
+
+// Everyone in the room as tokens, popping in as they arrive. The lobby's "who is here" at a
+// glance; the count above it stays the authority in words.
+export function PlayerCloud({ players, myName }: { players: Player[]; myName: string }) {
+  return (
+    <ul className="cloud" aria-label="Joueurs dans la pièce">
+      {players.map((p) => (
+        <li className={`cloud__p${p.online ? '' : ' cloud__p--off'}${p.name === myName ? ' cloud__p--me' : ''}`} key={p.name}>
+          <Avatar name={p.name} size="md" dim={!p.online} />
+          <span className="cloud__name">{p.name}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// The countdown as a draining ring with the seconds inside. `length` is the window's measured
+// length; before it is known the ring is simply full.
+export function Ring({ left, length, secs }: { left: number; length: number; secs: number }) {
+  const R = 22
+  const C = 2 * Math.PI * R
+  const k = length > 0 ? Math.max(0, Math.min(1, left / length)) : 1
+  return (
+    <span className="ring">
+      <svg viewBox="0 0 52 52" className="ring__svg" aria-hidden="true">
+        <circle className="ring__track" cx="26" cy="26" r={R} />
+        <circle
+          className="ring__fill"
+          cx="26"
+          cy="26"
+          r={R}
+          strokeDasharray={C}
+          strokeDashoffset={C * (1 - k)}
+        />
+      </svg>
+      <span className="ring__n num qclock__n">{secs}</span>
+    </span>
+  )
+}
+
+const CONFETTI_COLORS = ['#ffc83d', '#ff4fa3', '#3bc9f5', '#3ee39a', '#a78bfa', '#ff7a45']
+
+// A burst of confetti over the whole screen, once per mount — give it a new `key` to fire again.
+// Pure CSS animation, pointer-transparent, hidden from assistive tech and under reduced motion.
+export function Confetti({ pieces = 70 }: { pieces?: number }) {
+  // Random once per mount, so a re-render does not reshuffle a burst in flight.
+  const [bits] = useState(() =>
+    Array.from({ length: pieces }, (_, i) => ({
+      x: Math.random() * 100,
+      dx: (Math.random() - 0.5) * 40,
+      r: Math.random() * 720 - 360,
+      d: Math.random() * 400,
+      t: 1600 + Math.random() * 1400,
+      c: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+      w: 6 + Math.random() * 6,
+    })),
+  )
+  // Portalled to <body>: the screens animate in with `transform`, and a transformed ancestor
+  // would turn this fixed overlay into one the size of the card it was rendered in.
+  return createPortal(
+    <div className="confetti" aria-hidden="true">
+      {bits.map((b, i) => (
+        <i
+          key={i}
+          style={
+            {
+              '--x': `${b.x}vw`,
+              '--dx': `${b.dx}vw`,
+              '--r': `${b.r}deg`,
+              '--d': `${b.d}ms`,
+              '--t': `${b.t}ms`,
+              '--c': b.c,
+              '--w': `${b.w}px`,
+            } as CSSProperties
+          }
+        />
+      ))}
+    </div>,
+    document.body,
   )
 }

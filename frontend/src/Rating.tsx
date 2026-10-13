@@ -1,7 +1,9 @@
-import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
 import { AnswerMeter, ConsoleBar, PhaseClock, ReadyBar, RoundTrack, ScoreScale } from './ui'
 import { ApiError, describe, getName, getToken, post, postReady, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
+import { buzz } from './fx'
+import { TargetText } from './ModelOutput'
 
 /* The cross-rating screen. The most constrained surface in the console, and the constraints are
  * the feature: a prompt, the target it was written against, and one number to give. */
@@ -105,9 +107,11 @@ export default function Rating({
     setBusy(true)
     setErr('')
     try {
-      await post(`/api/rooms/${code}/rate`, { token: getToken(code), score: picked })
+      // The index pins the vote to the prompt on screen: a tap that lands as the reveal moves
+      // is refused rather than scored against a prompt this player has not read.
+      await post(`/api/rooms/${code}/rate`, { token: getToken(code), score: picked, index: promptAt })
       // The POST is the authority on its own outcome, exactly as it is on the Game screen: the
-      // reveal moves for the room when everyone has scored, which is an SSE frame away, and a
+      // reveal moves for the room when everyone has scored, which is a frame away, and a
       // player who has just scored should not be able to score twice while it travels.
       setSeen(promptAt)
     } catch (e) {
@@ -159,7 +163,7 @@ export default function Rating({
             what was asked, and the panel is the console's own way of drawing a fixed fact. */}
         <div className="ratehead">
           <p className="label">La cible du tour</p>
-          <p className="ratehead__target">{state.target ?? '—'}</p>
+          <TargetText className="ratehead__target" text={state.target ?? '—'} />
           {state.target_image && (
             <img className="ratehead__image" src={state.target_image} alt="Image de l’exercice" />
           )}
@@ -213,10 +217,15 @@ export default function Rating({
                 <button
                   key={n}
                   type="button"
-                  className={`btn rate${picked === n ? ' btn--signal' : ''}`}
+                  className={`btn rate${picked === n ? ' rate--on' : ''}`}
+                  // A warm-to-green ramp along the scale, so the grid reads as low-to-high at a glance.
+                  style={{ '--h': Math.round(((n - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)) * 130) } as CSSProperties}
                   aria-pressed={picked === n}
                   disabled={busy || sent}
-                  onClick={() => setPicked(n)}
+                  onClick={() => {
+                    buzz(8)
+                    setPicked(n)
+                  }}
                 >
                   {n}
                 </button>

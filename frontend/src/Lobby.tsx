@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { ConsoleBar, PresenceDots, Readout, ReadyBar, Roster } from './ui'
+import { ConsoleBar, PlayerCloud, PresenceDots, Readout, ReadyBar, Roster } from './ui'
 import { describe, getName, getToken, postReady, type State } from './api'
 import type { Link } from './useRoom'
+import { copyText } from './fx'
 
 export default function Lobby({
   state,
@@ -21,39 +22,8 @@ export default function Lobby({
   const [shared, setShared] = useState<'no' | 'sent' | 'copied'>('no')
   const [err, setErr] = useState('')
 
-  // The documented deployment is http://<IP-LAN>:5173, and plain http on a LAN address is not
-  // a secure context. Both `navigator.share` and `navigator.clipboard` are secure-context APIs
-  // and on that origin both are simply undefined — so the documented way of playing this game
-  // is the one way its only button cannot work, and the failure landed in a bare catch and was
-  // reported to the player as nothing at all.
-  //
-  // `execCommand('copy')` is deprecated and unfashionable and is also the only copy that is
-  // still there on an insecure origin, which is the only copy this screen can rely on.
-  function copyLegacy(text: string) {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.setAttribute('readonly', '')
-    // Off-screen rather than display:none, because a textarea that is not laid out cannot be
-    // selected and the selection is the copy. Pinned to the middle of the viewport rather than
-    // the top of the document, because iOS scrolls a focused field into view and would
-    // otherwise jump the page to a textarea parked at 0,0.
-    ta.style.cssText = 'position:fixed;top:50%;left:50%;width:1px;height:1px;padding:0;border:0;opacity:0;'
-    // Selecting the textarea takes the focus, and letting it go to <body> on cleanup would drop
-    // a keyboard player out of the tab order on a control they had just pressed.
-    const back = document.activeElement as HTMLElement | null
-    document.body.appendChild(ta)
-    let ok = false
-    try {
-      ta.select()
-      ta.setSelectionRange(0, text.length)
-      ok = document.execCommand('copy')
-    } finally {
-      ta.remove()
-      back?.focus()
-    }
-    if (!ok) throw new Error('copy refused')
-  }
-
+  // `copyText` carries the insecure-origin fallback: on the documented http://<IP-LAN> origin
+  // neither `navigator.share` nor `navigator.clipboard` exists.
   // The code is spoken across a room, not tapped. Sharing hands the whole sentence over
   // WhatsApp when the phone allows it, and falls back to a copy when it does not.
   async function share() {
@@ -69,8 +39,7 @@ export default function Lobby({
         setShared('sent')
         return
       }
-      if (navigator.clipboard) await navigator.clipboard.writeText(text)
-      else copyLegacy(text)
+      await copyText(text)
       setShared('copied')
     } catch (e) {
       // A share sheet the player dismissed is them saying no, not a fault, and reporting it
@@ -104,13 +73,13 @@ export default function Lobby({
 
           <div className="stack">
             <p className="prose prose--dim">
-              Lis ce code à voix haute pour que les autres te rejoignent. Quand tout le monde est
-              là, appuie sur « Je suis prêt » : c’est la classe qui démarre la partie.
+              Lis ce code à voix haute pour que les autres te rejoignent. Appuie sur « Je suis
+              prêt » : la partie démarre quand la majorité des joueurs présents est prête.
             </p>
 
             <div className="actions">
               <button type="button" className="btn btn--signal btn--wide" onClick={() => void share()}>
-                {shared === 'copied' ? 'Code copié' : shared === 'sent' ? 'Code partagé' : 'Partager le code'}
+                {shared === 'copied' ? '✓ Code copié' : shared === 'sent' ? '✓ Code partagé' : 'Partager le code'}
               </button>
             </div>
 
@@ -199,6 +168,8 @@ export default function Lobby({
           {/* The number is the one on the stream, not the size of the roster — a phone asleep
               in a pocket is a player who is in the game and not in the room. */}
           <Roster players={state.players} online={state.online_count} myName={getName(state.code)} />
+          {/* The room as tokens popping in: the game-show version of « is everyone here ». */}
+          <PlayerCloud players={state.players} myName={getName(state.code)} />
           {/* Anonymous lobby presence from the ready votes already in room_state. */}
           {state.ready && state.ready.count > 0 && state.ready.count < state.ready.needed && (
             <PresenceDots label={`${state.ready.count} sur ${state.ready.needed} prêts…`} />

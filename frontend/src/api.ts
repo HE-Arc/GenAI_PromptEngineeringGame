@@ -130,7 +130,7 @@ export interface QuizAnswered {
 }
 
 // A submitted rating. Deliberately empty beyond `ok`: the rating screen's progress comes from
-// the `reveal` block in the SSE snapshot, so the POST confirms the write and the next frame
+// the `reveal` block in the snapshot, so the POST confirms the write and the next frame
 // carries the state. Sending the progress here too would give the client two truths to keep in
 // step, and the snapshot is the one everybody already trusts.
 export interface Rated {
@@ -268,112 +268,32 @@ async function unwrap<T>(res: Response): Promise<T> {
   return data as T
 }
 
-// What `POST /answer` answers with: the judge's verdict, and whether the model's own cap cut
-// the answer short. `output` is NOT here — the client keeps the text it accumulated from the
-// `chunk` frames, which is the same text the server stored and the judge scored, so a streamed
-// answer and a scored answer cannot drift apart.
-export interface Answered {
-  score: number
-  comment: string
-  round: number
-  truncated: boolean
+// The answer, as the socket carries it. `answer.start` sends one frame on a
+// connection that already knows the player, and the verdict arrives as frames
+// (`answer.chunk`/`scoring`/`done`) which useRoom hands to the waiting screen.
+export type AnswerSender = (prompt: string) => void
+
+export function answerStart(send: AnswerSender, prompt: string): void {
+  send(prompt)
 }
 
-// A cancel, and not a failure. `fetch` rejects an aborted request with a `DOMException` named
-// `AbortError`, which is not an `ApiError` and must never be shown to a player as one: leaving
-// the screen is not the server falling over.
-export function isAbort(e: unknown): boolean {
-  return e instanceof DOMException && e.name === 'AbortError'
-}
-
-// The `error` frame, and the sentence the server chose for it. A separate class from `ApiError`
-// because it must reach the player VERBATIM: it is not a refusal `describe` can translate, and
-// `describe` would replace it with a generic line that says less than the server just said.
-export class StreamError extends ApiError {
-  constructor(message: string) {
-    // 500 is what the frame means: the round failed, not the player. It only matters because
-    // `describe` reads the status, and `Game` bypasses `describe` for this class entirely.
-    super(500, message || 'La partie a planté côté serveur. Préviens l’animateur.')
-    this.name = 'StreamError'
+// A refusal off the socket, translated into the ApiError the old answer POST threw,
+// so `describe` keeps saying the same French to the same failure: `already_answered`
+// is the 409 the POST answered before the stream started, and the unknown codes fall
+// through to the generic lines by status rather than inventing new wording per frame.
+export function wsRefusal(code: string, message: string): ApiError {
+  switch (code) {
+    case 'already_answered':
+      return new ApiError(409, 'already answered')
+    case 'bad_token':
+      return new ApiError(403, 'bad token')
+    case 'unknown_room':
+      return new ApiError(404, 'unknown room')
+    case 'inflight':
+      return new ApiError(409, message || 'answer already streaming')
+    default:
+      return new ApiError(500, message || 'answer failed')
   }
-}
-
-// The answer, as it arrives. `fetch` rather than EventSource for two reasons that are the same
-// reason: this is a POST that WRITES (the answer row, the phase, three billed calls), and
-// EventSource is a GET that cannot carry a body. A GET that writes would put the player's
-// token in a query string, in a proxy log, for a stream that has to be private.
-//
-// `res.body` is the floor, and it is a real one: iOS Safari 16.4 (March 2023), which is also
-// the floor Vite 8's default build target puts this app on. The check below is not defensive
-// coding, it is the honest refusal — a phone that cannot read a stream gets told, rather than a
-// button that spins forever.
-export async function streamAnswer(
-  path: string,
-  body: unknown,
-  on: { chunk: (delta: string) => void; scoring: () => void },
-  signal: AbortSignal,
-): Promise<Answered> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-  // A refusal is decided BEFORE the stream starts, so it is still a JSON error with its 409 —
-  // exactly what `unwrap` would have thrown, so `describe` keeps translating it. Everything
-  // after this line is a 200 whose body is the answer.
-  if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new ApiError(res.status, data.error ?? `HTTP ${res.status}`)
-  }
-  if (!res.body) throw new ApiError(0, 'stream unsupported')
-
-  const reader = res.body.getReader()
-  // A `TextDecoderStream` would be the obvious tool and it is iOS 14.5; the manual buffer is one
-  // object and one loop. `stream: true` per call is what makes a multi-byte character split
-  // across two reads come back whole instead of as two replacement characters — it belongs on
-  // `decode`, not on the constructor, which is why the decoder is built with the label alone.
-  const decoder = new TextDecoder('utf-8')
-  // Frames are separated by a blank line and a frame can be split across two reads at any byte,
-  // so whatever follows the last blank line is carried into the next read. Every frame the
-  // server writes ends with its own `\n\n`, so nothing is left in the buffer at the end — the
-  // server terminating without a `done` is what the throw below is for.
-  let buf = ''
-
-  // One block of SSE. `data` lines are concatenated because the format allows a frame to split
-  // its payload across several of them, and `JSON.parse` on either half would not survive it.
-  function frame(block: string) {
-    let name = 'message'
-    let data = ''
-    for (const line of block.split('\n')) {
-      if (line.startsWith('event:')) name = line.slice(6).trim()
-      else if (line.startsWith('data:')) data += line.slice(5).trim()
-    }
-    return { name, data }
-  }
-
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    let cut = buf.indexOf('\n\n')
-    while (cut !== -1) {
-      const { name, data } = frame(buf.slice(0, cut))
-      buf = buf.slice(cut + 2)
-      // Dispatched on the event name alone: `scoring` carries an empty object, and a frame whose
-      // data line was dropped in transit must still get its name acted on. An unknown name is
-      // ignored, not thrown — it is not an error, and throwing on one would kill a stream that
-      // is working perfectly well.
-      if (name === 'chunk' && data) on.chunk((JSON.parse(data) as { delta: string }).delta)
-      else if (name === 'scoring') on.scoring()
-      else if (name === 'done') return JSON.parse(data) as Answered
-      else if (name === 'error') throw new StreamError(((JSON.parse(data) as { error: string }).error) || '')
-      cut = buf.indexOf('\n\n')
-    }
-  }
-  // The stream ended without a verdict: no `error` frame and no `done`. The server closed it,
-  // which is a failure of the round and not of the player, so it is reported as one.
-  throw new StreamError('La partie a planté côté serveur. Préviens l’animateur.')
 }
 
 export async function post<T>(path: string, body?: unknown): Promise<T> {
@@ -430,6 +350,7 @@ const REASONS: Record<string, string> = {
   "time's up": 'C’est fini pour cette question, la suivante arrive.',
   'not the current question': 'La classe est déjà passée à une autre question.',
   'already rated': 'Tu as déjà noté ce prompt. Le suivant arrive.',
+  'not the current prompt': 'La classe est passée au prompt suivant : note celui qui est affiché.',
   'not playing': "La partie n’est pas encore démarrée.",
   'quiz not open': 'Le didacticiel est fermé. L’animateur fait avancer la partie.',
   'not rating': 'La notation est fermée. L’animateur fait avancer la partie.',

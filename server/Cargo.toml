@@ -1,0 +1,34 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-openai = "0.26"
+axum = { version = "0.7", features = ["ws"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
+tower = { version = "0.5", features = ["util"] }
+hmac = "0.13.0"
+sha2 = "0.11.0"
+getrandom = "0.4"
+reqwest = "0.12"
+dotenvy = "0.15"
+
+[dev-dependencies]
+axum-test = "=16"
+tokio-tungstenite = "0.30.0"
+futures-util = "0.3.34"
+tower = { version = "0.5", features = ["util"] }
+
+# Conservative release tuning: thin LTO + single codegen unit trade a slower
+# build for a smaller, slightly faster binary; opt-level stays at 3 and
+# panic stays unwind so backtraces keep working under load.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
