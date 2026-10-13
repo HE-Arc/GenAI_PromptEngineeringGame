@@ -6,6 +6,7 @@ import App from './App'
 import './index.css'
 import './console.css'
 import './pages.css'
+import './polish.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
