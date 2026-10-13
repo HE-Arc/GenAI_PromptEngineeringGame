@@ -30,7 +30,7 @@ pub struct WsParams {
 const CLOSE_BAD_TOKEN: u16 = 4403;
 const CLOSE_UNKNOWN_ROOM: u16 = 4404;
 // Same bound the composer enforces (`maxLength`), checked again server-side.
-const MAX_PROMPT_CHARS: usize = 500;
+const MAX_PROMPT_CHARS: usize = 1000;
 // Player-facing, so French: shown to the author and as the room notice.
 const CRASH_NOTICE: &str = "La partie a planté côté serveur. Préviens l'animateur.";
 // Stored and shown in place of a silent answer: a blank output box reads as
@@ -651,7 +651,7 @@ mod tests {
         let mut erx = hub.subscribe_events().await;
 
         // Validation runs before any model call.
-        for (prompt, msg) in [("   ", "prompt required"), (&*"x".repeat(501), "prompt too long")] {
+        for (prompt, msg) in [("   ", "prompt required"), (&*"x".repeat(1001), "prompt too long")] {
             match begin_answer(&state, "FA11", &ana.token, prompt).await {
                 Err(e) => assert_eq!(e.message, msg),
                 Ok(_) => panic!("{msg} must be refused"),

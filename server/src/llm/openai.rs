@@ -160,7 +160,7 @@ pub const VERDICT_FALLBACK_COMMENT: &str = "Le modele n'a pas rendu de verdict l
 
 // Caps per call (Django PLAY/JUDGE/CRITIC_MAX_TOKENS): the play call must
 // stay the largest, it reproduces long-form targets.
-const PLAY_MAX_TOKENS: u32 = 1600;
+const PLAY_MAX_TOKENS: u32 = 5000;
 const JUDGE_MAX_TOKENS: u32 = 1200;
 const CRITIC_MAX_TOKENS: u32 = 1200;
 
