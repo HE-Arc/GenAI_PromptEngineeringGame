@@ -60,9 +60,14 @@ pub struct RoomHub {
     build_lock: Mutex<()>,
 }
 
+// 1024 broadcast slots: a 30-player answer burst fans ~30 chunk frames at
+// once, and 256 lagged a full classroom into resync storms. Memory stays
+// trivial (frames are small JSON), lag still resyncs from the cache.
+pub const BROADCAST_CAP: usize = 1024;
+
 impl RoomHub {
     pub fn new() -> Self {
-        Self::new_with_capacity(256)
+        Self::new_with_capacity(BROADCAST_CAP)
     }
 
     pub fn new_with_capacity(capacity: usize) -> Self {

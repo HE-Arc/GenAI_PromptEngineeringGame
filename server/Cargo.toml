@@ -23,3 +23,12 @@ axum-test = "=16"
 tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
 tower = { version = "0.5", features = ["util"] }
+
+# Conservative release tuning: thin LTO + single codegen unit trade a slower
+# build for a smaller, slightly faster binary; opt-level stays at 3 and
+# panic stays unwind so backtraces keep working under load.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

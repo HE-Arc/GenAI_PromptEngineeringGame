@@ -33,14 +33,19 @@ pub struct Player {
 
 static TOKEN_SEQ: AtomicU64 = AtomicU64::new(0);
 
-// Dependency-free token: nanos plus a sequence so same-millisecond joins
-// still differ. Upgraded to a CSPRNG token when join owns issuance.
+// Unpredictable bearer: timestamp-derived tokens let anyone who joined once
+// guess a later player's token, so randomness carries the entropy and the
+// clock/sequence only disambiguate.
 fn new_token() -> String {
+    let seq = TOKEN_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut buf = [0u8; 16];
+    if getrandom::fill(&mut buf).is_ok() {
+        return crate::admin_session::hex(&buf) + &format!("{seq:x}");
+    }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let seq = TOKEN_SEQ.fetch_add(1, Ordering::Relaxed);
     format!("{nanos:x}{seq:x}")
 }
 

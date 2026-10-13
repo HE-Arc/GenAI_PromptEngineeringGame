@@ -43,6 +43,22 @@ const SERVER_PING_EVERY: Duration = Duration::from_secs(15);
 // No frame at all (pong, ping, text) for this long means a half-open
 // socket: close it so the presence grace period starts counting.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+// Frames buffered per socket. Bounded so a dead-but-not-closed socket cannot
+// grow the queue without limit; the forwarder drops slow-receiver frames and
+// resyncs from the cached snapshot instead.
+const OUTBOX_CAP: usize = 128;
+// Concurrent LLM answers per process. Each holds a pool connection, a Tokio
+// task pair and an inflight claim; past this, new starts are refused with
+// `busy` instead of queueing behind a stalled provider.
+const MAX_LIVE_ANSWERS: usize = 32;
+// Score and grade run together under one deadline: sequential verdicts held
+// the inflight claim twice as long for no reason.
+const VERDICTS_TIMEOUT: Duration = Duration::from_secs(90);
+
+fn answer_slots() -> Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    Arc::clone(SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_LIVE_ANSWERS))))
+}
 
 pub struct AnswerReject {
     pub code: &'static str,
@@ -63,6 +79,9 @@ pub struct AnswerJob {
     player_name: String,
     target: String,
     prompt: String,
+    // Held until the answer task finishes: the semaphore count is the live
+    // LLM load, so dropping the job (or the task) always frees the slot.
+    _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 // Unknown room rejects the upgrade outright so REST/WS share the 404 shape.
@@ -97,8 +116,10 @@ pub async fn ws_handler(
         .into_response()
 }
 
-fn send_out(tx: &mpsc::UnboundedSender<WsOut>, msg: WsOut) {
-    let _ = tx.send(msg);
+async fn send_out(tx: &mpsc::Sender<WsOut>, msg: WsOut) {
+    // Control frames from the recv loop: the writer drains promptly, so
+    // waiting here only means backpressure, never a deadlock.
+    let _ = tx.send(msg).await;
 }
 
 // Idempotent admission: persisted answer => already_answered (Django 409
@@ -181,6 +202,18 @@ pub async fn begin_answer(
             message: "answer already streaming",
         });
     }
+    // Claimed: release the inflight slot on every refusal below, or the
+    // player could never retry after a busy rejection.
+    let slot = match answer_slots().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            hub.release(round.id, player.id).await;
+            return Err(AnswerReject {
+                code: "busy",
+                message: "Réessaie dans un instant.",
+            });
+        }
+    };
     Ok(AnswerJob {
         hub,
         code: code.to_string(),
@@ -189,6 +222,7 @@ pub async fn begin_answer(
         player_name: player.name,
         target: round.target,
         prompt: prompt.to_string(),
+        _slot: slot,
     })
 }
 
@@ -253,8 +287,26 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 job.hub.publish_event(WsOut::AnswerScoring {
                     player: player.clone(),
                 });
-                let verdict = state.llm.score(&job.prompt, &full, &job.target).await;
-                let critique = state.llm.grade_prompt(&job.prompt, &job.target).await;
+                // Concurrent under one deadline: the old sequential pair held
+                // the inflight claim (and the round) twice as long.
+                let scored = tokio::time::timeout(VERDICTS_TIMEOUT, async {
+                    tokio::join!(
+                        state.llm.score(&job.prompt, &full, &job.target),
+                        state.llm.grade_prompt(&job.prompt, &job.target),
+                    )
+                })
+                .await;
+                let (verdict, critique) = match scored {
+                    Ok(pair) => pair,
+                    Err(_) => {
+                        crate::log_warn(&format!("verdicts timed out in room {}", job.code));
+                        let fallback = crate::llm::Verdict {
+                            score: 0,
+                            feedback: crate::llm::openai::VERDICT_FALLBACK_COMMENT.into(),
+                        };
+                        (fallback.clone(), fallback)
+                    }
+                };
                 insert_answer_row(&state.pool, &job, &full, &verdict, &critique)
                     .await
                     .map(|_| (verdict, truncated))
@@ -276,7 +328,7 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 });
             }
             Err(e) => {
-                eprintln!("answer failed in room {}: {e}", job.code);
+                crate::log_warn(&format!("answer failed in room {}: {e}", job.code));
                 // A row still lands, scored 0 and marked: without it the
                 // round would wait for this player forever, and the summary
                 // says plainly what happened.
@@ -285,7 +337,7 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                     feedback: CRASH_NOTICE.into(),
                 };
                 if let Err(e) = insert_answer_row(&state.pool, &job, &full, &marker, &marker).await {
-                    eprintln!("fallback answer write failed in room {}: {e}", job.code);
+                    crate::log_warn(&format!("fallback answer write failed in room {}: {e}", job.code));
                 }
                 job.hub.release(job.round_id, job.player_id).await;
                 job.hub.note_error(CRASH_NOTICE);
@@ -365,7 +417,7 @@ async fn handle_socket(
     // Single writer task: the recv loop and the hub fan-out both push WsOut
     // here, so frames never interleave on the socket. It also owns the
     // keepalive ping, the only frame the server sends unprompted.
-    let (tx_out, mut rx_out) = mpsc::unbounded_channel::<WsOut>();
+    let (tx_out, mut rx_out) = mpsc::channel::<WsOut>(OUTBOX_CAP);
     // Snapshots are shared by every socket; the per-viewer flags
     // (`reveal.mine`, `ready.mine`) are resolved here, on the way out.
     let _writer = AbortOnDrop(tokio::spawn(async move {
@@ -408,8 +460,16 @@ async fn handle_socket(
         loop {
             match erx.recv().await {
                 Ok(ev) => {
-                    if fwd_tx.send(ev).is_err() {
-                        return;
+                    // Drop-slow receiver: a socket that cannot keep up loses
+                    // live frames and resyncs from the cached snapshot rather
+                    // than growing an unbounded queue behind it.
+                    if fwd_tx.try_send(ev).is_err() {
+                        let (seq, snap) = fwd_hub.cached().await;
+                        if snap.is_null() {
+                            let _ = fwd_hub.republish(&fwd_pool, &fwd_code).await;
+                        } else if fwd_tx.try_send(WsOut::Snapshot { seq, state: snap }).is_err() {
+                            return;
+                        }
                     }
                 }
                 // Lagged receivers resync from the cached snapshot, never panic.
@@ -418,7 +478,7 @@ async fn handle_socket(
                     if snap.is_null() {
                         // republish fans the fresh snapshot to this socket too.
                         let _ = fwd_hub.republish(&fwd_pool, &fwd_code).await;
-                    } else if fwd_tx.send(WsOut::Snapshot { seq, state: snap }).is_err() {
+                    } else if fwd_tx.send(WsOut::Snapshot { seq, state: snap }).await.is_err() {
                         return;
                     }
                 }
@@ -443,7 +503,7 @@ async fn handle_socket(
         let incoming: WsIn = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(_) => {
-                send_out(&tx_out, WsOut::error("bad_request", "unparseable message"));
+                send_out(&tx_out, WsOut::error("bad_request", "unparseable message")).await;
                 continue;
             }
         };
@@ -454,7 +514,7 @@ async fn handle_socket(
                 if validate(&state.pool, &code, &token).await.is_err()
                     && !admin_session::request_is_admin(&headers)
                 {
-                    send_out(&tx_out, WsOut::error("bad_token", "bad token"));
+                    send_out(&tx_out, WsOut::error("bad_token", "bad token")).await;
                     return;
                 }
                 // Presence first: when it changes, the republished snapshot
@@ -476,19 +536,19 @@ async fn handle_socket(
                     // First subscriber builds the snapshot once; later ones
                     // clone it. republish also fans it to this socket.
                     if hub.republish(&state.pool, &code).await.is_none() {
-                        send_out(&tx_out, WsOut::error("unknown_room", "unknown room"));
+                        send_out(&tx_out, WsOut::error("unknown_room", "unknown room")).await;
                     }
                 } else {
-                    send_out(&tx_out, WsOut::Snapshot { seq, state: snap });
+                    send_out(&tx_out, WsOut::Snapshot { seq, state: snap }).await;
                 }
             }
-            WsIn::Ping => send_out(&tx_out, WsOut::Pong),
+            WsIn::Ping => send_out(&tx_out, WsOut::Pong).await,
             WsIn::AnswerStart { prompt } => match answer_token.as_deref() {
                 Some(t) => match begin_answer(&state, &code, t, &prompt).await {
                     Ok(job) => spawn_answer(state.clone(), job),
-                    Err(reject) => send_out(&tx_out, WsOut::error(reject.code, reject.message)),
+                    Err(reject) => send_out(&tx_out, WsOut::error(reject.code, reject.message)).await,
                 },
-                None => send_out(&tx_out, WsOut::error("bad_token", "only players can answer")),
+                None => send_out(&tx_out, WsOut::error("bad_token", "only players can answer")).await,
             },
         }
     }

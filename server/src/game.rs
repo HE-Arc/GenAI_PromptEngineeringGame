@@ -187,7 +187,14 @@ async fn round_answers(pool: &SqlitePool, round_id: i64) -> Vec<AnswerRow> {
 
 fn random_u64() -> u64 {
     let mut buf = [0u8; 8];
-    getrandom::fill(&mut buf).expect("OS RNG unavailable");
+    // Shuffle only: a failed RNG degrades to a time seed, never a panic.
+    if getrandom::fill(&mut buf).is_err() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9e3779b9);
+        return nanos ^ (nanos >> 29);
+    }
     u64::from_le_bytes(buf)
 }
 
@@ -401,15 +408,32 @@ async fn settle_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Er
     let Some((round_id, _)) = current_round(pool, room).await else {
         return Ok(());
     };
-    for a in round_answers(pool, round_id).await {
-        let scores: Vec<i64> = sqlx::query_scalar("SELECT score FROM rating WHERE answer_id = ?")
-            .bind(a.id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-        let peers = (!scores.is_empty())
-            .then(|| half_up(scores.iter().sum::<i64>() as f64 / scores.len() as f64));
-        let q = quality(a.quality_llm, &scores);
+    let answers = round_answers(pool, round_id).await;
+    if answers.is_empty() {
+        return Ok(());
+    }
+    // One grouped read instead of one SELECT per answer: a 30-player settle
+    // is two round-trips under contention, not thirty-plus.
+    let ids: Vec<String> = answers.iter().map(|a| a.id.to_string()).collect();
+    let ratings: Vec<(i64, i64)> = sqlx::query_as(&format!(
+        "SELECT answer_id, score FROM rating WHERE answer_id IN ({})",
+        ids.join(",")
+    ))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut by_answer: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (id, score) in ratings {
+        by_answer.entry(id).or_default().push(score);
+    }
+    // One transaction instead of N autocommits: a single WAL write, and a
+    // concurrent reader never sees a half-settled round.
+    let mut tx = pool.begin().await?;
+    for a in &answers {
+        let scores: &[i64] = by_answer.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
+        let peers =
+            (!scores.is_empty()).then(|| half_up(scores.iter().sum::<i64>() as f64 / scores.len() as f64));
+        let q = quality(a.quality_llm, scores);
         // Weighted 1/3 proximity, 2/3 quality: the game teaches prompting,
         // so a lucky output must not outweigh a well-built prompt.
         let round_score = (a.score as f64 + 2.0 * q as f64) / 3.0;
@@ -418,9 +442,10 @@ async fn settle_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Er
             .bind(q)
             .bind(round_score)
             .bind(a.id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -664,8 +689,10 @@ pub fn spawn_ticker(state: AppState) {
         let mut announced: HashMap<String, i64> = HashMap::new();
         loop {
             tick.tick().await;
+            // Bounded scan: without LIMIT one stuck room table makes every
+            // tick linear in dead rooms the sweeper has not deleted yet.
             let sql = format!(
-                "SELECT code, phase, {} AS q, {} AS p FROM room WHERE phase IN ('quiz', 'playing', 'rating')",
+                "SELECT code, phase, {} AS q, {} AS p FROM room WHERE phase IN ('quiz', 'playing', 'rating') LIMIT 1000",
                 ms_of("quiz_deadline"),
                 ms_of("phase_deadline"),
             );
@@ -734,10 +761,12 @@ struct SweepRow {
 // process has no hub for counts as idle since `boot`: a restart must not
 // make every room look freshly opened, nor delete them all at once.
 pub async fn sweep_plan(state: &AppState, boot: std::time::Instant) -> Sweep {
+    // Bounded scan for the same reason as the ticker: the sweep must stay
+    // O(active), not O(every room ever created).
     let rows: Vec<SweepRow> = sqlx::query_as(
         "SELECT code, started_at IS NOT NULL AS started,
                 (julianday('now') - julianday(COALESCE(last_activity_at, started_at))) * 86400.0 AS activity_age
-         FROM room",
+         FROM room LIMIT 5000",
     )
     .fetch_all(&state.pool)
     .await
@@ -853,17 +882,20 @@ pub async fn room_snapshot(
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-    let round = current_round(pool, &room).await;
-    let target: Option<String> = match &round {
-        Some((id, _)) => sqlx::query_scalar("SELECT target FROM round WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten()
-            .filter(|t: &String| !t.is_empty()),
-        None => None,
-    };
+    // Round id, reveal cursor and target in one row: the old code re-fetched
+    // the target by id, doubling the round lookups on every republish.
+    let round_row: Option<(i64, i64, String)> = sqlx::query_as(
+        "SELECT id, revealed, target FROM round WHERE room_code = ? AND \"order\" = ?",
+    )
+    .bind(code)
+    .bind(room.current)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let round: Option<(i64, i64)> = round_row.as_ref().map(|(id, revealed, _)| (*id, *revealed));
+    let target: Option<String> = round_row
+        .and_then(|(_, _, t)| (!t.is_empty()).then_some(t));
     let answers = match &round {
         Some((id, _)) => round_answers(pool, *id).await,
         None => Vec::new(),

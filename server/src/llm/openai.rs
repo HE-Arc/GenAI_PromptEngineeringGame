@@ -21,12 +21,26 @@ pub struct OpenAiSource {
 // per-process id costs us nothing while keeping a single pooled reqwest
 // client (per-request clients would kill connection reuse). OPENCODE_SESSION_ID
 // overrides for deployments that want the same id across replicas.
+// Hung LLM calls hold a pool connection, an inflight claim and a Tokio task
+// each: per-request time is bounded so one slow provider cannot pile them up.
+pub const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const STREAM_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+pub const VERDICT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn session_id() -> &'static str {
     static SID: OnceLock<String> = OnceLock::new();
     SID.get_or_init(|| {
         std::env::var("OPENCODE_SESSION_ID").unwrap_or_else(|_| {
             let mut buf = [0u8; 16];
-            getrandom::fill(&mut buf).expect("OS RNG unavailable");
+            // Startup-only fallback, never a panic: without OS randomness a
+            // time-derived id still pins the cache, just less uniquely.
+            if getrandom::fill(&mut buf).is_err() {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                return format!("ses_{nanos:x}");
+            }
             format!("ses_{}", crate::admin_session::hex(&buf))
         })
     })
@@ -37,14 +51,14 @@ fn http_client() -> reqwest::Client {
     // The Go docs ask clients to name themselves rather than ride a
     // generic SDK user agent.
     headers.insert(USER_AGENT, HeaderValue::from_static("genai-game/1.0"));
-    headers.insert(
-        HeaderName::from_static("x-opencode-session"),
-        HeaderValue::from_str(session_id()).expect("hex is a valid header value"),
-    );
+    if let Ok(v) = HeaderValue::from_str(session_id()) {
+        headers.insert(HeaderName::from_static("x-opencode-session"), v);
+    }
     reqwest::Client::builder()
         .default_headers(headers)
+        .timeout(HTTP_TIMEOUT)
         .build()
-        .expect("http client")
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 // The SDK's reqwest handle is private, so /responses rides its own pooled
@@ -168,18 +182,24 @@ impl OpenAiSource {
         });
         let config = self.client.config();
         Box::pin(async move {
-            let text = match post_responses(config, body).await {
-                Ok(r) if r.status().is_success() => r
+            // Bounded so a hung judge cannot hold the answer's inflight claim
+            // past the round: a timeout verdict is 0, scored like any other.
+            let text = match tokio::time::timeout(VERDICT_TIMEOUT, post_responses(config, body)).await {
+                Ok(Ok(r)) if r.status().is_success() => r
                     .json::<Value>()
                     .await
                     .map(|v| response_output_text(&v))
                     .unwrap_or_default(),
-                Ok(r) => {
-                    eprintln!("verdict call failed: HTTP {}", r.status());
+                Ok(Ok(r)) => {
+                    crate::log_warn(&format!("verdict call failed: HTTP {}", r.status()));
                     String::new()
                 }
-                Err(e) => {
-                    eprintln!("verdict call failed: {e}");
+                Ok(Err(e)) => {
+                    crate::log_warn(&format!("verdict call failed: {e}"));
+                    String::new()
+                }
+                Err(_) => {
+                    crate::log_warn("verdict call timed out");
                     String::new()
                 }
             };
@@ -212,8 +232,12 @@ impl super::LlmSource for OpenAiSource {
         });
         let config = self.client.config();
         Box::pin(async move {
-            let response = post_responses(config, body)
+            // The whole stream must finish inside the deadline: without it a
+            // stalled body holds the per-answer task and inflight claim until
+            // the round clock gives up on the player.
+            let response = tokio::time::timeout(STREAM_DEADLINE, post_responses(config, body))
                 .await
+                .map_err(|_| "play call timed out".to_string())?
                 .map_err(|e| format!("play call failed: {e}"))?;
             if !response.status().is_success() {
                 return Err(format!("play call failed: HTTP {}", response.status()));
@@ -224,7 +248,16 @@ impl super::LlmSource for OpenAiSource {
             let mut carry: Vec<u8> = Vec::new();
             let mut raw: Vec<u8> = Vec::new();
             let mut saw_delta = false;
-            while let Some(chunk) = stream.next().await {
+            let start = tokio::time::Instant::now();
+            loop {
+                // The connect timeout covers the headers; each body chunk gets
+                // the remaining stream budget, so a stalled body releases the
+                // caller instead of holding its claim forever.
+                let next = match tokio::time::timeout(STREAM_DEADLINE.saturating_sub(start.elapsed()), stream.next()).await {
+                    Ok(next) => next,
+                    Err(_) => return if saw_delta { Ok(false) } else { Err("play stream stalled".into()) },
+                };
+                let Some(chunk) = next else { break };
                 let Ok(chunk) = chunk else {
                     // Mid-stream drop: what arrived is kept and scored.
                     return if saw_delta { Ok(false) } else { Err("play stream dropped".into()) };
@@ -357,7 +390,7 @@ pub fn parse_verdict(raw: &str, default_comment: &str) -> Verdict {
         .filter(Value::is_object);
     let Some(object) = object else {
         if !raw.trim().is_empty() {
-            eprintln!("model returned an unparseable verdict: {raw:?}");
+            crate::log_warn("model returned an unparseable verdict");
         }
         return Verdict {
             score: 0,

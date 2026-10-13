@@ -290,8 +290,10 @@ pub async fn quiz_get(
     if rooms::get_room(&state.pool, &code).await.is_err() {
         return unknown_room(sqlx::Error::RowNotFound).unwrap().into_response();
     }
+    // Capped: the bank is one quiz long, but a corrupt room must not hand
+    // an unbounded array to every phone that opens it.
     let questions: Vec<(i64, String, String)> =
-        sqlx::query_as("SELECT \"order\", prompt, choices FROM quiz_question WHERE room_code = ? ORDER BY \"order\"")
+        sqlx::query_as("SELECT \"order\", prompt, choices FROM quiz_question WHERE room_code = ? ORDER BY \"order\" LIMIT 100")
             .bind(&code)
             .fetch_all(&state.pool)
             .await
@@ -438,24 +440,22 @@ pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> im
     // the next minute would delete.
     let plan = game::sweep_plan(&state, state.boot).await;
     game::delete_rooms(&state, &plan.dead).await;
-    let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
-        "SELECT code, phase, current, tutorial, anonymous FROM room ORDER BY code",
+    // One grouped read instead of two COUNTs per room: the old loop was 2N+1
+    // round-trips and stalled the console behind every classroom at once.
+    // Capped: the console pages live rooms, it never needs all of history.
+    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT room.code, room.phase, room.current, room.tutorial, room.anonymous,
+                COUNT(DISTINCT round.id), COUNT(DISTINCT player.id)
+         FROM room
+         LEFT JOIN round ON round.room_code = room.code
+         LEFT JOIN player ON player.room_code = room.code
+         GROUP BY room.code ORDER BY room.code LIMIT 500",
     )
     .fetch_all(&state.pool)
     .await
     .unwrap_or_default();
     let mut out = Vec::with_capacity(rows.len());
-    for (code, phase, current, tutorial, anonymous) in rows.iter().filter(|r| !plan.hide.contains(&r.0)) {
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM round WHERE room_code = ?")
-            .bind(code)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
-        let players: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player WHERE room_code = ?")
-            .bind(code)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    for (code, phase, current, tutorial, anonymous, total, players) in rows.iter().filter(|r| !plan.hide.contains(&r.0)) {
         // Live socket count from the hub; rooms never touched by a WS
         // connection read 0, which is also the truth for them.
         let online = if let Some(hub) = state.hubs.read().await.get(code) {
@@ -499,11 +499,15 @@ pub async fn admin_create(
     let alphabet: Vec<char> = "ABCDEFGHJKLMNPQRSTUVWXYZ".chars().collect();
     let mut code = String::new();
     for _ in 0..50 {
+        // OS randomness first so codes are not guessable from the clock; the
+        // counter mix keeps colliding processes apart on the same tick.
+        let mut seed = [0u8; 16];
+        let _ = getrandom::fill(&mut seed);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let mut x = now.wrapping_add(rand_bit());
+        let mut x = u128::from_le_bytes(seed).wrapping_add(now).wrapping_add(rand_bit());
         let mut s = String::new();
         for _ in 0..4 {
             s.push(alphabet[(x % alphabet.len() as u128) as usize]);
