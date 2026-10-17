@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: genai-game
+  labels:
+    app: genai-game
+spec:
+  # ClusterIP keeps it internal. Expose via:
+  #   kubectl port-forward svc/genai-game 3001:80
+  # or add an Ingress pointing at service genai-game port 80.
+  type: ClusterIP
+  selector:
+    app: genai-game
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3001

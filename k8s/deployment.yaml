@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genai-game
+  labels:
+    app: genai-game
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genai-game
+  template:
+    metadata:
+      labels:
+        app: genai-game
+    spec:
+      containers:
+        - name: app
+          image: codexis/genai-prompt-game:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: DATABASE_URL
+              value: "sqlite:/data/server.sqlite3?mode=rwc"
+            - name: RUST_LOG
+              value: info
+            - name: PORT
+              value: "3001"
+            - name: LLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: LLM_BASE_URL
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: LLM_API_KEY
+            - name: LLM_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: LLM_MODEL
+            - name: JUDGE_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: JUDGE_MODEL
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: ADMIN_PASSWORD
+            - name: ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: ADMIN_SECRET
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: genai-game-data

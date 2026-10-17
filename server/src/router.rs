@@ -9,7 +9,7 @@ use axum::{
 use serde_json::json;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use std::sync::Arc;
+use tower_http::services::{ServeDir, ServeFile};use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, Semaphore};
 
@@ -95,6 +95,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/rooms/:code/ws", get(ws_handler))
         .with_state(state)
         .merge(rest)
+        // SPA static last: /app/dist files at /, index.html fallback.
+        // Axum matches /api/*, WS, /healthz first; only unmatched GET falls here.
+        .fallback_service(
+            ServeDir::new("/app/dist").fallback(ServeFile::new("/app/dist/index.html")),
+        )
 }
 
 #[cfg(test)]

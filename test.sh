@@ -2,7 +2,7 @@
 # Streaming test against OpenCode Go: the game's model, same protocol and
 # reasoning settings as the server (server/src/llm/openai.rs).
 set -euo pipefail
-KEY=$(grep '^LLM_API_KEY=' server/.env | cut -d= -f2- | tr -d ' \r')
+KEY=$(grep '^LLM_API_KEY=' secrets.env server/.env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' \r')
 curl -sN --max-time 90 \
   https://opencode.ai/zen/go/v1/responses \
   -H "Authorization: Bearer $KEY" \

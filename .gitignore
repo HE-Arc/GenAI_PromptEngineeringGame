@@ -2,6 +2,7 @@
 # why the code looks the way it does, and a record nobody can read is not a record. It used to
 # be ignored here; it is not any more.
 .superpowers/
+.codegraph/
 
 # The project wiki is a SEPARATE repository (GenAI_PromptEngineeringGame.wiki.git), cloned
 # alongside the code because that is where the spec now lives. Git would otherwise list it as
@@ -11,9 +12,13 @@ server/target/
 
 # Local secrets and databases never leave this machine.
 .env
+secrets.env
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+
+# Host log dumps (e.g. `docker compose logs > logs/compose.log`).
+/logs/
 
 # Python bytecode from the load-test harnesses importing each other.
 __pycache__/

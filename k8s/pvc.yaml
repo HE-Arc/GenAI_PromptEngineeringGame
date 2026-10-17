@@ -1,0 +1,12 @@
+# SQLite backing for /data. RWO single-writer.
+# Later: replace with a managed DB and drop this + the volumeMount.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: genai-game-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

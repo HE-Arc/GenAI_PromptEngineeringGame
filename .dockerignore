@@ -1,0 +1,13 @@
+# Keep the root build context small: only what the multi-stage build COPYs.
+.git
+.github
+.codegraph
+docs
+k8s
+*.md
+*.sh
+secrets.env.example
+docker-compose.yml
+frontend/node_modules
+frontend/dist
+server/target
