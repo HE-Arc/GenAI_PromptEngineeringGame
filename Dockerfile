@@ -31,8 +31,10 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists
 # Non-root: created without login/shell, owns only what it must write.
-# Created before COPY so --chown can reference it.
-RUN useradd --no-create-home --shell /usr/sbin/nologin appuser \
+# Created before COPY so --chown can reference it. uid/gid pinned to 1000:
+# k8s/deployment.yaml sets runAsUser/fsGroup to the same numbers.
+RUN groupadd --gid 1000 appuser \
+  && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin appuser \
   && mkdir -p /data /app/dist \
   && chown appuser:appuser /data /app
 COPY --from=build --chown=appuser:appuser /app/target/release/server /app/server

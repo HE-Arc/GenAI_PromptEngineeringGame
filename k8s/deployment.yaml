@@ -14,6 +14,15 @@ spec:
       labels:
         app: genai-game
     spec:
+      # A fresh PVC mounts root-owned and hides the image's chown of /data, so
+      # appuser (uid 1000) cannot create the SQLite file. fsGroup makes the
+      # kubelet hand the volume to gid 1000 before the container starts.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: app
           image: codexis/genai-prompt-game:latest
