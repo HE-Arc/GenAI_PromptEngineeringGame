@@ -22,3 +22,8 @@ secrets.env
 
 # Python bytecode from the load-test harnesses importing each other.
 __pycache__/
+
+.projectmem/events.jsonl
+.projectmem/watch.pid
+.projectmem/watch.log
+.projectmem/structure.json

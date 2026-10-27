@@ -79,6 +79,9 @@ pub struct AnswerJob {
     player_name: String,
     target: String,
     prompt: String,
+    // Enriched play input (exercice + prompt eleve): the model never sees
+    // the raw prompt alone. The raw prompt is what the DB stores.
+    enriched: String,
     // Held until the answer task finishes: the semaphore count is the live
     // LLM load, so dropping the job (or the task) always frees the slot.
     _slot: tokio::sync::OwnedSemaphorePermit,
@@ -214,6 +217,17 @@ pub async fn begin_answer(
             });
         }
     };
+    // The stored target IS the exercice text: an empty target means the
+    // round has no question, so refuse with an explicit UI message rather
+    // than a silent empty model fallback.
+    if round.target.trim().is_empty() {
+        hub.release(round.id, player.id).await;
+        return Err(AnswerReject {
+            code: "bad_phase",
+            message: crate::llm::MISSING_EXERCISE_NOTICE,
+        });
+    }
+    let enriched = crate::llm::enriched_input(round.order, &round.target, prompt);
     Ok(AnswerJob {
         hub,
         code: code.to_string(),
@@ -222,6 +236,7 @@ pub async fn begin_answer(
         player_name: player.name,
         target: round.target,
         prompt: prompt.to_string(),
+        enriched,
         _slot: slot,
     })
 }
@@ -259,7 +274,7 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
         let player = job.player_name.clone();
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let llm = state.llm.clone();
-        let prompt = job.prompt.clone();
+        let prompt = job.enriched.clone();
         let stream_done = tokio::spawn(async move { llm.stream_into(prompt, tx).await });
         let mut full = String::new();
         while let Some(delta) = rx.recv().await {
@@ -572,6 +587,12 @@ mod tests {
         let state = AppState::new(pool.clone());
         rooms::create_room(&pool, "EF56").await.unwrap();
         let player = rooms::add_player(&pool, "EF56", "ana").await.unwrap();
+        // The stored target IS the exercice: give the round one, or
+        // begin_answer refuses with the missing-exercise notice.
+        sqlx::query("UPDATE round SET target = 'resume ce mail' WHERE room_code = 'EF56'")
+            .execute(&pool)
+            .await
+            .unwrap();
         // Prompts are only taken in the writing phase.
         sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'EF56'")
             .execute(&pool)
@@ -636,6 +657,28 @@ mod tests {
         }
     }
 
+    // The stored target IS the exercice: an empty target refuses with an
+    // explicit French message for the UI, never a silent empty fallback.
+    #[tokio::test]
+    async fn missing_exercise_refuses_before_model_call() {
+        std::env::remove_var("OPENAI_API_KEY");
+        let pool = test_pool().await;
+        let state = AppState::new(pool.clone());
+        rooms::create_room(&pool, "NOEX").await.unwrap();
+        let player = rooms::add_player(&pool, "NOEX", "ana").await.unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'NOEX'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // create_room leaves the order-0 round target empty: no exercice.
+        let err = match begin_answer(&state, "NOEX", &player.token, "un prompt").await {
+            Ok(_) => panic!("empty target must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "bad_phase");
+        assert_eq!(err.message, crate::llm::MISSING_EXERCISE_NOTICE);
+    }
+
     #[tokio::test]
     async fn failed_model_call_records_marker_and_notifies_author_only() {
         let pool = test_pool().await;
@@ -643,6 +686,10 @@ mod tests {
         state.llm = Arc::new(FailingSource);
         rooms::create_room(&pool, "FA11").await.unwrap();
         let ana = rooms::add_player(&pool, "FA11", "ana").await.unwrap();
+        sqlx::query("UPDATE round SET target = 'resume ce mail' WHERE room_code = 'FA11'")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'FA11'")
             .execute(&pool)
             .await

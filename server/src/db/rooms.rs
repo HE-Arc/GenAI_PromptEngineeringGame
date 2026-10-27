@@ -12,6 +12,8 @@ pub struct Room {
     pub tutorial: i64,
     #[sqlx(default)]
     pub quiz_index: i64,
+    #[sqlx(default)]
+    pub auto_mode: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -66,7 +68,7 @@ pub async fn create_room(pool: &SqlitePool, code: &str) -> Result<Room, sqlx::Er
 }
 
 pub async fn get_room(pool: &SqlitePool, code: &str) -> Result<Room, sqlx::Error> {
-    sqlx::query_as::<_, Room>("SELECT code, phase, current, admin_key, tutorial, quiz_index FROM room WHERE code = ?")
+    sqlx::query_as::<_, Room>("SELECT code, phase, current, admin_key, tutorial, quiz_index, COALESCE(auto_mode, 0) AS auto_mode FROM room WHERE code = ?")
         .bind(code)
         .fetch_one(pool)
         .await
@@ -128,6 +130,36 @@ pub async fn player_by_token(pool: &SqlitePool, token: &str) -> Result<Option<Pl
     .bind(token)
     .fetch_optional(pool)
     .await
+}
+
+// Efface une partie terminée et tout ce qu'elle contient (manches, réponses,
+// votes, joueurs, questions). Réservé à la console, une fois `done`.
+// Renvoie `true` si la partie a été effacée, `false` si la garde finale
+// n'a rien supprimé (partie absente ou non terminée) : l'appelant
+// distingue 404 et 409 en relisant la partie.
+pub async fn delete_room(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for sql in [
+        "DELETE FROM rating WHERE answer_id IN (SELECT answer.id FROM answer JOIN round ON round.id = answer.round_id WHERE round.room_code = ?)",
+        "DELETE FROM answer WHERE round_id IN (SELECT id FROM round WHERE room_code = ?)",
+        "DELETE FROM quiz_attempt WHERE question_id IN (SELECT id FROM quiz_question WHERE room_code = ?)",
+        "DELETE FROM ready WHERE room_code = ?",
+        "DELETE FROM round WHERE room_code = ?",
+        "DELETE FROM quiz_question WHERE room_code = ?",
+        "DELETE FROM player WHERE room_code = ?",
+    ] {
+        sqlx::query(sql).bind(code).execute(&mut *tx).await?;
+    }
+    let guard = sqlx::query("DELETE FROM room WHERE code = ? AND phase = 'done'")
+        .bind(code)
+        .execute(&mut *tx)
+        .await?;
+    if guard.rows_affected() != 1 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 // The full room_state lives with the rest of the game rules.

@@ -67,8 +67,8 @@ export default function Join({
         </div>
         <p className="prose prose--dim hero__lead">
           Le modèle doit répondre par une chose bien précise. À toi d’écrire le prompt qui
-          l’y amène. Un jury note la ressemblance sur 10, et les dix manches se jouent entre
-          vous.
+          l’y amène. Un jury note la ressemblance sur 10, et toi aussi tu joues les dix
+          manches.
         </p>
         <form className="form card" onSubmit={go}>
           <div className="field">

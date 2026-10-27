@@ -16,7 +16,7 @@ const LINK_WORDS: Record<Link, string> = {
   connecting: 'Connexion…',
   live: 'En direct',
   down: 'Reconnexion…',
-  failed: 'Partie sans réponse',
+  failed: 'La partie ne répond pas',
 }
 
 export const linkWord = (link: Link) => LINK_WORDS[link]

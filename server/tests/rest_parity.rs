@@ -303,3 +303,165 @@ async fn admin_gated_routes_session_parity() {
         .await;
     forged.assert_status(axum::http::StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn join_same_pseudo_after_start_rejoins_ok() {
+    // Même pseudo + même pièce + partie commencée : reprise idempotente,
+    // le joueur retrouve son jeton au lieu d'un 409.
+    let (server, pool, _) = server_with_pool().await;
+    rooms::create_room(&pool, "RJ42").await.unwrap();
+    let first = server
+        .post("/api/rooms/RJ42/join")
+        .json(&json!({"name": "ana"}))
+        .await;
+    first.assert_status_ok();
+    let token = first.json::<serde_json::Value>()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'RJ42'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Un pseudo inédit reste refusé une fois le lobby fermé.
+    let fresh = server
+        .post("/api/rooms/RJ42/join")
+        .json(&json!({"name": "bob"}))
+        .await;
+    fresh.assert_status(axum::http::StatusCode::CONFLICT);
+    fresh.assert_text(r#"{"error":"game already started"}"#);
+    // Le même pseudo reprend la partie avec le même jeton.
+    let again = server
+        .post("/api/rooms/RJ42/join")
+        .json(&json!({"name": "ana"}))
+        .await;
+    again.assert_status_ok();
+    assert_eq!(
+        again.json::<serde_json::Value>()["token"].as_str().unwrap(),
+        token
+    );
+}
+
+#[tokio::test]
+async fn admin_next_during_rating_409_vote_en_cours() {
+    // Pendant la notation, « prompt suivant » attend la fin du vote ; une
+    // fois le résumé affiché, la reprise manuelle remarche.
+    let (server, pool, _) = server_with_pool().await;
+    rooms::create_room(&pool, "VT17").await.unwrap();
+    sqlx::query("UPDATE room SET tutorial = 0 WHERE code = 'VT17'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    server::game::start_game(&pool, "VT17").await.unwrap();
+    sqlx::query("UPDATE room SET phase = 'rating' WHERE code = 'VT17'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let login = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "genai"}))
+        .await;
+    login.assert_status_ok();
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let blocked = server
+        .post("/api/admin/rooms/VT17/next")
+        .add_header("cookie", cookie.clone())
+        .await;
+    blocked.assert_status(axum::http::StatusCode::CONFLICT);
+    blocked.assert_text(r#"{"error":"vote en cours"}"#);
+
+    sqlx::query("UPDATE room SET phase = 'summary' WHERE code = 'VT17'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resumed = server
+        .post("/api/admin/rooms/VT17/next")
+        .add_header("cookie", cookie)
+        .await;
+    resumed.assert_status_ok();
+}
+
+#[tokio::test]
+async fn admin_delete_done_ok_and_gated() {
+    // Sans session : 403, comme les autres routes admin.
+    let (server, pool, _) = server_with_pool().await;
+    rooms::create_room(&pool, "DL09").await.unwrap();
+    let gated = server.delete("/api/admin/rooms/DL09").await;
+    gated.assert_status(axum::http::StatusCode::FORBIDDEN);
+
+    let login = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "genai"}))
+        .await;
+    login.assert_status_ok();
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    // Partie non terminée : refusée.
+    let running = server
+        .delete("/api/admin/rooms/DL09")
+        .add_header("cookie", cookie.clone())
+        .await;
+    running.assert_status(axum::http::StatusCode::CONFLICT);
+    running.assert_text(r#"{"error":"partie non terminée"}"#);
+
+    sqlx::query("UPDATE room SET phase = 'done' WHERE code = 'DL09'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let deleted = server
+        .delete("/api/admin/rooms/DL09")
+        .add_header("cookie", cookie.clone())
+        .await;
+    deleted.assert_status_ok();
+
+    let list = server
+        .get("/api/admin/rooms")
+        .add_header("cookie", cookie)
+        .await;
+    let rooms = list.json::<serde_json::Value>()["rooms"].clone();
+    assert!(
+        rooms.as_array().unwrap().iter().all(|r| r["code"] != "DL09"),
+        "la partie effacée ne revient plus dans la liste"
+    );
+
+    // Rejouer l'effacement : la pièce n'existe plus.
+    let login2 = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "genai"}))
+        .await;
+    let cookie2 = login2
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let gone = server
+        .delete("/api/admin/rooms/DL09")
+        .add_header("cookie", cookie2)
+        .await;
+    gone.assert_status(axum::http::StatusCode::NOT_FOUND);
+}

@@ -63,7 +63,7 @@ export default function Lobby({
             louder. Its job is to exist — as the document's heading, and as the target focus
             lands on when the player arrives. */}
         <h1 className="visually-hidden" tabIndex={-1}>
-          Lobby de la partie {state.code}
+          Salle d’attente de la partie {state.code}
         </h1>
         {/* The two things a player checks on arrival, and neither is subordinate to the other:
             the code they read out loud, and whether everyone is actually here. They stack on
@@ -74,7 +74,7 @@ export default function Lobby({
           <div className="stack">
             <p className="prose prose--dim">
               Lis ce code à voix haute pour que les autres te rejoignent. Appuie sur « Je suis
-              prêt » : la partie démarre quand la majorité des joueurs présents est prête.
+              prêt » pour signaler ta présence : seul l'animateur lance la partie.
             </p>
 
             <div className="actions">
@@ -183,7 +183,7 @@ export default function Lobby({
                 decoration while the bar above them counts the room down. Both, because both are
                 true: the host can still press start, and that is worth saying out loud for the
                 player who would rather not wait for the room. */}
-            <span className="foot__code">En attente de démarrage : l’animateur ou toute la classe peuvent lancer la partie.</span>
+            <span className="foot__code">En attente de démarrage : seul l'animateur peut lancer la partie.</span>
             <button type="button" className="btn btn--ghost foot__end" onClick={onLeave}>
               Quitter la partie
             </button>

@@ -150,7 +150,8 @@ export default function Game({
   const lit = here.flatMap((p, i) => (p.answered ? [i] : []))
   const left = here.length - lit.length
 
-  // A phone that slept comes back to a board from two rounds ago, still able to send. The
+  // Rule: stale is exactly `link !== 'live'`, and the banner shows exactly while stale
+  // is true. A phone that slept comes back to a board from two rounds ago, still able to send. The
   // prompt would be written against a target that is no longer on screen and would land on
   // whatever round is live now, so the answer is refused rather than silently misfiled. The
   // stream reopens by itself within a few seconds and the button comes back.
@@ -162,10 +163,16 @@ export default function Game({
   // line is never more or less true than the game is.
   // `busy` is in the first test, not the second: a player who has pressed send is waiting on
   // the jury, not being told to answer again.
+  // "Réponses envoyées" is shown only once this player has sent (alreadyDone): before that
+  // the meter counts other players, so the caption is the wait ("En attente des autres…").
   const caption = (() => {
-    if (!alreadyDone && !busy) return left === 1 ? 'À toi de répondre' : 'Réponses envoyées'
-    return left === 0 ? 'Tout le monde a répondu' : `En attente de ${noun(left, 'joueur', 'joueurs')}`
+    if (alreadyDone) return left === 0 ? 'Tout le monde a répondu' : 'Réponses envoyées'
+    return 'En attente des autres…'
   })()
+
+  // Zero answers is not a zero on the meter: the counter reports progress, while this
+  // reports that nothing has started yet, so it gets its own sentence.
+  const noAnswerYet = !scored && lit.length === 0
 
   // One notice, never two, and the most specific thing we know wins. Both cases are the same
   // thing to a player — what you are reading may not be the room as it is now — so they share
@@ -173,6 +180,9 @@ export default function Game({
   // woken up looks first. The server's room error is the most specific of the three and takes
   // the slot: it names a submit that just failed for the whole room, and the other two only say
   // what the screen may be showing.
+  // Rule for the two reconnect messages: `stale` means the feed is down right now (what is on
+  // screen may be old), while `missed` means the feed came back on a later manche (rounds were
+  // skipped while the screen was off). Two distinct sentences because they are two facts.
   const notice = state.error
     ? state.error
     : missed
@@ -335,7 +345,13 @@ export default function Game({
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className={`screen screen--split${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
         <Step current={state.current} total={state.total}>
-          {!scored && <PhaseClock timer={state.timer} what="pour écrire ton prompt" />}
+          {/* The seconds are the server's, read through useQuizWindow: this screen never
+              counts down from the phone's own clock. */}
+          {!scored && (
+            <span data-testid="time-left">
+              <PhaseClock timer={state.timer} what="pour écrire ton prompt" />
+            </span>
+          )}
         </Step>
 
         {/* The only heading on this screen, and the target a route change moves focus to. The
@@ -432,7 +448,11 @@ export default function Game({
           {scored && state.summary && (
             <section className="tally">
               <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
-              {(() => {
+              {/* An empty round still has its summary: the collective sentence when nobody
+                  answered, the personal one when the reader is the one who did not. */}
+              {state.summary.rows.length === 0 ? (
+                <p className="prose prose--dim">Personne n’a répondu à cette manche.</p>
+              ) : (() => {
                 const mine = state.summary!.rows.find((row) => row.author === myName)
                 if (!mine) return <p className="prose prose--dim">Tu n’as pas répondu à cette manche.</p>
                 return (
@@ -481,10 +501,15 @@ export default function Game({
             </section>
           )}
 
-          {/* The next round is the admin's button alone: the class has no vote on a summary. */}
-          {scored && (
+          {/* The next round is the animator's button alone: the class has no vote on a summary. */}
+          {scored && !state.auto_mode && (
             <p className="prose prose--sm prose--dim" role="status">
-              L’admin lance la manche suivante.
+              L’animateur lance la manche suivante.
+            </p>
+          )}
+          {scored && state.auto_mode && (
+            <p className="prose prose--sm prose--dim" role="status">
+              Mode automatique : la suite s’enchaîne seule.
             </p>
           )}
 
@@ -583,6 +608,11 @@ export default function Game({
               it is the reason not to dawdle. `mine` is not gated on having submitted: a segment
               now means "this person is on the stream", so the sodium one has to say "that one is
               me" whether or not I have hit send, and the fill still carries the answer. */}
+          {/* No answer yet gets its own sentence, above the meter: the counter says how far
+              the round has come, this says it has not started. */}
+          {noAnswerYet && (
+            <p className="prose prose--sm prose--dim" role="status">Aucune réponse pour l’instant…</p>
+          )}
           <AnswerMeter lit={lit} total={here.length} mine={mine} caption={caption} />
           {/* Anonymous presence derived from the meter itself: no names, no backend field.
               Shown only while some answered and some are still writing. */}

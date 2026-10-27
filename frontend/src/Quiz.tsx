@@ -312,8 +312,8 @@ export default function Quiz({
 
         {questions && (
           <p className="prose prose--sm prose--cool">
-            Tes points : {fr(me?.quiz_score ?? 0)} — chaque bonne réponse vaut 1 point dans la
-            partie.
+            Tes points : {fr(me?.quiz_score ?? 0)} — chaque bonne réponse vaut 1 point.
+            Répondre plus vite ne donne pas de points en plus — seul le contenu compte.
           </p>
         )}
 
@@ -336,12 +336,12 @@ export default function Quiz({
                 <>
                   <Ring left={left} length={windowLength} secs={secs} />
                   <span className="qclock__t">
-                    {secs > 1 ? 'secondes pour répondre' : 'seconde pour répondre'}
+                    {secs} {secs > 1 ? 'secondes pour répondre' : 'seconde pour répondre'}
                   </span>
                 </>
               ) : (
                 <span className="qclock__t qclock__t--closed">
-                  {revealed ? 'Fenêtre fermée' : 'Révélation…'}
+                  Temps écoulé
                 </span>
               )}
             </p>
@@ -368,7 +368,7 @@ export default function Quiz({
           // keeps the grid and the 0.35rem gap it already had; the sentence is a span so the
           // grid has exactly two items and the text wraps as it always did.
           <p className="err">
-            <span role="alert">Le didacticiel ne répond pas. Préviens l’animateur.</span>
+            <span role="alert">La partie ne répond pas. Préviens l’animateur.</span>
             {/* The console's own treatment for the one live action on a dead screen, and the same
                 word the room-wide retry already uses on the admin and the join screen, so a
                 player who has seen « Réessayer » once knows what it does. Disabled while the
@@ -503,10 +503,15 @@ export default function Quiz({
               </p>
             )}
 
-            {/* The next question is the admin's button alone: the class has no vote here. */}
-            {revealed && (
+            {/* The next question is the animator's button alone: the class has no vote here. */}
+            {revealed && !state.auto_mode && (
               <p className="prose prose--sm prose--dim" role="status">
-                L’admin passe à la suite quand la classe est prête.
+                L’animateur passe à la suite quand la classe est prête.
+              </p>
+            )}
+            {revealed && state.auto_mode && (
+              <p className="prose prose--sm prose--dim" role="status">
+                Mode automatique : la suite s’enchaîne seule.
               </p>
             )}
           </>
@@ -531,7 +536,8 @@ export default function Quiz({
                 <span className="qboard__den">bonnes réponses sur {total}</span>
               </p>
               <p className="prose prose--sm prose--dim">
-                Chaque bonne réponse vaut 1 point reporté dans la partie.
+                Chaque bonne réponse vaut 1 point. Répondre plus vite ne donne pas de points en
+                plus — seul le contenu compte.
               </p>
             </div>
 

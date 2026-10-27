@@ -9,6 +9,40 @@ use tokio::sync::mpsc;
 
 pub use stub::StubSource;
 
+// Shown when a round has no exercice text: never a silent empty fallback.
+// Player-facing, so French.
+pub const MISSING_EXERCISE_NOTICE: &str =
+    "Aucun exercice pour cette manche : impossible d'interroger le modèle.";
+
+// The play call never receives the raw player prompt alone: the stored
+// target IS the exercice (round.target, see data/targets.json), so the model
+// always gets exercice + consigne + prompt eleve together and never answers
+// "aucun exercice precise".
+pub fn enriched_input(manche: i64, target: &str, prompt: &str) -> String {
+    format!(
+        "Exercice/manche {} : {}\nConsigne : {}\nRéponse attendue / cible : {}\nPrompt élève : {}",
+        manche,
+        target.trim(),
+        target.trim(),
+        target.trim(),
+        prompt.trim()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enriched_input_never_raw_prompt_alone() {
+        let out = enriched_input(3, "resume ce mail", "fais court");
+        assert!(out.contains("Exercice/manche 3"));
+        assert!(out.contains("resume ce mail"));
+        assert!(out.contains("Prompt élève : fais court"));
+        assert_ne!(out, "fais court");
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Verdict {
     pub score: i64,

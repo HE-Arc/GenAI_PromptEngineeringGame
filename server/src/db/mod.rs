@@ -27,8 +27,53 @@ pub async fn connect_pool(url: &str) -> Result<SqlitePool, sqlx::Error> {
         .idle_timeout(Duration::from_secs(120))
         .connect_with(options)
         .await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    log_applied_migrations(&pool).await;
+    let migrator = sqlx::migrate!("./migrations");
+    if let Err(e) = migrator.run(&pool).await {
+        log_version_mismatch(&e, &migrator);
+        return Err(e.into());
+    }
     Ok(pool)
+}
+
+// Best-effort startup log: lists versions already recorded in the file DB.
+// Missing table = fresh database, nothing applied yet. Never fails startup.
+async fn log_applied_migrations(pool: &SqlitePool) {
+    match sqlx::query("SELECT version, description FROM _sqlx_migrations ORDER BY version")
+        .fetch_all(pool)
+        .await
+    {
+        Ok(rows) => {
+            let mut versions: Vec<String> = Vec::new();
+            for row in &rows {
+                let v: i64 = sqlx::Row::try_get(row, "version").unwrap_or(-1);
+                let d: String = sqlx::Row::try_get(row, "description").unwrap_or_default();
+                versions.push(format!("{v} ({d})"));
+            }
+            eprintln!("migrations: applied before run: [{}]", versions.join(", "));
+        }
+        Err(_) => eprintln!("migrations: no _sqlx_migrations table yet (fresh db)"),
+    }
+}
+
+// Actionable hint for the stale-volume crash loop: the persisted DB holds a
+// _sqlx_migrations checksum that differs from the compiled migration with
+// the same version (0001/0002 must never be edited). Never deletes data here.
+fn log_version_mismatch(e: &sqlx::migrate::MigrateError, migrator: &sqlx::migrate::Migrator) {
+    if let sqlx::migrate::MigrateError::VersionMismatch(version) = e {
+        let compiled: Vec<String> = migrator
+            .migrations
+            .iter()
+            .map(|m| format!("{} ({})", m.version, m.description))
+            .collect();
+        eprintln!(
+            "migrations: VersionMismatch({version}): stored checksum in \
+             _sqlx_migrations differs from compiled migration. \
+             Stored rows logged above; compiled versions: [{}]. \
+             Dev fix (wipes rooms): run `docker compose down -v` to reset dev DB",
+            compiled.join(", ")
+        );
+    }
 }
 
 // One writer at a time per file, so scale with CPUs only up to the point

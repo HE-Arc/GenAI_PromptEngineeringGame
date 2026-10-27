@@ -182,6 +182,8 @@ export type State = {
   // Fixed for the whole game, so a screen can read it once instead of inferring anonymity from
   // whether a name happens to be present.
   anonymous: boolean
+  // Enchaîne les manches sans intervention quand vrai. Additif : les vieux clients l'ignorent.
+  auto_mode: boolean
   players: Player[]
   // How many of `players` are connected. Never use it in place of `players.length`: the two
   // answer different questions and the game depends on the difference.
@@ -257,6 +259,7 @@ export interface RoomSummary {
   players: number
   tutorial: boolean
   anonymous: boolean
+  auto_mode: boolean
 }
 
 // An HTTP response becomes a value or an ApiError, in one place, because the two verbs below it
@@ -373,7 +376,7 @@ const REASONS: Record<string, string> = {
 }
 
 export function describe(e: unknown): string {
-  if (!(e instanceof ApiError)) return 'Le serveur ne répond pas. Vérifie le réseau local.'
+  if (!(e instanceof ApiError)) return 'La partie ne répond pas. Vérifie le réseau local.'
   if (e.status === 404) return 'Cette partie n’existe pas. Vérifie le code.'
   const known = REASONS[e.message]
   if (known) return known

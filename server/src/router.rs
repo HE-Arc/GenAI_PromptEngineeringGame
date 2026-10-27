@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde_json::json;
@@ -79,6 +79,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/admin/rooms/:code/start", post(rest::admin_start))
         .route("/api/admin/rooms/:code/next", post(rest::admin_next))
+        .route("/api/admin/rooms/:code", delete(rest::admin_delete))
         .route("/api/admin/rooms/:code/restart", post(rest::admin_restart))
         .route("/api/rooms/:code/join", get(rest::join_get).post(rest::join))
         .route("/api/rooms/:code/rate", post(rest::rate))

@@ -43,6 +43,12 @@ async fn ws_answer_start_streams_chunks_then_done_and_rejects_replay() {
     let (base, pool) = spawn_app().await;
     rooms::create_room(&pool, "CD34").await.unwrap();
     let player = rooms::add_player(&pool, "CD34", "ana").await.unwrap();
+        // The stored target IS the exercice: give the round one, or
+        // begin_answer refuses with the missing-exercise notice.
+        sqlx::query("UPDATE round SET target = 'resume ce mail' WHERE room_code = 'CD34'")
+            .execute(&pool)
+            .await
+            .unwrap();
         // Prompts are only taken in the writing phase.
         sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'CD34'")
             .execute(&pool)

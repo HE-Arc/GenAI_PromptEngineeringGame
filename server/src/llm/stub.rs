@@ -126,4 +126,18 @@ mod tests {
         assert_eq!(chunks[0].split_whitespace().count(), 6);
         assert_eq!(chunks.concat(), stub_answer("one two three four five six seven"));
     }
+
+    // Same enrichment as the live path (ws builds it before the llm call):
+    // the stub echoes exercice + prompt eleve, and grading the enriched
+    // text scores the same method as grading the raw prompt.
+    #[test]
+    fn stub_mirrors_enriched_input() {
+        let enriched = super::super::enriched_input(2, "resume ce mail", "fais un resume concis, format liste");
+        assert!(stub_chunks(&enriched).concat().contains("resume ce mail"));
+        assert!(stub_chunks(&enriched).concat().contains("Prompt élève"));
+        assert_eq!(
+            stub_grade(&enriched).score,
+            stub_grade("fais un resume concis, format liste").score
+        );
+    }
 }

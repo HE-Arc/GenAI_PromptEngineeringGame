@@ -113,8 +113,22 @@ pub async fn join(
     if name.is_empty() {
         return err(StatusCode::BAD_REQUEST, "name required").into_response();
     }
-    // Django refuses joins once the lobby closes; same 409 here.
+    // Reprise : même pseudo dans la même pièce alors que la partie a commencé —
+    // le joueur retrouve son jeton, comme avec /room/XXXX (hello WS).
     if room.phase != "waiting" {
+        let existing: Option<rooms::Player> = sqlx::query_as(
+            "SELECT id, room_code, token, name FROM player WHERE room_code = ? AND name = ?",
+        )
+        .bind(&code)
+        .bind(&name)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or(None);
+        if let Some(p) = existing {
+            touch(&state, &code).await;
+            return (StatusCode::OK, Json(json!({"token": p.token, "name": p.name}))).into_response();
+        }
+        // Django refuse les arrivées une fois le lobby fermé ; même 409 ici.
         return err(StatusCode::CONFLICT, "game already started").into_response();
     }
     let player = match rooms::add_player(&state.pool, &code, &name).await {
@@ -443,8 +457,9 @@ pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> im
     // One grouped read instead of two COUNTs per room: the old loop was 2N+1
     // round-trips and stalled the console behind every classroom at once.
     // Capped: the console pages live rooms, it never needs all of history.
-    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
         "SELECT room.code, room.phase, room.current, room.tutorial, room.anonymous,
+                COALESCE(room.auto_mode, 0),
                 COUNT(DISTINCT round.id), COUNT(DISTINCT player.id)
          FROM room
          LEFT JOIN round ON round.room_code = room.code
@@ -455,7 +470,7 @@ pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> im
     .await
     .unwrap_or_default();
     let mut out = Vec::with_capacity(rows.len());
-    for (code, phase, current, tutorial, anonymous, total, players) in rows.iter().filter(|r| !plan.hide.contains(&r.0)) {
+    for (code, phase, current, tutorial, anonymous, auto_mode, total, players) in rows.iter().filter(|r| !plan.hide.contains(&r.0)) {
         // Live socket count from the hub; rooms never touched by a WS
         // connection read 0, which is also the truth for them.
         let online = if let Some(hub) = state.hubs.read().await.get(code) {
@@ -467,6 +482,7 @@ pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> im
             "code": code, "phase": phase, "current": current, "total": total,
             "online_count": online, "players": players,
             "tutorial": *tutorial != 0, "anonymous": *anonymous != 0,
+            "auto_mode": *auto_mode != 0,
         }));
     }
     // Live phases first, lobby next, finished last: same ranking the
@@ -527,11 +543,13 @@ pub async fn admin_create(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     };
     let flag = |key: &str| data.get(key).and_then(|v| v.as_bool()).unwrap_or(true);
+    let auto_mode = data.get("auto_mode").and_then(|v| v.as_bool()).unwrap_or(false);
     let _ = sqlx::query(
-        "UPDATE room SET tutorial = ?, anonymous = ?, round_seconds = ?, rate_seconds = ? WHERE code = ?",
+        "UPDATE room SET tutorial = ?, anonymous = ?, auto_mode = ?, round_seconds = ?, rate_seconds = ? WHERE code = ?",
     )
     .bind(flag("tutorial") as i64)
     .bind(flag("anonymous") as i64)
+    .bind(auto_mode as i64)
     .bind(game::clamp_seconds(data.get("round_seconds"), game::ROUND_SECONDS, game::ROUND_SECONDS_RANGE))
     .bind(game::clamp_seconds(data.get("rate_seconds"), game::RATE_SECONDS, game::RATE_SECONDS_RANGE))
     .bind(&code)
@@ -541,7 +559,7 @@ pub async fn admin_create(
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
     }
     touch(&state, &code).await;
-    (StatusCode::OK, Json(json!({"code": room.code}))).into_response()
+    (StatusCode::OK, Json(json!({"code": room.code, "auto_mode": auto_mode}))).into_response()
 }
 
 static RAND_BIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x9e3779b9);
@@ -578,6 +596,14 @@ pub async fn admin_next(
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
+    // Pendant la notation, le bouton attend la fin du vote : passer au prompt
+    // suivant en pleine notation fausserait le dépouillement. La reprise
+    // manuelle reste possible une fois le résumé affiché.
+    if room.phase == "rating" {
+        return err(StatusCode::CONFLICT, "vote en cours").into_response();
+    }
+    // Rating an unanswered round has no meaning, so the button refuses; the
+    // clock path still closes such a round into a spoken summary.
     if room.phase == "playing" && !game::round_has_answers(&state.pool, &code).await {
         return err(
             StatusCode::CONFLICT,
@@ -608,8 +634,8 @@ pub async fn admin_restart(
     headers: HeaderMap,
     body: Option<Json<RestartBody>>,
 ) -> impl IntoResponse {
-    if require_room_admin(&state.pool, &headers, &code).await.is_err() {
-        return err(StatusCode::FORBIDDEN, "admin only").into_response();
+    if let Err(e) = require_room_admin(&state.pool, &headers, &code).await {
+        return e.into_response();
     }
     if rooms::get_room(&state.pool, &code).await.is_err() {
         return err(StatusCode::NOT_FOUND, "unknown room").into_response();
@@ -636,4 +662,34 @@ pub async fn admin_restart(
     get_hub(&state.hubs, &code).await.mark_seen();
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"ok": true, "phase": "waiting"}))).into_response()
+}
+
+// Efface une partie terminée et tout ce qu'elle contient. Même contrôle que
+// les autres routes admin : session de la console ou clé de la pièce.
+pub async fn admin_delete(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    match require_room_admin(&state.pool, &headers, &code).await {
+        Ok(room) => {
+            if room.phase != "done" {
+                return err(StatusCode::CONFLICT, "partie non terminée").into_response();
+            }
+        }
+        Err(e) => return e.into_response(),
+    }
+    match rooms::delete_room(&state.pool, &code).await {
+        Ok(true) => {}
+        Ok(false) => match rooms::get_room(&state.pool, &code).await {
+            Err(_) => return err(StatusCode::NOT_FOUND, "unknown room").into_response(),
+            Ok(room) if room.phase != "done" => {
+                return err(StatusCode::CONFLICT, "partie non terminée").into_response()
+            }
+            _ => return err(StatusCode::NOT_FOUND, "unknown room").into_response(),
+        },
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+    state.hubs.write().await.remove(&code);
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
 }

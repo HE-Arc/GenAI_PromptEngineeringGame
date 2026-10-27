@@ -520,7 +520,7 @@ export function Board({
           {columns.map((c) => (
             <span key={c.label}>{c.label}</span>
           ))}
-          <span>Total</span>
+          <span title="Total = (proximité + 2 × qualité) / 3 : la proximité compte pour un tiers, la qualité pour deux tiers.">Total</span>
         </div>
       )}
       {players.map((p, i) => (
@@ -639,27 +639,27 @@ const DISCUSSION: Record<string, readonly [string, string]> = {
   // The class has arrived and is deciding to start, so the thing to settle out loud is presence,
   // not the game — the roster above the bar is the same fact drawn, and the bar is where the
   // decision is made.
-  lobby: ['Dites', 'à voix haute si tout le monde est là.'],
+  lobby: ['Dis', 'à voix haute si tout le monde est là.'],
   // The one screen where the discussion is not « what did you think » but « why ». The explanation
   // is on screen precisely so a student can argue it to a neighbour, and a bar that said
   // « comparez vos idées » here would spend the strongest moment of the didacticiel on the
   // vaguest possible prompt.
-  quiz: ['Expliquez', 'à un voisin pourquoi c’est la bonne réponse.'],
+  quiz: ['Explique', 'à un voisin pourquoi c’est la bonne réponse.'],
   // PRESENT tense, « ce que vous pensez », and it is not a style choice: the bar is up from the
   // moment the prompt appears, so a « ce que vous avez pensé » asserts a judgement this player has
   // not made yet, and a « la note que vous avez donnée » asserts one they may be structurally
   // barred from making — `Rating` swaps the scale for `.ownprompt` on the prompt's author, and
   // anonymous mode bars one prompt per player the same way. An opinion is available to all three
   // populations on every frame the bar is visible; a score is available to one of them.
-  rating: ['Dites', 'à voix haute ce que vous pensez de ce prompt.'],
+  rating: ['Dis', 'à voix haute ce que tu penses de ce prompt.'],
   // The summary is the one step with a number on screen that is still PROVISIONAL, so the round's
   // scores are the thing worth arguing about rather than the prompt that produced them.
-  summary: ['Dites', 'à voix haute ce que vous pensez des notes du tour.'],
+  summary: ['Dis', 'à voix haute ce que tu penses des notes de la manche.'],
 }
 // A real sentence rather than a hole, on the same argument as the server's `_PHASE_ADVANCE`: a
 // step family added there must not paint an empty paragraph above the button.
 const DEFAULT_DISCUSSION: readonly [string, string] = [
-  'Discutez',
+  'Dis',
   'de ce qui vient d’être montré à l’écran.',
 ]
 
@@ -847,12 +847,14 @@ export function PlayerCloud({ players, myName }: { players: Player[]; myName: st
 
 // The countdown as a draining ring with the seconds inside. `length` is the window's measured
 // length; before it is known the ring is simply full.
+// The figure is exposed to assistive tech via aria-label (includes secs) because the number
+// inside is otherwise decorative (aria-hidden svg + visual digits).
 export function Ring({ left, length, secs }: { left: number; length: number; secs: number }) {
   const R = 22
   const C = 2 * Math.PI * R
   const k = length > 0 ? Math.max(0, Math.min(1, left / length)) : 1
   return (
-    <span className="ring">
+    <span className="ring" role="img" aria-label={`${secs} ${secs > 1 ? 'secondes' : 'seconde'}`}>
       <svg viewBox="0 0 52 52" className="ring__svg" aria-hidden="true">
         <circle className="ring__track" cx="26" cy="26" r={R} />
         <circle

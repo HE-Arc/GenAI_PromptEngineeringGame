@@ -22,6 +22,9 @@ pub const QUIZ_SECONDS: i64 = 30;
 pub const ROUNDS_PER_GAME: usize = 10;
 pub const ROUND_SECONDS: i64 = 60;
 pub const RATE_SECONDS: i64 = 20;
+// En mode automatique, le résumé reste affiché 30 s pour relire les réponses
+// avant d'enchaîner seul ; en manuel, pas de délai (l'animateur avance).
+pub const SUMMARY_AUTO_SECONDS: i64 = 30;
 pub const ROUND_SECONDS_RANGE: (i64, i64) = (10, 600);
 pub const RATE_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const LOBBY_STEP: &str = "lobby";
@@ -135,12 +138,15 @@ pub struct GameRoom {
     pub phase_deadline_ms: Option<i64>,
     pub round_seconds: i64,
     pub rate_seconds: i64,
+    #[sqlx(default)]
+    pub auto_mode: i64,
 }
 
 pub async fn load(pool: &SqlitePool, code: &str) -> Result<GameRoom, sqlx::Error> {
     let sql = format!(
         "SELECT code, phase, current, tutorial, anonymous, quiz_index,
-                {} AS quiz_deadline_ms, {} AS phase_deadline_ms, round_seconds, rate_seconds
+                {} AS quiz_deadline_ms, {} AS phase_deadline_ms, round_seconds, rate_seconds,
+                COALESCE(auto_mode, 0) AS auto_mode
          FROM room WHERE code = ?",
         ms_of("quiz_deadline"),
         ms_of("phase_deadline"),
@@ -154,6 +160,9 @@ impl GameRoom {
     }
     pub fn phase_expired(&self) -> bool {
         matches!(self.phase_deadline_ms, Some(d) if now_ms() >= d)
+    }
+    pub fn is_auto(&self) -> bool {
+        self.auto_mode != 0
     }
 }
 
@@ -244,10 +253,13 @@ pub fn clamp_seconds(v: Option<&Value>, default: i64, (lo, hi): (i64, i64)) -> i
 // Sets the phase and arms its clock in one write: playing and rating are
 // timed, every other phase clears the deadline. Applies only if the room is
 // still in the phase and round `room` was read in; true when it moved.
+// En mode automatique, le résumé est aussi minuté (30 s) pour s'enchaîner seul ;
+// en manuel, aucun délai : l'animateur avance quand la relecture est finie.
 async fn go(pool: &SqlitePool, room: &GameRoom, phase: &str) -> Result<bool, sqlx::Error> {
     let seconds = match phase {
         "playing" => Some(room.round_seconds),
         "rating" => Some(room.rate_seconds),
+        "summary" if room.is_auto() => Some(SUMMARY_AUTO_SECONDS),
         _ => None,
     };
     let sql = format!(
@@ -410,6 +422,9 @@ async fn settle_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Er
     };
     let answers = round_answers(pool, round_id).await;
     if answers.is_empty() {
+        // Nothing to settle and nothing is invented: an empty round still
+        // reaches `summary` (the expiry path moves it there), where the
+        // snapshot carries `rows: []` and the screen says so in words.
         return Ok(());
     }
     // One grouped read instead of one SELECT per answer: a 30-player settle
@@ -628,8 +643,10 @@ pub async fn maybe_advance_by_votes(pool: &SqlitePool, code: &str, online: &Hash
     if count < needed {
         return;
     }
+    // Le lobby ne démarre jamais seul : seul l'animateur (admin_start) lance la
+    // partie. Les votes restent comptés pour l'affichage du quorum.
     if step == LOBBY_STEP {
-        let _ = start_game(pool, code).await;
+        return;
     } else if let Some(revealed) = step.rsplit(':').next().and_then(|r| r.parse().ok()) {
         // The vote was counted on `rating:<round>:<revealed>`: claim that cursor.
         let _ = advance_reveal_and_settle(pool, &room, revealed).await;
@@ -639,9 +656,36 @@ pub async fn maybe_advance_by_votes(pool: &SqlitePool, code: &str, online: &Hash
 // The phase clock ran out. Playing waits for streams still in flight so an
 // answer that beat the clock is never lost; the deadline is claimed with a
 // conditional UPDATE so concurrent callers run the transition once.
+// En mode automatique, le résumé minuté et le didacticiel s'enchaînent seuls.
 pub async fn expire_phase(state: &AppState, code: &str) -> bool {
     let pool = &state.pool;
     let Ok(room) = load(pool, code).await else { return false };
+    // Auto : le didacticiel avance à la fin de la fenêtre, même sans vote.
+    if room.phase == "quiz" && room.is_auto() {
+        if matches!(room.quiz_deadline_ms, Some(d) if now_ms() >= d) {
+            let _ = advance(pool, code).await;
+            return true;
+        }
+        return false;
+    }
+    if room.phase == "summary" && room.is_auto() {
+        if !room.phase_expired() {
+            return false;
+        }
+        let claimed = sqlx::query(
+            "UPDATE room SET phase_deadline = NULL WHERE code = ? AND phase = 'summary' AND phase_deadline IS NOT NULL",
+        )
+        .bind(code)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+        if claimed != 1 {
+            return false;
+        }
+        let _ = advance(pool, code).await;
+        return true;
+    }
     if !room.phase_expired() || !matches!(room.phase.as_str(), "playing" | "rating") {
         return false;
     }
@@ -669,6 +713,8 @@ pub async fn expire_phase(state: &AppState, code: &str) -> bool {
     if room.phase == "rating" {
         let _ = advance_reveal_and_settle(pool, &room, revealed).await;
     } else if round_answers(pool, round_id).await.is_empty() {
+        // An unanswered round is still a round: it gets its summary with
+        // `rows: []` instead of staying silent on `playing`.
         if go(pool, &room, "summary").await.unwrap_or(false) {
             let _ = settle_round(pool, &room).await;
         }
@@ -691,22 +737,26 @@ pub fn spawn_ticker(state: AppState) {
             tick.tick().await;
             // Bounded scan: without LIMIT one stuck room table makes every
             // tick linear in dead rooms the sweeper has not deleted yet.
+            // Le résumé est inclus : en mode automatique il est minuté.
             let sql = format!(
-                "SELECT code, phase, {} AS q, {} AS p FROM room WHERE phase IN ('quiz', 'playing', 'rating') LIMIT 1000",
+                "SELECT code, phase, {} AS q, {} AS p, COALESCE(auto_mode, 0) AS a FROM room WHERE phase IN ('quiz', 'playing', 'rating', 'summary') LIMIT 1000",
                 ms_of("quiz_deadline"),
                 ms_of("phase_deadline"),
             );
-            let rows: Vec<(String, String, Option<i64>, Option<i64>)> =
+            let rows: Vec<(String, String, Option<i64>, Option<i64>, i64)> =
                 sqlx::query_as(&sql).fetch_all(&state.pool).await.unwrap_or_default();
             let now = now_ms();
-            for (code, phase, quiz_deadline, phase_deadline) in rows {
+            for (code, phase, quiz_deadline, phase_deadline, auto_mode) in rows {
                 let mut changed = false;
                 if matches!(phase_deadline, Some(d) if now >= d) {
                     changed |= expire_phase(&state, &code).await;
                 }
                 if phase == "quiz" {
                     if let Some(d) = quiz_deadline {
-                        if now >= d && announced.get(&code) != Some(&d) {
+                        // Auto : la fin de la fenêtre fait avancer, pas seulement révéler.
+                        if auto_mode != 0 && now >= d {
+                            changed |= expire_phase(&state, &code).await;
+                        } else if now >= d && announced.get(&code) != Some(&d) {
                             announced.insert(code.clone(), d);
                             changed = true;
                         }
@@ -1076,6 +1126,8 @@ pub async fn room_snapshot(
         None => Value::Null,
     };
 
+    // A reconnect re-arms its clock from these two numbers, and its place from
+    // `phase` and `current` below: all four travel in every snapshot.
     let timer = room
         .phase_deadline_ms
         .map(|d| json!({"deadline_ms": d, "server_ms": now}))
@@ -1090,6 +1142,7 @@ pub async fn room_snapshot(
         "target": target,
         "timer": timer,
         "anonymous": anonymous,
+        "auto_mode": room.auto_mode != 0,
         "players": rows.into_iter().map(|r| r.2).collect::<Vec<_>>(),
         "online_count": online_count,
         "quiz": quiz,
@@ -1252,7 +1305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lobby_starts_on_a_majority_that_counts_late_joiners() {
+    async fn lobby_votes_never_auto_start_only_manual_start_counts_late_joiners() {
         let pool = crate::db::test_pool().await;
         crate::db::rooms::create_room(&pool, "LB55").await.unwrap();
         let mut online = HashSet::new();
@@ -1279,7 +1332,14 @@ mod tests {
 
         vote(ids[2]).await.unwrap();
         maybe_advance_by_votes(&pool, "LB55", &online).await;
-        assert_eq!(load(&pool, "LB55").await.unwrap().phase, "quiz", "3 of 5 starts the game");
+        assert_eq!(load(&pool, "LB55").await.unwrap().phase, "waiting", "3 of 5 still waits for the animateur");
+        let snap = room_snapshot(&pool, "LB55", Some(&online)).await.unwrap();
+        assert_eq!((snap["ready"]["count"].as_i64(), snap["ready"]["needed"].as_i64()), (Some(3), Some(3)));
+
+        // Seul le bouton de l'animateur lance la partie.
+        assert!(start_game(&pool, "LB55").await.unwrap());
+        assert_eq!(load(&pool, "LB55").await.unwrap().phase, "quiz");
+        assert!(!start_game(&pool, "LB55").await.unwrap(), "second start is a no-op");
     }
 
     #[tokio::test]
@@ -1317,10 +1377,12 @@ mod tests {
         let bob = crate::db::rooms::add_player(&pool, "RD22", "bob").await.unwrap();
         let online: HashSet<i64> = [ana.id, bob.id].into();
 
-        // Lobby: everybody ready starts the game, straight to playing.
+        // Lobby : les votes comptent le quorum, seul l'animateur lance la partie.
         crate::db::answers::add_ready(&pool, "RD22", ana.id, LOBBY_STEP).await.unwrap();
         crate::db::answers::add_ready(&pool, "RD22", bob.id, LOBBY_STEP).await.unwrap();
         maybe_advance_by_votes(&pool, "RD22", &online).await;
+        assert_eq!(load(&pool, "RD22").await.unwrap().phase, "waiting", "votes never start the game");
+        assert!(start_game(&pool, "RD22").await.unwrap());
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "playing");
         assert!(snap["target"].is_string());

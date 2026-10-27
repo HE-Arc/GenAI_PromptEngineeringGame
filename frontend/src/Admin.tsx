@@ -83,7 +83,7 @@ function advanceLabel(phase: Phase, quiz: QuizState | null, windowClosed: boolea
     case 'rating':
       return 'Prompt suivant'
     case 'summary':
-      return 'Tour suivant'
+      return 'Manche suivante'
     case 'done':
       return null
   }
@@ -337,6 +337,7 @@ function RoomsList({
                   effect, which is the only thing that writes the key back. */}
               <button type="button" className="btn btn--wide roomslist__row" onClick={() => onOpen(r.code)}>
                 <span className="roomslist__code">{r.code}</span>
+                {r.auto_mode && <span className="roomslist__phase">Auto</span>}
                 <span className="roomslist__where">
                   <span className="roomslist__phase">{PHASE_NAME[r.phase]}</span>
                   {/* `current` is 0-based on the wire and this counts from one, like every
@@ -387,6 +388,7 @@ export default function Admin() {
   // rating phase is built to preserve.
   const [tutorial, setTutorial] = useState(true)
   const [anonymous, setAnonymous] = useState(true)
+  const [autoMode, setAutoMode] = useState(false)
   // The two time limits, in seconds, as typed. Sent as typed; the server keeps them inside its
   // own bounds and falls back to its defaults on anything it cannot read.
   const [roundSeconds, setRoundSeconds] = useState('60')
@@ -724,10 +726,24 @@ export default function Admin() {
                 </span>
               </span>
             </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                className="check__box"
+                checked={autoMode}
+                onChange={(e) => setAutoMode(e.target.checked)}
+              />
+              <span className="check__text">
+                Mode automatique — enchaîner les manches sans intervention
+                <span className="check__hint">
+                  Le didacticiel et les résumés avancent seuls à la fin du chrono.
+                </span>
+              </span>
+            </label>
             <div className="timers">
               <div className="field">
                 <label className="label" htmlFor="round-seconds">
-                  Temps par question (s)
+                  Temps par manche en secondes
                 </label>
                 <input
                   id="round-seconds"
@@ -739,10 +755,11 @@ export default function Admin() {
                   value={roundSeconds}
                   onChange={(e) => setRoundSeconds(e.target.value)}
                 />
+                <p className="hint">10–600 secondes</p>
               </div>
               <div className="field">
                 <label className="label" htmlFor="rate-seconds">
-                  Temps pour noter un prompt (s)
+                  Temps pour noter un prompt en secondes
                 </label>
                 <input
                   id="rate-seconds"
@@ -754,11 +771,12 @@ export default function Admin() {
                   value={rateSeconds}
                   onChange={(e) => setRateSeconds(e.target.value)}
                 />
+                <p className="hint">5–300 secondes</p>
               </div>
             </div>
             <p className="prose prose--sm prose--dim">
-              Tout est réglé pour toute la partie. Une relance peut repartir avec ou sans
-              didacticiel.
+              Ces durées s’appliquent à toutes les manches et ne sont plus modifiables après
+              création.
             </p>
           </div>
 
@@ -776,6 +794,7 @@ export default function Admin() {
                 const { code: c } = await post<{ code: string }>('/api/admin/rooms', {
                   tutorial,
                   anonymous,
+                  auto_mode: autoMode,
                   round_seconds: roundSeconds,
                   rate_seconds: rateSeconds,
                 })
@@ -837,6 +856,8 @@ export default function Admin() {
   // rather than offering a press that cannot work.
   const submitted = players.filter((p) => p.answered).length
   const advanceBlocked = phase === 'playing' && submitted === 0
+  // Pendant la notation, le serveur refuse l'avance : bouton verrouillé.
+  const voteOngoing = phase === 'rating'
 
   // Where the game is, in one block. Every figure is read off the snapshot and nothing is stored,
   // so the block cannot disagree with the instruments below it — which is the failure it is
@@ -964,9 +985,11 @@ export default function Admin() {
   // opens on its own from there.
   //
   // Added after the room list, and it corrects the first line: this does NOT throw the room
-  // away. Nothing in this function leaves the browser — no delete endpoint exists in this API —
-  // so the room stays in the database and comes back in the list, with its players and its
-  // rounds intact. What it throws away is this tab's claim to it: the stored code, the stream,
+  // away. Nothing in this function leaves the browser — `abandon()` stays local-only
+  // (stored code, stream, console state) so the room stays in the database and comes back
+  // in the list, with its players and its rounds intact. The real server wipe lives
+  // elsewhere: « Effacer » calls DELETE /api/admin/rooms/:code, which only accepts a
+  // finished (`done`) room. What it throws away is this tab's claim to it: the stored code, the stream,
   // and the console's own state. A button labelled « Abandonner cette partie » was therefore
   // promising a destruction that does not happen, and the confirm in front of it was asking a
   // host to agree to a lie before they were allowed to look at another room. The one caller
@@ -1132,7 +1155,8 @@ export default function Admin() {
                 <button
                   type="button"
                   className="btn btn--signal btn--wide"
-                  disabled={busy || advanceBlocked}
+                  disabled={busy || advanceBlocked || voteOngoing}
+                  title={voteOngoing ? 'Vote en cours…' : undefined}
                   onClick={() =>
                     void run(async () => {
                       // `start` for an empty room and `next` for everything after it. The lobby
@@ -1170,7 +1194,33 @@ export default function Admin() {
                   would be the alternative, and a thumb reaching for either of them in a noisy
                   room picks the other. */}
               {phase === 'done' ? (
-                <RelaunchButtons busy={busy} primary onRestart={restart} />
+                <>
+                  <RelaunchButtons busy={busy} primary onRestart={restart} />
+                  {/* Visible seulement une fois la partie terminée : efface la
+                      partie côté serveur après confirmation, puis retourne à
+                      la liste. */}
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--wide"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        if (!window.confirm('Effacer la partie ?')) return
+                        const res = await fetch(`/api/admin/rooms/${code}`, { method: 'DELETE' })
+                        if (!res.ok) {
+                          const data = await res.json().catch(() => ({}))
+                          throw new ApiError(
+                            res.status,
+                            (data as { error?: string }).error ?? `HTTP ${res.status}`,
+                          )
+                        }
+                        abandon()
+                      }, lostSession)
+                    }
+                  >
+                    Effacer la partie
+                  </button>
+                </>
               ) : (
                 phase !== 'waiting' &&
                 phase !== 'connecting' && (
@@ -1193,9 +1243,10 @@ export default function Admin() {
 
                   It never did, and that is the whole reason the control is gone rather than
                   relabelled. `abandon()` is four lines of local state — removeItem, a ref, a
-                  `setCode`, a cleared error — and no request leaves the browser: there is no
-                  delete endpoint in this API at all, and the one destructive call that does
-                  exist (`restart`) wipes the rounds and keeps the room. So a confirm reading
+                  `setCode`, a cleared error — and no request leaves the browser: it only
+                  forgets the room in this tab, while the server wipe lives under « Effacer »
+                  via DELETE /api/admin/rooms/:code (finished rooms only) — and the other destructive
+                  call (`restart`) wipes the rounds and keeps the room. So a confirm reading
                   « Confirmer : abandonner la partie ABCD » was guarding a move that could
                   lose nothing, and it was asking a host who merely wanted to look at another
                   room to type the word "abandon" first. Worse, the room it claimed to abandon

@@ -13,9 +13,11 @@ import type { Link } from './useRoom'
  * stop, so "absent" and "nobody scored" must not look the same.
  */
 
+// Final columns carry their weights: proximity counts 1/3, quality 2/3.
+// Total = (proximité + 2 × qualité) / 3, shown as title tooltip on the board.
 const COLUMNS: BoardColumn[] = [
-  { label: 'Proximité', value: (p) => p.proximity_total ?? null },
-  { label: 'Qualité', value: (p) => p.quality_total ?? null },
+  { label: 'Proximité (1/3)', value: (p) => p.proximity_total ?? null },
+  { label: 'Qualité (2/3)', value: (p) => p.quality_total ?? null },
 ]
 
 export default function Results({
@@ -66,7 +68,7 @@ export default function Results({
     ).name
     badges[original] = 'plus original'
     if (progressed !== original) badges[progressed] = 'plus progressé'
-    if (fair !== original && fair !== progressed) badges[fair] = 'notateur le plus juste'
+    if (fair !== original && fair !== progressed) badges[fair] = 'évaluateur le plus juste'
   }
   const badgeLine = Object.entries(badges)
     .map(([name, label]) => `${name}, ${label}`)
@@ -75,7 +77,7 @@ export default function Results({
   const point = nounOf(points, 'point', 'points')
   const verdict =
     points === 0
-      ? 'Aucun tour n’a été noté dans cette partie.'
+      ? 'Aucune manche n’a été notée dans cette partie.'
       : winners.length === 1
         ? `${winners[0].name} l’emporte avec ${fr(points)} ${point}.`
         : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${fr(points)} ${point}.`
@@ -127,6 +129,12 @@ export default function Results({
           <Section title="Classement final">
             <Board players={state.players} myName={getName(state.code)} columns={COLUMNS} badges={badges} />
           </Section>
+          <p
+            className="prose prose--sm prose--dim"
+            title="Total = (proximité + 2 × qualité) / 3 : la proximité compte pour un tiers, la qualité pour deux tiers."
+          >
+            Total = (proximité + 2 × qualité) / 3.
+          </p>
           {badgeLine && <p className="prose prose--sm prose--cool">{badgeLine}</p>}
         </div>
 

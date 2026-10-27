@@ -162,7 +162,7 @@ export default function Rating({
             decoration: you cannot tell whether a prompt asks for the right thing without knowing
             what was asked, and the panel is the console's own way of drawing a fixed fact. */}
         <div className="ratehead">
-          <p className="label">La cible du tour</p>
+          <p className="label">La cible de la manche</p>
           <TargetText className="ratehead__target" text={state.target ?? '—'} />
           {state.target_image && (
             <img className="ratehead__image" src={state.target_image} alt="Image de l’exercice" />
@@ -298,7 +298,9 @@ export default function Rating({
         {/* The one instrument on this screen, and the same one the players and the host are
             looking at: it says how far the room has got on this prompt. Reused rather than
             redrawn because the room already knows what it looks like, and `AnswerMeter` already
-            carries the live region that says the fraction in words. */}
+            carries the live region that says the fraction in words.
+            Unit note: here the meter counts prompts of the manche ("Prompts notés"), while the
+            Game screen counts players ("Réponses envoyées"). Two units, two captions. */}
         <AnswerMeter
           lit={lit}
           total={reveal.count}
