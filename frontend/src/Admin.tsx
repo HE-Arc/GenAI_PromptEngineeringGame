@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { AnswerMeter, Board, ConsoleBar, DangerButton, Readout, Roster, RosterList, Step } from './ui'
 import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
-import { absent, ApiError, describe, listRooms, post, present, type Phase, type QuizState, type RoomSummary } from './api'
+import { absent, ApiError, describe, listRooms, post, present, type Phase, type QuizState, type RoomSummary, type State } from './api'
 import { useRoom } from './useRoom'
 
 // The admin's own room code, kept so a reload does not orphan a running game. Nothing on this
@@ -376,28 +376,117 @@ function RoomsList({
   )
 }
 
+// The room settings, as the lobby form holds them: durations as typed (the server clamps them
+// and falls back to its defaults on anything it cannot read), flags as booleans. Named as the
+// server names the fields, so the launch payload is the form's own state.
+type RoomSettings = {
+  tutorial: boolean
+  anonymous: boolean
+  auto_mode: boolean
+  round_seconds: string
+  rate_seconds: string
+  quiz_seconds: string
+}
+
+function settingsOf(state: State): RoomSettings {
+  return {
+    tutorial: state.tutorial,
+    anonymous: state.anonymous,
+    auto_mode: state.auto_mode,
+    round_seconds: String(state.round_seconds),
+    rate_seconds: String(state.rate_seconds),
+    quiz_seconds: String(state.quiz_seconds),
+  }
+}
+
+const FLAGS: { key: 'tutorial' | 'anonymous' | 'auto_mode'; label: string; hint: string }[] = [
+  {
+    key: 'tutorial',
+    label: 'Avec le didacticiel',
+    hint: 'Huit questions avant la première manche. Personne n’écrit de prompt avant d’y avoir répondu.',
+  },
+  {
+    key: 'anonymous',
+    label: 'Anonyme pendant la notation',
+    hint: 'Les noms sont masqués tant que les prompts sont notés. Ils reviennent au résumé de la manche.',
+  },
+  {
+    key: 'auto_mode',
+    label: 'Mode automatique — enchaîner les manches sans intervention',
+    hint: 'Le didacticiel et les résumés avancent seuls à la fin du chrono.',
+  },
+]
+
+const DURATIONS: { key: 'round_seconds' | 'rate_seconds' | 'quiz_seconds'; label: string; min: number; max: number }[] = [
+  { key: 'round_seconds', label: 'Temps par manche en secondes', min: 10, max: 600 },
+  { key: 'rate_seconds', label: 'Temps pour noter un prompt en secondes', min: 5, max: 300 },
+  { key: 'quiz_seconds', label: 'Temps par question du didacticiel en secondes', min: 5, max: 300 },
+]
+
+// The lobby's settings panel. Native checkboxes rather than drawn ones: real keyboard, focus and
+// checked state for free. Applied when the host presses « Lancer la partie ».
+function RoomSettingsForm({
+  value,
+  onChange,
+}: {
+  value: RoomSettings
+  onChange: <K extends keyof RoomSettings>(key: K, v: RoomSettings[K]) => void
+}) {
+  return (
+    <section className="checks" aria-label="Paramètres de la partie">
+      <p className="label">Paramètres de la partie</p>
+      {FLAGS.map((f) => (
+        <label className="check" key={f.key}>
+          <input
+            type="checkbox"
+            className="check__box"
+            checked={value[f.key]}
+            onChange={(e) => onChange(f.key, e.target.checked)}
+          />
+          <span className="check__text">
+            {f.label}
+            <span className="check__hint">{f.hint}</span>
+          </span>
+        </label>
+      ))}
+      <div className="timers">
+        {DURATIONS.map((d) => (
+          <div className="field" key={d.key}>
+            <label className="label" htmlFor={d.key}>
+              {d.label}
+            </label>
+            <input
+              id={d.key}
+              className="input"
+              type="number"
+              inputMode="numeric"
+              min={d.min}
+              max={d.max}
+              value={value[d.key]}
+              onChange={(e) => onChange(d.key, e.target.value)}
+            />
+            <p className="hint">
+              {d.min}–{d.max} secondes
+            </p>
+          </div>
+        ))}
+      </div>
+      <p className="prose prose--sm prose--dim">
+        Appliqués au lancement de la partie, pour toutes les manches.
+      </p>
+    </section>
+  )
+}
+
 export default function Admin() {
   const [password, setPassword] = useState('')
   const [code, setCode] = useState<string | null>(() => localStorage.getItem(roomKey))
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  // The two flags a room is born with, and the only two moments the screen ever offers them:
-  // the spec fixes both for the whole game, so after creation there is nowhere to put a control
-  // for them that would not be a lie. Both default to on. A didacticiel a host has to remember
-  // to ask for is a didacticiel half the class skips, and anonymity is the feature the whole
-  // rating phase is built to preserve.
-  const [tutorial, setTutorial] = useState(true)
-  const [anonymous, setAnonymous] = useState(true)
-  const [autoMode, setAutoMode] = useState(false)
-  // The two time limits, in seconds, as typed. Sent as typed; the server keeps them inside its
-  // own bounds and falls back to its defaults on anything it cannot read.
-  const [roundSeconds, setRoundSeconds] = useState('180')
-  const [rateSeconds, setRateSeconds] = useState('30')
-  // Seconds per didacticiel question: chosen at creation (60 s by default)…
-  const [quizSeconds, setQuizSeconds] = useState('60')
-  // …and adjustable at launch. Null until edited, so the lobby shows the room's own value (from
-  // the snapshot) and a room reopened from the list never has it reset to the default.
-  const [launchSeconds, setLaunchSeconds] = useState<string | null>(null)
+  // The lobby's edits to the room settings, over the values the snapshot carries. Only edited
+  // keys are kept, and they ride the launch: an untouched field keeps the room's own value, and a
+  // room reopened from the list never has its settings reset to the form's defaults.
+  const [draft, setDraft] = useState<Partial<RoomSettings>>({})
   // A confirm only holds until anything about the room changes, and says which action it is
   // confirming: two of the destructive controls now arm the same way, and an arm that did not
   // carry its action could confirm "throw the room away" after the host had reached for the
@@ -536,6 +625,7 @@ export default function Admin() {
 
   function enter(c: string) {
     verified.current = false
+    setDraft({})
     setGoneNotice('')
     setCode(c)
   }
@@ -673,8 +763,8 @@ export default function Admin() {
         <main className="screen" id="main" tabIndex={-1}>
           <h1 className="title" tabIndex={-1}>Console d’animation</h1>
           <p className="prose prose--dim">
-            Reprends une partie ouverte, ou crée la tienne. Le code sera affiché à l’écran pour
-            que tu le donnes au groupe.
+            Reprends une partie ouverte, ou crée la tienne. Tu la règles ensuite dans son salon,
+            pendant que le groupe rejoint avec le code affiché.
           </p>
           {goneNotice && (
             <p className="notice" role="status">
@@ -689,137 +779,15 @@ export default function Admin() {
               the host does not want, which is the same mistake this screen used to make in the
               other direction. */}
           <RoomsList onOpen={enter} onSignedOut={lostSession} />
-          {/* Two flags, above the button that creates the party they configure. Outside a form
-              now for a different reason than before — there is no form on this screen at all,
-              signing in and creating a room being two separate presses on two separate screens —
-              but the position argument is the same and is the reason it is here rather than
-              beside the button: a flag below « Créer une partie » is a flag nobody reads,
-              because the host pressed the button before seeing it and the party is already
-              fixed. Native checkboxes with the console's accent, rather than buttons drawn to
-              look like checkboxes: the whole cost of that choice is that the box cannot be
-              styled to match the panel, and what it buys is a real control with real keyboard,
-              real focus and a real checked state, which three divs would each have to
-              re-implement. */}
-          <div className="checks">
-            <label className="check">
-              <input
-                type="checkbox"
-                className="check__box"
-                checked={tutorial}
-                onChange={(e) => setTutorial(e.target.checked)}
-              />
-              <span className="check__text">
-                Avec le didacticiel
-                <span className="check__hint">
-                  Huit questions avant la première manche. Personne n’écrit de prompt avant d’y
-                  avoir répondu.
-                </span>
-              </span>
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                className="check__box"
-                checked={anonymous}
-                onChange={(e) => setAnonymous(e.target.checked)}
-              />
-              <span className="check__text">
-                Anonyme pendant la notation
-                <span className="check__hint">
-                  Les noms sont masqués tant que les prompts sont notés. Ils reviennent au résumé
-                  de la manche.
-                </span>
-              </span>
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                className="check__box"
-                checked={autoMode}
-                onChange={(e) => setAutoMode(e.target.checked)}
-              />
-              <span className="check__text">
-                Mode automatique — enchaîner les manches sans intervention
-                <span className="check__hint">
-                  Le didacticiel et les résumés avancent seuls à la fin du chrono.
-                </span>
-              </span>
-            </label>
-            <div className="timers">
-              <div className="field">
-                <label className="label" htmlFor="round-seconds">
-                  Temps par manche en secondes
-                </label>
-                <input
-                  id="round-seconds"
-                  className="input"
-                  type="number"
-                  inputMode="numeric"
-                  min={10}
-                  max={600}
-                  value={roundSeconds}
-                  onChange={(e) => setRoundSeconds(e.target.value)}
-                />
-                <p className="hint">10–600 secondes</p>
-              </div>
-              <div className="field">
-                <label className="label" htmlFor="rate-seconds">
-                  Temps pour noter un prompt en secondes
-                </label>
-                <input
-                  id="rate-seconds"
-                  className="input"
-                  type="number"
-                  inputMode="numeric"
-                  min={5}
-                  max={300}
-                  value={rateSeconds}
-                  onChange={(e) => setRateSeconds(e.target.value)}
-                />
-                <p className="hint">5–300 secondes</p>
-              </div>
-              <div className="field">
-                <label className="label" htmlFor="create-quiz-seconds">
-                  Temps par question du didacticiel en secondes
-                </label>
-                <input
-                  id="create-quiz-seconds"
-                  className="input"
-                  type="number"
-                  inputMode="numeric"
-                  min={5}
-                  max={300}
-                  value={quizSeconds}
-                  onChange={(e) => setQuizSeconds(e.target.value)}
-                />
-                <p className="hint">5–300 secondes, modifiable au lancement</p>
-              </div>
-            </div>
-            <p className="prose prose--sm prose--dim">
-              Ces durées s’appliquent à toutes les manches. Seul le temps du didacticiel reste
-              modifiable au lancement de la partie.
-            </p>
-          </div>
-
-          {/* A button and not a form: there is one control here and one field-less action to
-              take, and a `<form>` would only add an implicit submit for a screen that has
-              nothing to submit. Both flags ride this POST and nowhere else. They are the room's
-              own fields, named as the server names them, so the payload is readable in one place
-              rather than translated on the way out. */}
+          {/* The button alone: the room is configured in its own lobby, where the host sees it
+              filling up, and the settings ride the launch. */}
           <button
             type="button"
             className="btn btn--signal btn--wide"
             disabled={busy}
             onClick={() =>
               void run(async () => {
-                const { code: c } = await post<{ code: string }>('/api/admin/rooms', {
-                  tutorial,
-                  anonymous,
-                  auto_mode: autoMode,
-                  round_seconds: roundSeconds,
-                  rate_seconds: rateSeconds,
-                  quiz_seconds: quizSeconds,
-                })
+                const { code: c } = await post<{ code: string }>('/api/admin/rooms', {})
                 enter(c)
               }, lostSession)
             }
@@ -1206,23 +1174,11 @@ export default function Admin() {
                 the room already says where it is and how far through the didacticiel it is, and a
                 label the host has to keep in step with a state machine is a label that will be
                 wrong during the round the host most needs to trust it. */}
-            {phase === 'waiting' && (
-              <div className="field">
-                <label className="label" htmlFor="quiz-seconds">
-                  Temps par question du didacticiel (secondes)
-                </label>
-                <input
-                  id="quiz-seconds"
-                  className="input"
-                  type="number"
-                  inputMode="numeric"
-                  min={5}
-                  max={300}
-                  value={launchSeconds ?? String(state?.quiz_seconds ?? 60)}
-                  onChange={(e) => setLaunchSeconds(e.target.value)}
-                />
-                <p className="hint">5–300 secondes, appliqué à chaque question. Sans effet si le didacticiel est désactivé.</p>
-              </div>
+            {phase === 'waiting' && state && (
+              <RoomSettingsForm
+                value={{ ...settingsOf(state), ...draft }}
+                onChange={(k, v) => setDraft((d) => ({ ...d, [k]: v }))}
+              />
             )}
 
             <div className="actions">
@@ -1238,11 +1194,9 @@ export default function Admin() {
                       // is the one phase where the transition is a different endpoint rather than
                       // the same one resolving differently, and it is the only one that has one.
                       if (phase === 'waiting') {
-                        // Only an edited value is sent: otherwise the room keeps what was set at creation.
-                        await post(
-                          `/api/admin/rooms/${code}/start`,
-                          launchSeconds === null ? {} : { quiz_seconds: launchSeconds },
-                        )
+                        // Only the edited settings are sent: the rest stay as the room has them.
+                        await post(`/api/admin/rooms/${code}/start`, draft)
+                        setDraft({})
                       } else {
                         await post(`/api/admin/rooms/${code}/next`)
                       }

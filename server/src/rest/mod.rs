@@ -567,31 +567,62 @@ pub async fn admin_create(
             return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
         }
     };
-    let flag = |key: &str| data.get(key).and_then(|v| v.as_bool()).unwrap_or(true);
-    let auto_mode = data.get("auto_mode").and_then(|v| v.as_bool()).unwrap_or(false);
-    let quiz_seconds = game::clamp_seconds(data.get("quiz_seconds"), game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE);
-    let settings = sqlx::query(
-        "UPDATE room SET tutorial = ?, anonymous = ?, auto_mode = ?, round_seconds = ?, rate_seconds = ?, quiz_seconds = ? WHERE code = ?",
-    )
-    .bind(flag("tutorial") as i64)
-    .bind(flag("anonymous") as i64)
-    .bind(auto_mode as i64)
-    .bind(game::clamp_seconds(data.get("round_seconds"), game::ROUND_SECONDS, game::ROUND_SECONDS_RANGE))
-    .bind(game::clamp_seconds(data.get("rate_seconds"), game::RATE_SECONDS, game::RATE_SECONDS_RANGE))
-    .bind(quiz_seconds)
-    .bind(&code)
-    .execute(&state.pool)
-    .await;
-    if let Err(e) = &settings {
-        tracing::error!(room = %code, error = %e, "room settings write failed, defaults kept");
+    // Settings are normally chosen in the lobby (sent with start); a create
+    // body that carries them is still honoured for API clients.
+    // The table's column defaults predate the current ones (0001 is never
+    // edited), so a new room gets today's durations written explicitly.
+    let mut settings = json!({
+        "round_seconds": game::ROUND_SECONDS,
+        "rate_seconds": game::RATE_SECONDS,
+        "quiz_seconds": game::QUIZ_SECONDS_DEFAULT,
+    });
+    if let (Some(base), Some(given)) = (settings.as_object_mut(), data.as_object()) {
+        base.extend(given.clone());
     }
+    apply_settings(&state.pool, &code, &settings).await;
     if let Err(e) = game::create_bank(&state.pool, &code).await {
         tracing::error!(room = %code, error = %e, "didacticiel bank create failed");
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
     }
-    tracing::info!(room = %code, tutorial = flag("tutorial"), anonymous = flag("anonymous"), auto_mode, "room created");
+    tracing::info!(room = %code, "room created");
     touch(&state, &code).await;
-    (StatusCode::OK, Json(json!({"code": room.code, "auto_mode": auto_mode, "quiz_seconds": quiz_seconds}))).into_response()
+    (StatusCode::OK, Json(json!({"code": room.code}))).into_response()
+}
+
+// The room's settings, each written only when present in `data`: flags as
+// JSON booleans, durations clamped to their range. Only a room still in the
+// lobby is changed: once started, the game runs on what it began with.
+async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value) {
+    let mut sets: Vec<(&str, i64)> = Vec::new();
+    for key in ["tutorial", "anonymous", "auto_mode"] {
+        if let Some(b) = data.get(key).and_then(|v| v.as_bool()) {
+            sets.push((key, b as i64));
+        }
+    }
+    let durations = [
+        ("round_seconds", game::ROUND_SECONDS, game::ROUND_SECONDS_RANGE),
+        ("rate_seconds", game::RATE_SECONDS, game::RATE_SECONDS_RANGE),
+        ("quiz_seconds", game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE),
+    ];
+    for (key, default, range) in durations {
+        if data.get(key).is_some() {
+            sets.push((key, game::clamp_seconds(data.get(key), default, range)));
+        }
+    }
+    if sets.is_empty() {
+        return;
+    }
+    // Column names come from the fixed lists above, never from the request.
+    let assignments: Vec<String> = sets.iter().map(|(k, _)| format!("{k} = ?")).collect();
+    let sql = format!("UPDATE room SET {} WHERE code = ? AND phase = 'waiting'", assignments.join(", "));
+    let mut q = sqlx::query(&sql);
+    for (_, v) in &sets {
+        q = q.bind(*v);
+    }
+    match q.bind(code).execute(pool).await {
+        Ok(_) => tracing::info!(room = %code, settings = ?sets, "room settings saved"),
+        Err(e) => tracing::error!(room = %code, error = %e, "room settings write failed"),
+    }
 }
 
 static RAND_BIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x9e3779b9);
@@ -610,21 +641,10 @@ pub async fn admin_start(
         Err(e) => return e.into_response(),
     };
     let _ = room;
-    // The didacticiel's time per question is chosen at launch. Body optional:
-    // an empty or unreadable one keeps the room's current setting.
+    // The lobby's settings ride the launch. Body optional: an empty or
+    // unreadable one starts the room with the settings it already has.
     let data: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-    if data.get("quiz_seconds").is_some() {
-        let secs = game::clamp_seconds(data.get("quiz_seconds"), game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE);
-        match sqlx::query("UPDATE room SET quiz_seconds = ? WHERE code = ? AND phase = 'waiting'")
-            .bind(secs)
-            .bind(&code)
-            .execute(&state.pool)
-            .await
-        {
-            Ok(_) => tracing::info!(room = %code, quiz_seconds = secs, "didacticiel duration set at launch"),
-            Err(e) => tracing::error!(room = %code, error = %e, "didacticiel duration write failed"),
-        }
-    }
+    apply_settings(&state.pool, &code, &data).await;
     match game::start_game(&state.pool, &code).await {
         Ok(true) => {}
         Ok(false) => return err(StatusCode::CONFLICT, "already started").into_response(),

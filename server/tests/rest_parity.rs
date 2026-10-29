@@ -465,3 +465,41 @@ async fn admin_delete_done_ok_and_gated() {
         .await;
     gone.assert_status(axum::http::StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn room_created_bare_then_configured_in_lobby_at_launch() {
+    // Creation takes no settings: the room gets today's defaults, and the
+    // lobby's choices ride the start call.
+    let (server, pool, _state) = server_with_pool().await;
+    let login = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "genai"}))
+        .await;
+    let cookie = login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_owned();
+    let created = server.post("/api/admin/rooms").add_header("cookie", cookie.clone()).await;
+    created.assert_status_ok();
+    let code = created.json::<serde_json::Value>()["code"].as_str().unwrap().to_owned();
+    let row: (i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT round_seconds, rate_seconds, quiz_seconds, tutorial, anonymous FROM room WHERE code = ?",
+    )
+    .bind(&code)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row, (180, 30, 60, 1, 1), "defaults written at creation");
+
+    server
+        .post(&format!("/api/admin/rooms/{code}/start"))
+        .add_header("cookie", cookie)
+        .json(&json!({"tutorial": false, "anonymous": false, "round_seconds": 120, "rate_seconds": 9999}))
+        .await
+        .assert_status_ok();
+    let row: (String, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT phase, round_seconds, rate_seconds, tutorial, anonymous FROM room WHERE code = ?",
+    )
+    .bind(&code)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row, ("playing".into(), 120, 300, 0, 0), "lobby settings applied, durations clamped");
+}
