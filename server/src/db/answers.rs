@@ -39,22 +39,6 @@ pub async fn insert_answer(
     .await
 }
 
-// Idempotency read for answer.start: Some means the WS caller gets error
-// already_answered (Django 409 {"error":"already answered"} semantics).
-pub async fn find_answer(
-    pool: &SqlitePool,
-    round_id: i64,
-    player_id: i64,
-) -> Result<Option<Answer>, sqlx::Error> {
-    sqlx::query_as::<_, Answer>(
-        "SELECT id, round_id, player_id, prompt, output, score FROM answer WHERE round_id = ? AND player_id = ?",
-    )
-    .bind(round_id)
-    .bind(player_id)
-    .fetch_optional(pool)
-    .await
-}
-
 pub async fn insert_rating(
     pool: &SqlitePool,
     answer_id: i64,
@@ -71,7 +55,11 @@ pub async fn insert_rating(
     if author == Some(rater_id) {
         return Err(sqlx::Error::Protocol("a player cannot rate their own prompt".into()));
     }
-    let id = sqlx::query("INSERT INTO rating (answer_id, rater_id, score) VALUES (?, ?, ?)")
+    // A second tap changes the note: one row per rater per prompt, last tap wins.
+    let id = sqlx::query(
+        "INSERT INTO rating (answer_id, rater_id, score) VALUES (?, ?, ?)
+         ON CONFLICT (answer_id, rater_id) DO UPDATE SET score = excluded.score",
+    )
         .bind(answer_id)
         .bind(rater_id)
         .bind(score)
@@ -159,8 +147,13 @@ mod tests {
             .await
             .unwrap();
         insert_rating(&pool, answer.id, rater.id, 8).await.unwrap();
-        // UNIQUE(answer_id, rater_id): the double-vote 409 rests on this.
-        let dup = insert_rating(&pool, answer.id, rater.id, 9).await;
-        assert!(dup.is_err());
+        // UNIQUE(answer_id, rater_id): a second note replaces the first.
+        insert_rating(&pool, answer.id, rater.id, 3).await.unwrap();
+        let scores: Vec<i64> = sqlx::query_scalar("SELECT score FROM rating WHERE answer_id = ?")
+            .bind(answer.id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(scores, [3]);
     }
 }

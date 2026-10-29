@@ -18,11 +18,13 @@ use crate::hub::RoomHub;
 use crate::router::AppState;
 use std::sync::Arc;
 
-pub const QUIZ_SECONDS: i64 = 30;
-pub const QUIZ_SECONDS_DEFAULT: i64 = 30;
+pub const QUIZ_SECONDS: i64 = 60;
+pub const QUIZ_SECONDS_DEFAULT: i64 = 60;
 pub const QUIZ_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const ROUNDS_PER_GAME: usize = 10;
+// Prompts a player may send for one round; the last one sent is the one kept.
+pub const MAX_ATTEMPTS: i64 = 3;
 pub const ROUND_SECONDS: i64 = 60;
 pub const RATE_SECONDS: i64 = 20;
 // En mode automatique, le résumé reste affiché 30 s pour relire les réponses
@@ -54,6 +56,10 @@ pub struct QuizItem {
 pub struct Target {
     pub text: String,
     pub image: Option<String>,
+    // What the critic grades the prompt on, shown to the player beside the
+    // note: the note explains itself through these, not through prose.
+    #[serde(default)]
+    pub criteria: Vec<String>,
 }
 
 fn quiz_bank() -> &'static [QuizItem] {
@@ -78,10 +84,24 @@ pub fn image_for(target: &str) -> Option<String> {
         .and_then(|t| t.image.clone())
 }
 
+pub fn criteria_for(target: &str) -> Vec<String> {
+    targets()
+        .iter()
+        .find(|t| t.text == target)
+        .map(|t| t.criteria.clone())
+        .unwrap_or_default()
+}
+
 // --- scoring rules (prompts.py) -------------------------------------------
 
 pub fn half_up(x: f64) -> i64 {
     (x + 0.5).floor() as i64
+}
+
+// The AI's own note: what round_score would be with no peer rating. Shown
+// right after a send and again in the summary, so both screens agree.
+pub fn ai_score(proximity: i64, critic: i64) -> f64 {
+    (proximity as f64 + 2.0 * critic as f64) / 3.0
 }
 
 pub fn quality(llm: Option<i64>, peers: &[i64]) -> i64 {
@@ -151,7 +171,7 @@ pub async fn load(pool: &SqlitePool, code: &str) -> Result<GameRoom, sqlx::Error
     let sql = format!(
         "SELECT code, phase, current, tutorial, anonymous, quiz_index,
                 {} AS quiz_deadline_ms, {} AS phase_deadline_ms, round_seconds, rate_seconds,
-                COALESCE(quiz_seconds, 30) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode
+                COALESCE(quiz_seconds, 60) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode
          FROM room WHERE code = ?",
         ms_of("quiz_deadline"),
         ms_of("phase_deadline"),
@@ -183,12 +203,13 @@ struct AnswerRow {
     quality_peers: Option<i64>,
     quality: Option<i64>,
     round_score: Option<f64>,
+    attempts: i64,
 }
 
 async fn round_answers(pool: &SqlitePool, round_id: i64) -> Vec<AnswerRow> {
     sqlx::query_as::<_, AnswerRow>(
         "SELECT id, player_id, prompt, output, score, quality_llm, quality_comment,
-                quality_peers, quality, round_score
+                quality_peers, quality, round_score, attempts
          FROM answer WHERE round_id = ? ORDER BY id",
     )
     .bind(round_id)
@@ -279,6 +300,10 @@ async fn go(pool: &SqlitePool, room: &GameRoom, phase: &str) -> Result<bool, sql
         .execute(pool)
         .await?
         .rows_affected();
+    // A same-phase write is a clock re-arm (next prompt to rate), not a transition.
+    if moved == 1 && phase != room.phase {
+        tracing::info!(room = %room.code, from = %room.phase, to = phase, round = room.current + 1, "phase change");
+    }
     Ok(moved == 1)
 }
 
@@ -290,7 +315,7 @@ async fn arm(pool: &SqlitePool, room: &GameRoom, phase: &str) -> Result<bool, sq
 // Opens question `index`, if the room is still on question `from`. The window
 // length is the room's own `quiz_seconds` (configurable at creation).
 async fn open_quiz(pool: &SqlitePool, code: &str, from: i64, index: i64) -> Result<bool, sqlx::Error> {
-    let secs: i64 = sqlx::query_scalar("SELECT COALESCE(quiz_seconds, 30) FROM room WHERE code = ?")
+    let secs: i64 = sqlx::query_scalar("SELECT COALESCE(quiz_seconds, 60) FROM room WHERE code = ?")
         .bind(code)
         .fetch_optional(pool)
         .await
@@ -308,6 +333,9 @@ async fn open_quiz(pool: &SqlitePool, code: &str, from: i64, index: i64) -> Resu
         .execute(pool)
         .await?
         .rows_affected();
+    if moved == 1 {
+        tracing::info!(room = %code, question = index + 1, seconds = secs, "didacticiel question opened");
+    }
     Ok(moved == 1)
 }
 
@@ -363,6 +391,7 @@ pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Err
             .await?;
     }
     tx.commit().await?;
+    tracing::info!(room = %code, first_phase = phase, rounds = ROUNDS_PER_GAME, "game started");
     let room = load(pool, code).await?;
     if phase == "quiz" {
         open_quiz(pool, code, room.quiz_index, 0).await?;
@@ -417,6 +446,7 @@ async fn advance_reveal_and_settle(
             .await?
             .rows_affected();
         if moved == 1 {
+            tracing::info!(room = %room.code, round = room.current + 1, prompt = revealed + 2, of = count, "next prompt to rate");
             arm(pool, room, "rating").await?;
         }
         Ok(())
@@ -474,6 +504,7 @@ async fn settle_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Er
             .await?;
     }
     tx.commit().await?;
+    tracing::info!(room = %room.code, round = room.current + 1, answers = answers.len(), "round settled");
     Ok(())
 }
 
@@ -487,12 +518,16 @@ async fn next_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Erro
             "UPDATE room SET current = current + 1, phase = 'playing', phase_deadline = {TS_FROM_MS}
              WHERE code = ? AND phase = 'summary' AND current = ?"
         );
-        sqlx::query(&sql)
+        let moved = sqlx::query(&sql)
             .bind(now_ms() + room.round_seconds * 1000)
             .bind(&room.code)
             .bind(room.current)
             .execute(pool)
-            .await?;
+            .await?
+            .rows_affected();
+        if moved == 1 {
+            tracing::info!(room = %room.code, round = room.current + 2, of = rounds, "round opened");
+        }
         Ok(())
     } else {
         go(pool, room, "done").await.map(|_| ())
@@ -520,7 +555,10 @@ pub async fn advance(pool: &SqlitePool, code: &str) -> Result<(), String> {
         "summary" => next_round(pool, &room).await,
         other => return Err(format!("no advance from {other}")),
     };
-    r.map_err(|e| e.to_string())
+    r.map_err(|e| {
+        tracing::error!(room = %code, phase = %room.phase, error = %e, "advance failed");
+        e.to_string()
+    })
 }
 
 pub async fn round_has_answers(pool: &SqlitePool, code: &str) -> bool {
@@ -560,9 +598,10 @@ pub async fn maybe_close_quiz_window(pool: &SqlitePool, code: &str, online: &Has
     }
 }
 
-// Playing: everybody online wrote a prompt → rating. Rating: every online
-// rater (author excluded) rated the prompt on screen → next prompt. An empty
-// rater set never advances: a room must not run itself.
+// Rating: every online rater (author excluded) rated the prompt on screen →
+// next prompt. Playing never closes early: a player may send new attempts
+// until the clock (or the animateur) ends the round. An empty rater set
+// never advances: a room must not run itself.
 pub async fn maybe_advance_phase(pool: &SqlitePool, code: &str, online: &HashSet<i64>) {
     if online.is_empty() {
         return;
@@ -573,12 +612,6 @@ pub async fn maybe_advance_phase(pool: &SqlitePool, code: &str, online: &HashSet
     };
     let answers = round_answers(pool, round_id).await;
     match room.phase.as_str() {
-        "playing" => {
-            let wrote: HashSet<i64> = answers.iter().map(|a| a.player_id).collect();
-            if online.is_subset(&wrote) {
-                let _ = open_rating(pool, &room).await;
-            }
-        }
         "rating" => {
             let Some(target) = answers.get(revealed as usize) else { return };
             let raters: HashSet<i64> =
@@ -724,6 +757,7 @@ pub async fn expire_phase(state: &AppState, code: &str) -> bool {
     if claimed != 1 {
         return false;
     }
+    tracing::info!(room = %code, phase = %room.phase, round = room.current + 1, "phase clock expired");
     if room.phase == "rating" {
         let _ = advance_reveal_and_settle(pool, &room, revealed).await;
     } else if round_answers(pool, round_id).await.is_empty() {
@@ -758,7 +792,15 @@ pub fn spawn_ticker(state: AppState) {
                 ms_of("phase_deadline"),
             );
             let rows: Vec<(String, String, Option<i64>, Option<i64>, i64)> =
-                sqlx::query_as(&sql).fetch_all(&state.pool).await.unwrap_or_default();
+                match sqlx::query_as(&sql).fetch_all(&state.pool).await {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        // Every timed room stalls while this fails: worth an ERROR each tick.
+                        tracing::error!(error = %e, "ticker: cannot read timed rooms");
+                        continue;
+                    }
+                };
+            let tick_start = std::time::Instant::now();
             let now = now_ms();
             let mut seen: HashSet<String> = HashSet::new();
             for (code, phase, quiz_deadline, phase_deadline, auto_mode) in rows {
@@ -790,6 +832,10 @@ pub fn spawn_ticker(state: AppState) {
                 if phase == "quiz" {
                     seen.insert(code);
                 }
+            }
+            let tick_ms = tick_start.elapsed().as_millis() as u64;
+            if tick_ms > 500 {
+                tracing::warn!(tick_ms, "ticker: slow tick, clocks may lag");
             }
             // Purge les salles disparues ou sorties du quiz : `announced` ne
             // garde qu'un marqueur par salle suivie, sinon fuite lente.
@@ -882,9 +928,12 @@ pub async fn delete_rooms(state: &AppState, codes: &[String]) {
             "DELETE FROM player WHERE room_code = ?",
             "DELETE FROM room WHERE code = ?",
         ] {
-            let _ = sqlx::query(sql).bind(code).execute(&state.pool).await;
+            if let Err(e) = sqlx::query(sql).bind(code).execute(&state.pool).await {
+                tracing::error!(room = %code, error = %e, "room delete step failed");
+            }
         }
         state.hubs.write().await.remove(code);
+        tracing::info!(room = %code, "idle room deleted");
     }
 }
 
@@ -897,11 +946,15 @@ pub fn spawn_sweeper(state: AppState) {
             tick.tick().await;
             let plan = sweep_plan(&state, boot).await;
             for code in &plan.active {
-                let _ = sqlx::query("UPDATE room SET last_activity_at = datetime('now') WHERE code = ?")
+                if let Err(e) = sqlx::query("UPDATE room SET last_activity_at = datetime('now') WHERE code = ?")
                     .bind(code)
                     .execute(&state.pool)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(room = %code, error = %e, "sweeper: cannot stamp activity");
+                }
             }
+            tracing::debug!(active = plan.active.len(), hidden = plan.hide.len(), deleted = plan.dead.len(), "sweep");
             delete_rooms(&state, &plan.dead).await;
         }
     });
@@ -1050,8 +1103,8 @@ pub async fn room_snapshot(
 
     let quiz = if room.phase == "quiz" {
         let revealed = matches!(room.quiz_deadline_ms, Some(d) if now >= d);
-        let question: Option<(i64, String)> = sqlx::query_as(
-            "SELECT correct, explanation FROM quiz_question WHERE room_code = ? AND \"order\" = ?",
+        let question: Option<(i64, String, String, String)> = sqlx::query_as(
+            "SELECT correct, explanation, prompt, choices FROM quiz_question WHERE room_code = ? AND \"order\" = ?",
         )
         .bind(code)
         .bind(room.quiz_index)
@@ -1073,9 +1126,17 @@ pub async fn room_snapshot(
         .collect();
         // The key is public only once the window closed: before that it
         // would be readable in devtools on every phone.
+        // The question itself is not secret (every phone shows it): sent so
+        // the console can show what the class is reading.
+        let (prompt, choices) = question
+            .as_ref()
+            .map(|q| (q.2.clone(), serde_json::from_str::<Value>(&q.3).unwrap_or(json!([]))))
+            .unwrap_or((String::new(), json!([])));
         let key = question.filter(|_| revealed);
         json!({
             "index": room.quiz_index,
+            "prompt": prompt,
+            "choices": choices,
             "total": bank,
             "deadline_ms": room.quiz_deadline_ms.unwrap_or(0),
             "server_ms": now,
@@ -1090,18 +1151,31 @@ pub async fn room_snapshot(
         Value::Null
     };
 
-    let mut viewer = json!({});
+    // Per-viewer: each player sees only their own attempt count for the round.
+    let mut viewer = json!({
+        "attempts": answers
+            .iter()
+            .map(|a| (a.player_id.to_string(), json!(a.attempts)))
+            .collect::<serde_json::Map<_, _>>(),
+    });
     let reveal = match (&round, room.phase.as_str()) {
         (Some((_, revealed)), "rating") => match answers.get(*revealed as usize) {
             Some(a) => {
                 let names: HashMap<i64, &str> =
                     players.iter().map(|p| (p.id, p.name.as_str())).collect();
-                let rated: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rating WHERE answer_id = ?")
-                    .bind(a.id)
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
+                let ratings: Vec<(i64, i64)> =
+                    sqlx::query_as("SELECT rater_id, score FROM rating WHERE answer_id = ?")
+                        .bind(a.id)
+                        .fetch_all(pool)
+                        .await
+                        .unwrap_or_default();
+                let rated = ratings.len() as i64;
                 viewer["author_id"] = json!(a.player_id);
+                // Per-viewer: each rater gets back the note they gave (reconnects included).
+                viewer["ratings"] = json!(ratings
+                    .iter()
+                    .map(|(rater, score)| (rater.to_string(), json!(score)))
+                    .collect::<serde_json::Map<_, _>>());
                 json!({
                     "index": revealed,
                     "count": answers.len(),
@@ -1110,6 +1184,7 @@ pub async fn room_snapshot(
                     "author_label": labels(&players, anonymous).get(&a.player_id),
                     "rated": rated,
                     "mine": false,
+                    "my_score": Value::Null,
                 })
             }
             None => Value::Null,
@@ -1131,6 +1206,7 @@ pub async fn room_snapshot(
                     "quality_comment": a.quality_comment,
                     "quality_peers": a.quality_peers,
                     "quality": a.quality,
+                    "ai_score": a.quality_llm.map(|c| ai_score(a.score, c)),
                     "round_score": a.round_score,
                 })).collect::<Vec<_>>(),
             })
@@ -1166,10 +1242,13 @@ pub async fn room_snapshot(
         "current": room.current,
         "total": total_rounds,
         "target_image": target.as_deref().and_then(image_for),
+        "target_criteria": target.as_deref().map(criteria_for).unwrap_or_default(),
         "target": target,
         "timer": timer,
         "anonymous": anonymous,
         "auto_mode": room.auto_mode != 0,
+        "max_attempts": MAX_ATTEMPTS,
+        "my_attempts": 0,
         "players": rows.into_iter().map(|r| r.2).collect::<Vec<_>>(),
         "online_count": online_count,
         "quiz": quiz,
@@ -1190,8 +1269,10 @@ pub fn personalize(state: &Value, viewer: Option<i64>) -> Value {
         .and_then(|o| o.remove(VIEWER_KEY))
         .unwrap_or(Value::Null);
     if let Some(me) = viewer {
+        out["my_attempts"] = json!(private["attempts"][me.to_string()].as_i64().unwrap_or(0));
         if out["reveal"].is_object() {
             out["reveal"]["mine"] = json!(private["author_id"].as_i64() == Some(me));
+            out["reveal"]["my_score"] = private["ratings"][me.to_string()].clone();
         }
         if out["ready"].is_object() {
             let mine = private["ready_ids"]
@@ -1307,7 +1388,10 @@ mod tests {
         for &id in &ids {
             answers.push(crate::db::answers::insert_answer(&pool, round, id, "p", "o", 5).await.unwrap().id);
         }
+        // Writing never closes early (players may retry): the clock or the admin opens the rating.
         maybe_advance_phase(&pool, "CC44", &online).await;
+        assert_eq!(load(&pool, "CC44").await.unwrap().phase, "playing");
+        advance(&pool, "CC44").await.unwrap();
         for &rater in &ids[1..] {
             crate::db::answers::insert_rating(&pool, answers[0], rater, 6).await.unwrap();
         }
@@ -1413,6 +1497,7 @@ mod tests {
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "playing");
         assert!(snap["target"].is_string());
+        assert!(!snap["target_criteria"].as_array().unwrap().is_empty(), "every exercise has criteria");
         assert!(snap["timer"]["deadline_ms"].is_i64());
 
         let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'RD22' AND \"order\" = 0")
@@ -1424,6 +1509,8 @@ mod tests {
         assert_eq!(load(&pool, "RD22").await.unwrap().phase, "playing", "bob has not written");
         let b = crate::db::answers::insert_answer(&pool, round, bob.id, "p2", "o2", 9).await.unwrap();
         maybe_advance_phase(&pool, "RD22", &online).await;
+        assert_eq!(load(&pool, "RD22").await.unwrap().phase, "playing", "everyone wrote, retries stay open");
+        advance(&pool, "RD22").await.unwrap();
 
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "rating");
@@ -1435,6 +1522,10 @@ mod tests {
         assert_eq!(snap["ready"]["needed"], 1, "author excluded from the bar");
 
         crate::db::answers::insert_rating(&pool, a.id, bob.id, 8).await.unwrap();
+        // A reconnecting rater gets back the note they gave; the author gets none.
+        let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
+        assert_eq!(personalize(&snap, Some(bob.id))["reveal"]["my_score"], 8);
+        assert!(personalize(&snap, Some(ana.id))["reveal"]["my_score"].is_null());
         maybe_advance_phase(&pool, "RD22", &online).await;
         crate::db::answers::insert_rating(&pool, b.id, ana.id, 4).await.unwrap();
         maybe_advance_phase(&pool, "RD22", &online).await;

@@ -1,6 +1,6 @@
-import { useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, ConsoleBar, PhaseClock, ReadyBar, RoundTrack, ScoreScale } from './ui'
-import { ApiError, describe, getName, getToken, post, postReady, SCALE_MAX, SCALE_MIN, type State } from './api'
+import { useState, type CSSProperties } from 'react'
+import { AnswerMeter, ConsoleBar, PhaseClock, RoundTrack, ScoreScale } from './ui'
+import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
 import { buzz } from './fx'
 import { TargetText } from './ModelOutput'
@@ -19,15 +19,14 @@ export default function Rating({
   link: Link
   onRetry: () => void
 }) {
+  // The note this screen just tapped, ahead of the snapshot that confirms it. The server's
+  // `reveal.my_score` is the truth (it survives a reconnect); this only bridges the round-trip.
   const [picked, setPicked] = useState<number | null>(null)
-  // The reveal this player has already scored. The stream moves the reveal on when the room is
-  // done, not when this player is done, so the screen has to know which prompt its button would
-  // rate — a phone that sleeps through the change would otherwise send a second opinion on the
-  // next prompt it sees.
-  const [seen, setSeen] = useState<number | null>(null)
-  // Set by the server's refusal. The only signal the client gets about its own prompt, and it is
-  // a real one: `rate` derives the target from the reveal, so a 409 on "your own prompt" cannot
-  // be provoked by naming something else.
+  // The reveal the local state belongs to: a new prompt clears the note, the refusal and the
+  // error, at render rather than in an effect, so prompt four never wears prompt three's note.
+  const [at, setAt] = useState<number | null>(null)
+  // Set by the server's refusal: `rate` derives the target from the reveal, so a 409 on
+  // "your own prompt" is the backstop for a frame that predates `reveal.mine`.
   const [refused, setRefused] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -35,17 +34,9 @@ export default function Rating({
   const reveal = state.reveal
   const myName = getName(code)
 
-  // A fresh prompt clears the note, the refusal and the error. Done at render rather than in an
-  // effect: the reveal index is the trigger and a render is where React resets state on a
-  // trigger, and a player arriving at prompt four of nine would otherwise be looking at prompt
-  // three's half-filled button.
-  //
-  // It has to be keyed on the one binding that both outcomes set. A refusal sets `seen` too —
-  // without it, the refusal outlived the prompt that caused it and the next one came up wearing
-  // a panel saying "this one is yours" about somebody else's work.
-  if (reveal && seen !== null && reveal.index !== seen) {
+  if (reveal && reveal.index !== at) {
+    setAt(reveal.index)
     setPicked(null)
-    setSeen(null)
     setRefused(false)
     setErr('')
   }
@@ -63,7 +54,7 @@ export default function Rating({
       </div>
     )
 
-  // Bound once after the null check, because the render below and the POST inside `send` are
+  // Bound once after the null check, because the render below and the POST inside `rate` are
   // the two places that need the revealed prompt's position, and a narrowed `reveal` does not
   // survive into a closure: TypeScript keeps the narrowing for the straight-line render and
   // drops it inside the callback. One name for the prompt on screen, used by both.
@@ -90,41 +81,28 @@ export default function Rating({
   const iWrote = state.players.some((p) => p.name === myName && p.answered)
   const oneIsMine = !named && iWrote
 
-  const sent = seen !== null && seen === reveal.index
+  // What this player has given the prompt on screen: the tap in flight, else the server's record.
+  const shown = picked ?? reveal.my_score
+  const sent = shown !== null
   const lit = Array.from({ length: Math.min(reveal.rated, reveal.count) }, (_, i) => i)
 
-  function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
-    if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
-    // Same refusals as the button, so a shortcut can never send what a click would not.
-    if (busy || sent || mine || picked === null) return
-    e.preventDefault()
-    e.currentTarget.requestSubmit()
-  }
-
-  async function send(e: FormEvent) {
-    e.preventDefault()
-    if (picked === null || busy || sent || mine) return
+  // One tap is the note: no confirm button. Another tap replaces it (the server upserts), as
+  // long as the prompt is still on screen.
+  async function rate(n: number) {
+    if (busy || mine) return
+    buzz(8)
+    const before = picked
+    setPicked(n)
     setBusy(true)
     setErr('')
     try {
-      // The index pins the vote to the prompt on screen: a tap that lands as the reveal moves
+      // The index pins the note to the prompt on screen: a tap that lands as the reveal moves
       // is refused rather than scored against a prompt this player has not read.
-      await post(`/api/rooms/${code}/rate`, { token: getToken(code), score: picked, index: promptAt })
-      // The POST is the authority on its own outcome, exactly as it is on the Game screen: the
-      // reveal moves for the room when everyone has scored, which is a frame away, and a
-      // player who has just scored should not be able to score twice while it travels.
-      setSeen(promptAt)
+      await post(`/api/rooms/${code}/rate`, { token: getToken(code), score: n, index: promptAt })
     } catch (e) {
-      // A refusal is a state of the screen, not a message about a failure: the panel that
-      // replaces the scale is the same one a named game draws without asking. It is recorded
-      // against this prompt so it is cleared with it.
+      setPicked(before)
       if (e instanceof ApiError && e.message === 'your own prompt') {
         setRefused(true)
-        setSeen(promptAt)
-        // And stop here, as the Quiz screen stops on its 409: `refused` replaces the form with
-        // the panel, and the form is the only thing on this screen that draws `err`. An error
-        // written on this branch is an error nobody reads, and one that survives into the next
-        // prompt if the reset above ever stopped clearing it.
         return
       }
       setErr(describe(e))
@@ -195,57 +173,41 @@ export default function Rating({
             Ce prompt est le tien, et personne ne note le sien. La manche continue sans ta note.
           </p>
         ) : (
-          <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
+          <div className="form">
             <div className="raterow">
               <span className="label" id="rate-label">
                 Conformité aux règles du prompt engineering
               </span>
               <span className="raterow__value num" aria-hidden="true">
-                {picked ?? '—'}
+                {shown ?? '—'}
               </span>
             </div>
 
-            {/* Ten buttons rather than a slider, and this is the one control in the console where
-                that matters most. A slider asks a thumb standing up to place a mark between two
-                integers; a grid of ten 48px cells asks it to hit one of ten, which is a thing a
-                thumb is good at. Ten rows of one would be unusable, so it is five by two.
-                The marks are toggles rather than a radio group because the choice is not committed
-                until "Noter" is pressed — a radio group claims a selection the moment it is
-                touched, and here a mis-tap is one more tap to fix and nothing else. */}
+            {/* Ten buttons rather than a slider: a thumb hits one of ten cells far better than it
+                places a mark between two integers. Each tap sends the note; the pressed one is the
+                note the server holds. */}
             <div className="rates" role="group" aria-labelledby="rate-label">
               {Array.from({ length: SCALE_MAX - SCALE_MIN + 1 }, (_, i) => i + SCALE_MIN).map((n) => (
                 <button
                   key={n}
                   type="button"
-                  className={`btn rate${picked === n ? ' rate--on' : ''}`}
+                  className={`btn rate${shown === n ? ' rate--on' : ''}`}
                   // A warm-to-green ramp along the scale, so the grid reads as low-to-high at a glance.
                   style={{ '--h': Math.round(((n - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)) * 130) } as CSSProperties}
-                  aria-pressed={picked === n}
-                  disabled={busy || sent}
-                  onClick={() => {
-                    buzz(8)
-                    setPicked(n)
-                  }}
+                  aria-pressed={shown === n}
+                  disabled={busy}
+                  onClick={() => void rate(n)}
                 >
                   {n}
                 </button>
               ))}
             </div>
-            {/* The scale is 1 to 10 and a bare "1" means nothing to someone who has not been
-                told what a 7 is. Two ends are named rather than ten stops: a label under every
-                cell would put a second word on top of the one a player is trying to read. */}
             <div className="rateends">
               <span className="label">à revoir</span>
               <span className="label">excellent</span>
             </div>
 
-            {/* The chosen note drawn as a scale, under the grid the thumb is on rather than
-                beside the meter further down. The buttons each carry their own digit, so this
-                is decoration: it exists because "how big is a 7" is a thing words cannot do.
-                Calibrated 1-10 and not 0-10, because the lowest note a player may give is 1 and
-                a scale that lit all ten ticks for a 10 is right while a scale that lit nothing
-                for a 1 would be a lie. */}
-            {picked !== null && <ScoreScale score={picked} min={SCALE_MIN} />}
+            {shown !== null && <ScoreScale score={shown} min={SCALE_MIN} />}
 
             {err && (
               <p className="err err--inline" role="alert">
@@ -253,47 +215,11 @@ export default function Rating({
               </p>
             )}
 
-            <button
-              type="submit"
-              className="btn btn--signal btn--wide"
-              disabled={busy || sent || picked === null}
-            >
-              {busy ? 'Envoi…' : sent ? 'Noté' : 'Noter ce prompt'}
-            </button>
-            <p className="hint">
-              <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour noter
+            <p className="hint" role="status">
+              {sent ? 'Note enregistrée. Touche une autre note pour la changer.' : 'Touche une note pour la donner.'}
             </p>
-          </form>
+          </div>
         )}
-
-        {/* The end of the discussion about THIS prompt, under the scale that scored it and
-            outside the form that sent the note. Outside, and not as a second submit inside:
-            `Ctrl/⌘ + Entrée` is bound to the rating form, and a vote reachable by the same
-            chord would be a vote a player could cast while believing they were noting — and the
-            note is not undoable from here.
-            It sits under the scale rather than beside it because the order is the argument:
-            the note is this player's job and finishes first, then the room talks about it and
-            says so. */}
-        <ReadyBar
-          ready={state.ready}
-          onReady={async () => {
-            try {
-              await postReady(code, getToken(code) ?? '')
-              // `true` means the server has the vote. The bar cannot tell a success from a
-              // refusal on its own — the screens report a refusal by writing to `setErr` and
-              // RESOLVING — so this answer is what lets it close its own double-tap window
-              // instead of painting a refusal under a vote the room already holds.
-              return true
-            } catch (e) {
-              // `describe`, not a fixed sentence: the refusals are two different facts with two
-              // different repairs, and « the vote failed » is neither of them. A vote the server
-              // already had, and a phone that woke up on the next prompt, both arrive here as a
-              // 409 with a reason attached.
-              setErr(describe(e))
-              return false
-            }
-          }}
-        />
 
         {/* The one instrument on this screen, and the same one the players and the host are
             looking at: it says how far the room has got on this prompt. Reused rather than

@@ -16,7 +16,7 @@ pub mod protocol;
 use crate::ws::protocol::{WsIn, WsOut};
 use crate::admin_session;
 use crate::auth::{validate, validate_ws, Auth};
-use crate::db::{answers, rooms};
+use crate::db::rooms;
 use crate::game;
 use crate::hub::{get_hub, RoomHub};
 use crate::router::AppState;
@@ -102,6 +102,7 @@ pub async fn ws_handler(
     // already dropped — the `ws proxy socket error: EPIPE` in Vite's log. Upgrading and sending the
     // `unknown_room` frame tells the client the one thing it needs: stop, retrying cannot fix this.
     if rooms::get_room(&state.pool, &code).await.is_err() {
+        tracing::debug!(room = %code, "ws refused: unknown room");
         return ws
             .on_upgrade(|mut socket| async move {
                 send_direct(&mut socket, &WsOut::error("unknown_room", "unknown room")).await;
@@ -125,9 +126,9 @@ async fn send_out(tx: &mpsc::Sender<WsOut>, msg: WsOut) {
     let _ = tx.send(msg).await;
 }
 
-// Idempotent admission: persisted answer => already_answered (Django 409
-// {"error":"already answered"} semantics), live stream => inflight. Claiming
-// before spawning closes the race between two concurrent answer.start frames.
+// Admission: a persisted answer is no refusal (a new attempt replaces it
+// while the round is open), a live stream => inflight. Claiming before
+// spawning closes the race between two concurrent answer.start frames.
 pub async fn begin_answer(
     state: &AppState,
     code: &str,
@@ -157,20 +158,21 @@ pub async fn begin_answer(
         code: "bad_phase",
         message: "no current round",
     })?;
-    if answers::find_answer(&state.pool, round.id, player.id)
+    let used: i64 = sqlx::query_scalar("SELECT attempts FROM answer WHERE round_id = ? AND player_id = ?")
+        .bind(round.id)
+        .bind(player.id)
+        .fetch_optional(&state.pool)
         .await
-        .map_err(|_| AnswerReject {
-            code: "internal",
-            message: "answer lookup failed",
-        })?
-        .is_some()
-    {
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    if used >= game::MAX_ATTEMPTS {
         return Err(AnswerReject {
-            code: "already_answered",
-            message: "already answered",
+            code: "too_many_attempts",
+            message: "Tu as utilisé tes 3 essais pour cette manche.",
         });
     }
-    // Checked after already_answered, the more precise refusal. Only the writing phase takes prompts, and only while its clock runs.
+    // Only the writing phase takes prompts, and only while its clock runs.
     match game::load(&state.pool, code).await {
         Ok(g) if g.phase == "playing" && !g.phase_expired() => {}
         Ok(g) if g.phase == "playing" => {
@@ -247,13 +249,30 @@ async fn insert_answer_row(
     output: &str,
     verdict: &crate::llm::Verdict,
     critique: &crate::llm::Verdict,
+    replace: bool,
 ) -> Result<(), sqlx::Error> {
-    // One INSERT per answer: concurrent streams never contend on a shared
-    // row, and busy_timeout absorbs the burst instead of locking.
-    sqlx::query(
-        "INSERT INTO answer (round_id, player_id, prompt, output, score, comment, quality_llm, quality_comment)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
+    // One write per answer: concurrent streams never contend on a shared
+    // row, and busy_timeout absorbs the burst instead of locking. A retry
+    // replaces the earlier attempt, but only while the round is still being
+    // written: a stream that lands after the rating opened must not swap the
+    // prompt the class is rating. A failed retry (`replace` false) never
+    // overwrites a good earlier attempt with the crash marker.
+    // A crash marker counts as no attempt (0): a provider failure must not
+    // eat one of the player's tries.
+    let on_conflict = if replace {
+        "ON CONFLICT (round_id, player_id) DO UPDATE SET
+            prompt = excluded.prompt, output = excluded.output, score = excluded.score,
+            comment = excluded.comment, quality_llm = excluded.quality_llm,
+            quality_comment = excluded.quality_comment, attempts = attempts + 1
+         WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code
+                WHERE round.id = excluded.round_id) = 'playing'"
+    } else {
+        "ON CONFLICT (round_id, player_id) DO NOTHING"
+    };
+    sqlx::query(&format!(
+        "INSERT INTO answer (round_id, player_id, prompt, output, score, comment, quality_llm, quality_comment, attempts)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) {on_conflict}"
+    ))
     .bind(job.round_id)
     .bind(job.player_id)
     .bind(&job.prompt)
@@ -262,6 +281,7 @@ async fn insert_answer_row(
     .bind(&verdict.feedback)
     .bind(critique.score)
     .bind(&critique.feedback)
+    .bind(if replace { 1 } else { 0 })
     .execute(pool)
     .await?;
     Ok(())
@@ -272,6 +292,9 @@ async fn insert_answer_row(
 fn spawn_answer(state: AppState, job: AnswerJob) {
     tokio::spawn(async move {
         let player = job.player_name.clone();
+        let started = std::time::Instant::now();
+        // Length only: prompts are student work and may hold personal data.
+        tracing::info!(room = %job.code, player_id = job.player_id, round_id = job.round_id, prompt_chars = job.prompt.chars().count(), "answer started");
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let llm = state.llm.clone();
         let prompt = job.enriched.clone();
@@ -288,6 +311,7 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
             .await
             .unwrap_or_else(|e| Err(format!("play task panicked: {e}")));
         let mut full = full.trim().to_string();
+        let stream_ms = started.elapsed().as_millis() as u64;
         let outcome = match streamed {
             Ok(truncated) => {
                 // A reasoning model can finish "completed" with only hidden
@@ -304,17 +328,19 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 });
                 // Concurrent under one deadline: the old sequential pair held
                 // the inflight claim (and the round) twice as long.
+                let criteria = game::criteria_for(&job.target);
+                let verdict_start = std::time::Instant::now();
                 let scored = tokio::time::timeout(VERDICTS_TIMEOUT, async {
                     tokio::join!(
-                        state.llm.score(&job.prompt, &full, &job.target),
-                        state.llm.grade_prompt(&job.prompt, &job.target),
+                        state.llm.score(&job.prompt, &full, &job.target, &criteria),
+                        state.llm.grade_prompt(&job.prompt, &job.target, &criteria),
                     )
                 })
                 .await;
                 let (verdict, critique) = match scored {
                     Ok(pair) => pair,
                     Err(_) => {
-                        crate::log_warn(&format!("verdicts timed out in room {}", job.code));
+                        tracing::warn!(room = %job.code, player_id = job.player_id, timeout_s = VERDICTS_TIMEOUT.as_secs(), "verdicts timed out, scored 0");
                         let fallback = crate::llm::Verdict {
                             score: 0,
                             feedback: crate::llm::openai::VERDICT_FALLBACK_COMMENT.into(),
@@ -322,28 +348,40 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                         (fallback.clone(), fallback)
                     }
                 };
-                insert_answer_row(&state.pool, &job, &full, &verdict, &critique)
+                let verdict_ms = verdict_start.elapsed().as_millis() as u64;
+                tracing::debug!(room = %job.code, player_id = job.player_id, proximity = verdict.score, critic = critique.score, verdict_ms, "verdicts received");
+                let ai = game::ai_score(verdict.score, critique.score);
+                insert_answer_row(&state.pool, &job, &full, &verdict, &critique, true)
                     .await
-                    .map(|_| (verdict, truncated))
+                    .map(|_| (ai, truncated))
                     .map_err(|e| e.to_string())
             }
             Err(e) => Err(e),
         };
         match outcome {
-            Ok((verdict, truncated)) => {
+            Ok((ai, truncated)) => {
+                tracing::info!(
+                    room = %job.code,
+                    player_id = job.player_id,
+                    ai_score = ai,
+                    truncated,
+                    stream_ms,
+                    total_ms = started.elapsed().as_millis() as u64,
+                    "answer scored"
+                );
                 job.hub.release(job.round_id, job.player_id).await;
-                // The last online player to write opens the rating.
-                game::maybe_advance_phase(&state.pool, &job.code, &job.hub.online()).await;
                 let _ = job.hub.republish(&state.pool, &job.code).await;
+                // No feedback prose: the note is explained by the exercise's
+                // criteria, which the player screen shows beside it.
                 job.hub.publish_event(WsOut::AnswerDone {
                     player,
-                    score: verdict.score,
-                    feedback: verdict.feedback,
+                    score: ai,
+                    feedback: String::new(),
                     truncated,
                 });
             }
             Err(e) => {
-                crate::log_warn(&format!("answer failed in room {}: {e}", job.code));
+                tracing::error!(room = %job.code, player_id = job.player_id, error = %e, elapsed_ms = started.elapsed().as_millis() as u64, "answer failed");
                 // A row still lands, scored 0 and marked: without it the
                 // round would wait for this player forever, and the summary
                 // says plainly what happened.
@@ -351,12 +389,11 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                     score: 0,
                     feedback: CRASH_NOTICE.into(),
                 };
-                if let Err(e) = insert_answer_row(&state.pool, &job, &full, &marker, &marker).await {
-                    crate::log_warn(&format!("fallback answer write failed in room {}: {e}", job.code));
+                if let Err(e) = insert_answer_row(&state.pool, &job, &full, &marker, &marker, false).await {
+                    tracing::error!(room = %job.code, player_id = job.player_id, error = %e, "fallback answer write failed");
                 }
                 job.hub.release(job.round_id, job.player_id).await;
                 job.hub.note_error(CRASH_NOTICE);
-                game::maybe_advance_phase(&state.pool, &job.code, &job.hub.online()).await;
                 let _ = job.hub.republish(&state.pool, &job.code).await;
                 job.hub.publish_event(WsOut::Error {
                     code: "internal".into(),
@@ -410,6 +447,7 @@ async fn handle_socket(
         .await
         .is_err()
     {
+        tracing::warn!(room = %code, "ws refused: bad token");
         let mut ws = ws;
         send_direct(&mut ws, &WsOut::error("bad_token", "bad token")).await;
         let _ = ws
@@ -427,6 +465,8 @@ async fn handle_socket(
         _ => (None, None),
     };
     let answer_token: Option<String> = player_id.map(|_| query_token.clone());
+    // Closes at DEBUG with the socket's lifetime when this guard drops.
+    let _socket_log = SocketLog::open(&code, player_id);
     let hub = get_hub(&state.hubs, &code).await;
     let (mut sender, mut receiver) = ws.split();
     // Single writer task: the recv loop and the hub fan-out both push WsOut
@@ -517,7 +557,8 @@ async fn handle_socket(
         };
         let incoming: WsIn = match serde_json::from_str(&text) {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!(room = %code, ?player_id, error = %e, "ws: unparseable message");
                 send_out(&tx_out, WsOut::error("bad_request", "unparseable message")).await;
                 continue;
             }
@@ -529,6 +570,7 @@ async fn handle_socket(
                 if validate(&state.pool, &code, &token).await.is_err()
                     && !admin_session::request_is_admin(&headers)
                 {
+                    tracing::warn!(room = %code, "ws hello refused: bad token");
                     send_out(&tx_out, WsOut::error("bad_token", "bad token")).await;
                     return;
                 }
@@ -561,11 +603,41 @@ async fn handle_socket(
             WsIn::AnswerStart { prompt } => match answer_token.as_deref() {
                 Some(t) => match begin_answer(&state, &code, t, &prompt).await {
                     Ok(job) => spawn_answer(state.clone(), job),
-                    Err(reject) => send_out(&tx_out, WsOut::error(reject.code, reject.message)).await,
+                    Err(reject) => {
+                        // Refusals are normal play (clock ran out, retries used); capacity
+                        // and lookup failures are the ones an operator must see.
+                        match reject.code {
+                            "busy" => tracing::warn!(room = %code, ?player_id, "answer refused: LLM capacity full"),
+                            "internal" => tracing::error!(room = %code, ?player_id, reason = reject.message, "answer refused"),
+                            _ => tracing::info!(room = %code, ?player_id, code = reject.code, "answer refused"),
+                        }
+                        send_out(&tx_out, WsOut::error(reject.code, reject.message)).await
+                    }
                 },
                 None => send_out(&tx_out, WsOut::error("bad_token", "only players can answer")).await,
             },
         }
+    }
+}
+
+// One DEBUG line when a socket opens and one when it closes, with how long it
+// lived: enough to trace a phone that keeps dropping without flooding INFO.
+struct SocketLog {
+    code: String,
+    player_id: Option<i64>,
+    opened: std::time::Instant,
+}
+
+impl SocketLog {
+    fn open(code: &str, player_id: Option<i64>) -> Self {
+        tracing::debug!(room = %code, ?player_id, "ws opened");
+        Self { code: code.to_string(), player_id, opened: std::time::Instant::now() }
+    }
+}
+
+impl Drop for SocketLog {
+    fn drop(&mut self) {
+        tracing::debug!(room = %self.code, player_id = ?self.player_id, lived_s = self.opened.elapsed().as_secs(), "ws closed");
     }
 }
 
@@ -622,12 +694,35 @@ mod tests {
         };
         assert!(chunks >= 1, "stub must stream at least one chunk");
         assert!(matches!(done, WsOut::AnswerDone { .. }));
-        // Persisted answer => already_answered, the Django 409 over WS.
-        let err = match begin_answer(&state, "EF56", &player.token, "third prompt").await {
-            Ok(_) => panic!("post-done start must be rejected"),
+        // A new attempt while the round is open replaces the first one.
+        let job = begin_answer(&state, "EF56", &player.token, "third prompt")
+            .await
+            .expect("a retry is admitted while playing");
+        spawn_answer(state.clone(), job);
+        loop {
+            if let WsOut::AnswerDone { .. } = erx.recv().await.expect("event") {
+                break;
+            }
+        }
+        let prompts: Vec<String> = sqlx::query_scalar("SELECT prompt FROM answer WHERE player_id = ?")
+            .bind(player.id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(prompts, ["third prompt"], "one row, the latest attempt");
+        // Third attempt admitted, fourth refused.
+        let job = begin_answer(&state, "EF56", &player.token, "fourth prompt").await.expect("third attempt");
+        spawn_answer(state.clone(), job);
+        loop {
+            if let WsOut::AnswerDone { .. } = erx.recv().await.expect("event") {
+                break;
+            }
+        }
+        let err = match begin_answer(&state, "EF56", &player.token, "fifth prompt").await {
+            Ok(_) => panic!("a fourth attempt must be refused"),
             Err(e) => e,
         };
-        assert_eq!(err.code, "already_answered");
+        assert_eq!(err.code, "too_many_attempts");
     }
 
     struct FailingSource;
@@ -645,6 +740,7 @@ mod tests {
             _p: &str,
             _o: &str,
             _t: &str,
+            _c: &[String],
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
             unreachable!("a failed stream is never scored")
         }
@@ -652,6 +748,7 @@ mod tests {
             &self,
             _p: &str,
             _t: &str,
+            _c: &[String],
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
             unreachable!("a failed stream is never graded")
         }
