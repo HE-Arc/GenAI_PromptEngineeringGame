@@ -19,6 +19,9 @@ use crate::router::AppState;
 use std::sync::Arc;
 
 pub const QUIZ_SECONDS: i64 = 30;
+pub const QUIZ_SECONDS_DEFAULT: i64 = 30;
+pub const QUIZ_SECONDS_RANGE: (i64, i64) = (5, 300);
+pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const ROUNDS_PER_GAME: usize = 10;
 pub const ROUND_SECONDS: i64 = 60;
 pub const RATE_SECONDS: i64 = 20;
@@ -139,6 +142,8 @@ pub struct GameRoom {
     pub round_seconds: i64,
     pub rate_seconds: i64,
     #[sqlx(default)]
+    pub quiz_seconds: i64,
+    #[sqlx(default)]
     pub auto_mode: i64,
 }
 
@@ -146,7 +151,7 @@ pub async fn load(pool: &SqlitePool, code: &str) -> Result<GameRoom, sqlx::Error
     let sql = format!(
         "SELECT code, phase, current, tutorial, anonymous, quiz_index,
                 {} AS quiz_deadline_ms, {} AS phase_deadline_ms, round_seconds, rate_seconds,
-                COALESCE(auto_mode, 0) AS auto_mode
+                COALESCE(quiz_seconds, 30) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode
          FROM room WHERE code = ?",
         ms_of("quiz_deadline"),
         ms_of("phase_deadline"),
@@ -282,14 +287,22 @@ async fn arm(pool: &SqlitePool, room: &GameRoom, phase: &str) -> Result<bool, sq
     go(pool, room, phase).await
 }
 
-// Opens question `index`, if the room is still on question `from`.
+// Opens question `index`, if the room is still on question `from`. The window
+// length is the room's own `quiz_seconds` (configurable at creation).
 async fn open_quiz(pool: &SqlitePool, code: &str, from: i64, index: i64) -> Result<bool, sqlx::Error> {
+    let secs: i64 = sqlx::query_scalar("SELECT COALESCE(quiz_seconds, 30) FROM room WHERE code = ?")
+        .bind(code)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(QUIZ_SECONDS_DEFAULT);
     let sql = format!(
         "UPDATE room SET quiz_index = ?, quiz_deadline = {TS_FROM_MS} WHERE code = ? AND quiz_index = ?"
     );
     let moved = sqlx::query(&sql)
         .bind(index)
-        .bind(now_ms() + QUIZ_SECONDS * 1000)
+        .bind(now_ms() + secs * 1000)
         .bind(code)
         .bind(from)
         .execute(pool)
@@ -660,9 +673,10 @@ pub async fn maybe_advance_by_votes(pool: &SqlitePool, code: &str, online: &Hash
 pub async fn expire_phase(state: &AppState, code: &str) -> bool {
     let pool = &state.pool;
     let Ok(room) = load(pool, code).await else { return false };
-    // Auto : le didacticiel avance à la fin de la fenêtre, même sans vote.
+    // Auto : le didacticiel avance après la fenêtre de réponse PLUS le délai
+    // de révélation, pour laisser le verdict visible avant d'enchaîner.
     if room.phase == "quiz" && room.is_auto() {
-        if matches!(room.quiz_deadline_ms, Some(d) if now_ms() >= d) {
+        if matches!(room.quiz_deadline_ms, Some(d) if now_ms() >= d + QUIZ_REVEAL_SECONDS * 1000) {
             let _ = advance(pool, code).await;
             return true;
         }
@@ -746,6 +760,7 @@ pub fn spawn_ticker(state: AppState) {
             let rows: Vec<(String, String, Option<i64>, Option<i64>, i64)> =
                 sqlx::query_as(&sql).fetch_all(&state.pool).await.unwrap_or_default();
             let now = now_ms();
+            let mut seen: HashSet<String> = HashSet::new();
             for (code, phase, quiz_deadline, phase_deadline, auto_mode) in rows {
                 let mut changed = false;
                 if matches!(phase_deadline, Some(d) if now >= d) {
@@ -753,8 +768,14 @@ pub fn spawn_ticker(state: AppState) {
                 }
                 if phase == "quiz" {
                     if let Some(d) = quiz_deadline {
-                        // Auto : la fin de la fenêtre fait avancer, pas seulement révéler.
+                        // Auto : la fin de la fenêtre révèle, l'avance n'a lieu qu'après
+                        // QUIZ_REVEAL_SECONDS (voir expire_phase). Pendant la fenêtre de
+                        // révélation on republie chaque tick pour diffuser le verdict.
                         if auto_mode != 0 && now >= d {
+                            if announced.get(&code) != Some(&d) {
+                                announced.insert(code.clone(), d);
+                            }
+                            changed = true;
                             changed |= expire_phase(&state, &code).await;
                         } else if now >= d && announced.get(&code) != Some(&d) {
                             announced.insert(code.clone(), d);
@@ -766,7 +787,13 @@ pub fn spawn_ticker(state: AppState) {
                     let hub = crate::hub::get_hub(&state.hubs, &code).await;
                     let _ = hub.republish(&state.pool, &code).await;
                 }
+                if phase == "quiz" {
+                    seen.insert(code);
+                }
             }
+            // Purge les salles disparues ou sorties du quiz : `announced` ne
+            // garde qu'un marqueur par salle suivie, sinon fuite lente.
+            announced.retain(|code, _| seen.contains(code));
             // An expired failure notice leaves the screen on its own.
             let hubs: Vec<(String, Arc<RoomHub>)> = state
                 .hubs

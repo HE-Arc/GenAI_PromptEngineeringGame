@@ -511,7 +511,7 @@ export default function Quiz({
             )}
             {revealed && state.auto_mode && (
               <p className="prose prose--sm prose--dim" role="status">
-                Mode automatique : la suite s’enchaîne seule.
+                Mode automatique : suite dans quelques secondes…
               </p>
             )}
           </>

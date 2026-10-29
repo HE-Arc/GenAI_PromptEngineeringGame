@@ -13,6 +13,8 @@ pub struct Room {
     #[sqlx(default)]
     pub quiz_index: i64,
     #[sqlx(default)]
+    pub quiz_seconds: i64,
+    #[sqlx(default)]
     pub auto_mode: i64,
 }
 
@@ -68,7 +70,7 @@ pub async fn create_room(pool: &SqlitePool, code: &str) -> Result<Room, sqlx::Er
 }
 
 pub async fn get_room(pool: &SqlitePool, code: &str) -> Result<Room, sqlx::Error> {
-    sqlx::query_as::<_, Room>("SELECT code, phase, current, admin_key, tutorial, quiz_index, COALESCE(auto_mode, 0) AS auto_mode FROM room WHERE code = ?")
+    sqlx::query_as::<_, Room>("SELECT code, phase, current, admin_key, tutorial, quiz_index, COALESCE(quiz_seconds, 30) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode FROM room WHERE code = ?")
         .bind(code)
         .fetch_one(pool)
         .await

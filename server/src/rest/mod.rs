@@ -544,14 +544,16 @@ pub async fn admin_create(
     };
     let flag = |key: &str| data.get(key).and_then(|v| v.as_bool()).unwrap_or(true);
     let auto_mode = data.get("auto_mode").and_then(|v| v.as_bool()).unwrap_or(false);
+    let quiz_seconds = game::clamp_seconds(data.get("quiz_seconds"), game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE);
     let _ = sqlx::query(
-        "UPDATE room SET tutorial = ?, anonymous = ?, auto_mode = ?, round_seconds = ?, rate_seconds = ? WHERE code = ?",
+        "UPDATE room SET tutorial = ?, anonymous = ?, auto_mode = ?, round_seconds = ?, rate_seconds = ?, quiz_seconds = ? WHERE code = ?",
     )
     .bind(flag("tutorial") as i64)
     .bind(flag("anonymous") as i64)
     .bind(auto_mode as i64)
     .bind(game::clamp_seconds(data.get("round_seconds"), game::ROUND_SECONDS, game::ROUND_SECONDS_RANGE))
     .bind(game::clamp_seconds(data.get("rate_seconds"), game::RATE_SECONDS, game::RATE_SECONDS_RANGE))
+    .bind(quiz_seconds)
     .bind(&code)
     .execute(&state.pool)
     .await;
@@ -559,7 +561,7 @@ pub async fn admin_create(
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
     }
     touch(&state, &code).await;
-    (StatusCode::OK, Json(json!({"code": room.code, "auto_mode": auto_mode}))).into_response()
+    (StatusCode::OK, Json(json!({"code": room.code, "auto_mode": auto_mode, "quiz_seconds": quiz_seconds}))).into_response()
 }
 
 static RAND_BIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x9e3779b9);

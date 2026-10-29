@@ -393,6 +393,7 @@ export default function Admin() {
   // own bounds and falls back to its defaults on anything it cannot read.
   const [roundSeconds, setRoundSeconds] = useState('60')
   const [rateSeconds, setRateSeconds] = useState('20')
+  const [quizSeconds, setQuizSeconds] = useState('30')
   // A confirm only holds until anything about the room changes, and says which action it is
   // confirming: two of the destructive controls now arm the same way, and an arm that did not
   // carry its action could confirm "throw the room away" after the host had reached for the
@@ -773,6 +774,22 @@ export default function Admin() {
                 />
                 <p className="hint">5–300 secondes</p>
               </div>
+              <div className="field">
+                <label className="label" htmlFor="quiz-seconds">
+                  Didacticiel (s)
+                </label>
+                <input
+                  id="quiz-seconds"
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={300}
+                  value={quizSeconds}
+                  onChange={(e) => setQuizSeconds(e.target.value)}
+                />
+                <p className="hint">5–300 secondes</p>
+              </div>
             </div>
             <p className="prose prose--sm prose--dim">
               Ces durées s’appliquent à toutes les manches et ne sont plus modifiables après
@@ -797,6 +814,7 @@ export default function Admin() {
                   auto_mode: autoMode,
                   round_seconds: roundSeconds,
                   rate_seconds: rateSeconds,
+                  quiz_seconds: quizSeconds,
                 })
                 enter(c)
               }, lostSession)
@@ -879,7 +897,7 @@ export default function Admin() {
         return {
           state: quizClosed
             ? 'La bonne réponse est affichée, la classe peut commenter.'
-            : 'Les trente secondes sont ouvertes à toute la classe.',
+            : 'La fenêtre de réponse est ouverte à toute la classe.',
           timer: quizClosed
             ? undefined
             : `${noun(countdown(quizWindow.left), 'seconde', 'secondes')} pour répondre`,

@@ -260,6 +260,7 @@ export interface RoomSummary {
   tutorial: boolean
   anonymous: boolean
   auto_mode: boolean
+  quiz_seconds?: number
 }
 
 // An HTTP response becomes a value or an ApiError, in one place, because the two verbs below it
