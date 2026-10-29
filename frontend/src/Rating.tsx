@@ -145,6 +145,18 @@ export default function Rating({
           {state.target_image && (
             <img className="ratehead__image" src={state.target_image} alt="Image de l’exercice" />
           )}
+          {/* The grading criteria appear only now, once every prompt is written: shown while
+              writing, they would be a checklist to copy rather than a lesson to discover. */}
+          {state.target_criteria.length > 0 && (
+            <>
+              <p className="label">Critères de notation</p>
+              <ul className="prose prose--sm">
+                {state.target_criteria.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
 
         <div className="rateline">

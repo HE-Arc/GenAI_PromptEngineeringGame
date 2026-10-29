@@ -1242,7 +1242,13 @@ pub async fn room_snapshot(
         "current": room.current,
         "total": total_rounds,
         "target_image": target.as_deref().and_then(image_for),
-        "target_criteria": target.as_deref().map(criteria_for).unwrap_or_default(),
+        // Only while the class rates: a phone still writing must not hold the
+        // checklist, not even in devtools.
+        "target_criteria": if room.phase == "rating" {
+            target.as_deref().map(criteria_for).unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         "target": target,
         "timer": timer,
         "anonymous": anonymous,
@@ -1501,7 +1507,7 @@ mod tests {
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "playing");
         assert!(snap["target"].is_string());
-        assert!(!snap["target_criteria"].as_array().unwrap().is_empty(), "every exercise has criteria");
+        assert!(snap["target_criteria"].as_array().unwrap().is_empty(), "criteria hidden while writing");
         assert!(snap["timer"]["deadline_ms"].is_i64());
 
         let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'RD22' AND \"order\" = 0")
@@ -1518,6 +1524,7 @@ mod tests {
 
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "rating");
+        assert!(!snap["target_criteria"].as_array().unwrap().is_empty(), "criteria shown while rating");
         assert!(snap["players"][0]["score"].is_null(), "scores hidden while rating");
         assert_eq!(snap["reveal"]["author_label"], "Joueur 1");
         assert!(snap["reveal"]["author"].is_null());

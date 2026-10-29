@@ -185,7 +185,8 @@ export type State = {
   target: string | null
   // The picture an exercise refers to ("générez cette image"), or null.
   target_image: string | null
-  // What the exercise is graded on, shown beside the note. Empty when there is no target.
+  // What the exercise is graded on. Sent only during the rating phase (empty otherwise), so a
+  // player writing a prompt cannot read them, not even in devtools.
   target_criteria: string[]
   // The clock of the phase on screen — writing a prompt, rating one — or null when nothing is
   // timed. Same two clocks as `QuizState`, read through `useQuizWindow`.

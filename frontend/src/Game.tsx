@@ -430,19 +430,6 @@ export default function Game({
                 <span className="verdict__round">manche {result.round + 1}</span>
               </div>
               <ScoreScale score={result.score} />
-              {/* The note is explained by the exercise's criteria, not by model prose. Only while
-                  the verdict belongs to the round on screen: a kept verdict from an earlier round
-                  under this round's criteria would be graded against the wrong list. */}
-              {result.round === state.current && state.target_criteria.length > 0 && (
-                <div>
-                  <p className="label">Critères de notation</p>
-                  <ul className="prose prose--sm">
-                    {state.target_criteria.map((c) => (
-                      <li key={c}>{c}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
               {!scored && result.round === state.current && (
                 <p className="prose prose--sm prose--dim">
                   {outOfAttempts
