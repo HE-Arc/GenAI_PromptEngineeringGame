@@ -9,7 +9,8 @@ use axum::{
 use serde_json::json;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use tower_http::services::{ServeDir, ServeFile};use std::sync::Arc;
+use tower_http::services::{ServeDir, ServeFile};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, Semaphore};
 
@@ -28,16 +29,49 @@ fn rest_slots() -> Arc<Semaphore> {
 
 async fn limit_concurrency(State(slots): State<Arc<Semaphore>>, req: Request, next: Next) -> impl IntoResponse {
     let Ok(_permit) = slots.try_acquire_owned() else {
+        tracing::warn!(path = %req.uri().path(), limit = MAX_CONCURRENT_REST, "request shed: too many concurrent REST requests");
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "busy"}))).into_response();
     };
     next.run(req).await
 }
 
 async fn rest_timeout(req: Request, next: Next) -> impl IntoResponse {
+    let path = req.uri().path().to_owned();
     match tokio::time::timeout(REST_TIMEOUT, next.run(req)).await {
         Ok(res) => res,
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "timeout"}))).into_response(),
+        Err(_) => {
+            tracing::error!(%path, timeout_s = REST_TIMEOUT.as_secs(), "request timed out");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "timeout"}))).into_response()
+        }
     }
+}
+
+// Above this a request is logged at WARN: SQLite or the snapshot build is
+// struggling, which is the early sign of a classroom-sized overload.
+const SLOW_REQUEST: Duration = Duration::from_millis(1000);
+
+// One line per request: method, path, status, latency. The path only, never
+// the query string: the WS upgrade carries the player token there. Probes and
+// static files log at DEBUG so INFO stays readable; 5xx is ERROR, slow is WARN,
+// 4xx is INFO because refusals (409 races, wrong code) are normal play.
+async fn log_request(req: Request, next: Next) -> impl IntoResponse {
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
+    let start = std::time::Instant::now();
+    let res = next.run(req).await;
+    let status = res.status().as_u16();
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let quiet = path == "/healthz" || !path.starts_with("/api/");
+    if status >= 500 {
+        tracing::error!(%method, %path, status, latency_ms, "request failed");
+    } else if start.elapsed() >= SLOW_REQUEST {
+        tracing::warn!(%method, %path, status, latency_ms, "slow request");
+    } else if quiet {
+        tracing::debug!(%method, %path, status, latency_ms, "request");
+    } else {
+        tracing::info!(%method, %path, status, latency_ms, "request");
+    }
+    res
 }
 
 use crate::hub::RoomHub;
@@ -101,6 +135,7 @@ pub fn build_router(state: AppState) -> Router {
         .fallback_service(
             ServeDir::new("/app/dist").fallback(ServeFile::new("/app/dist/index.html")),
         )
+        .layer(middleware::from_fn(log_request))
 }
 
 #[cfg(test)]

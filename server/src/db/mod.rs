@@ -30,9 +30,11 @@ pub async fn connect_pool(url: &str) -> Result<SqlitePool, sqlx::Error> {
     log_applied_migrations(&pool).await;
     let migrator = sqlx::migrate!("./migrations");
     if let Err(e) = migrator.run(&pool).await {
+        tracing::error!(error = %e, "migrations failed");
         log_version_mismatch(&e, &migrator);
         return Err(e.into());
     }
+    tracing::info!(compiled = migrator.migrations.len(), "migrations up to date");
     Ok(pool)
 }
 
@@ -50,9 +52,9 @@ async fn log_applied_migrations(pool: &SqlitePool) {
                 let d: String = sqlx::Row::try_get(row, "description").unwrap_or_default();
                 versions.push(format!("{v} ({d})"));
             }
-            eprintln!("migrations: applied before run: [{}]", versions.join(", "));
+            tracing::info!(applied = %versions.join(", "), "migrations: already applied");
         }
-        Err(_) => eprintln!("migrations: no _sqlx_migrations table yet (fresh db)"),
+        Err(_) => tracing::info!("migrations: fresh database, none applied yet"),
     }
 }
 
@@ -66,7 +68,7 @@ fn log_version_mismatch(e: &sqlx::migrate::MigrateError, migrator: &sqlx::migrat
             .iter()
             .map(|m| format!("{} ({})", m.version, m.description))
             .collect();
-        eprintln!(
+        tracing::error!(
             "migrations: VersionMismatch({version}): stored checksum in \
              _sqlx_migrations differs from compiled migration. \
              Stored rows logged above; compiled versions: [{}]. \
