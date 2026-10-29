@@ -36,4 +36,3 @@ jobs:
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/genai-prompt-game:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/genai-prompt-game:${{ github.sha }}
