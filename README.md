@@ -27,4 +27,4 @@ kubectl apply -k k8s/
 kubectl port-forward svc/genai-game 3001:80   # check -> http://localhost:3001/healthz
 ```
 
-CI (`docker-publish.yml`) build+push l'image sur chaque push main/master, tag `v*`, ou manuel. Secrets GH requis : `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+CI (`docker-publish.yml`) build+push l'image sur chaque push main/master, tag `v*`, ou manuel. Secrets GH requis : `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. `DOCKERHUB_TOKEN` doit être un PAT Docker Hub avec scope Read & Write (read-only -> 401 insufficient scopes), et le namespace du repo doit égaler `DOCKERHUB_USERNAME`.

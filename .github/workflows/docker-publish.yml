@@ -35,5 +35,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            codexis/genai-prompt-game:latest
-            codexis/genai-prompt-game:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/genai-prompt-game:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/genai-prompt-game:${{ github.sha }}
