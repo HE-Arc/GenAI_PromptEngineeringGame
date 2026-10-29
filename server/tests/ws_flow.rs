@@ -38,7 +38,7 @@ async fn recv_json(
 }
 
 #[tokio::test]
-async fn ws_answer_start_streams_chunks_then_done_and_rejects_replay() {
+async fn ws_answer_start_streams_chunks_then_done_and_accepts_retry() {
     std::env::remove_var("OPENAI_API_KEY");
     let (base, pool) = spawn_app().await;
     rooms::create_room(&pool, "CD34").await.unwrap();
@@ -81,27 +81,30 @@ async fn ws_answer_start_streams_chunks_then_done_and_rejects_replay() {
             Ok(WsOut::Snapshot { .. }) => {}
             Ok(WsOut::AnswerDone { score, .. }) => {
                 assert!(saw_scoring && chunks >= 1, "need scoring + chunks before done");
-                assert!(score >= 0);
+                assert!(score >= 0.0);
                 break;
             }
             Ok(other) => panic!("unexpected frame while streaming: {other:?}"),
             Err(_) => panic!("timed out waiting for answer.done"),
         }
     }
-    // Second start over the same socket => already_answered, not a stream.
+    // Second start over the same socket => a new attempt that replaces the first.
     ws.send(Message::Text(r#"{"type":"answer.start","prompt":"again"}"#.into()))
         .await
         .unwrap();
-    let err = loop {
-        match recv_json(&mut ws).await {
-            WsOut::Snapshot { .. } => continue, // drain any in-flight snapshot
-            other => break other,
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), recv_json(&mut ws)).await {
+            Ok(WsOut::AnswerDone { .. }) => break,
+            Ok(WsOut::Error { code, .. }) => panic!("retry refused: {code}"),
+            Ok(_) => continue,
+            Err(_) => panic!("timed out waiting for the retry's answer.done"),
         }
-    };
-    assert!(
-        matches!(&err, WsOut::Error { code, .. } if code == "already_answered"),
-        "replay must yield already_answered, got {err:?}"
-    );
+    }
+    let prompts: Vec<String> = sqlx::query_scalar("SELECT prompt FROM answer")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(prompts, ["again"], "the retry replaced the first attempt");
 }
 
 #[tokio::test]

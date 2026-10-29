@@ -393,7 +393,8 @@ export default function Admin() {
   // own bounds and falls back to its defaults on anything it cannot read.
   const [roundSeconds, setRoundSeconds] = useState('60')
   const [rateSeconds, setRateSeconds] = useState('20')
-  const [quizSeconds, setQuizSeconds] = useState('30')
+  // Chosen at launch, in the lobby console, not at creation: 60 s per question by default.
+  const [quizSeconds, setQuizSeconds] = useState('60')
   // A confirm only holds until anything about the room changes, and says which action it is
   // confirming: two of the destructive controls now arm the same way, and an arm that did not
   // carry its action could confirm "throw the room away" after the host had reached for the
@@ -774,22 +775,6 @@ export default function Admin() {
                 />
                 <p className="hint">5–300 secondes</p>
               </div>
-              <div className="field">
-                <label className="label" htmlFor="quiz-seconds">
-                  Didacticiel (s)
-                </label>
-                <input
-                  id="quiz-seconds"
-                  className="input"
-                  type="number"
-                  inputMode="numeric"
-                  min={5}
-                  max={300}
-                  value={quizSeconds}
-                  onChange={(e) => setQuizSeconds(e.target.value)}
-                />
-                <p className="hint">5–300 secondes</p>
-              </div>
             </div>
             <p className="prose prose--sm prose--dim">
               Ces durées s’appliquent à toutes les manches et ne sont plus modifiables après
@@ -814,7 +799,6 @@ export default function Admin() {
                   auto_mode: autoMode,
                   round_seconds: roundSeconds,
                   rate_seconds: rateSeconds,
-                  quiz_seconds: quizSeconds,
                 })
                 enter(c)
               }, lostSession)
@@ -922,7 +906,9 @@ export default function Admin() {
           // those two phones are not the reason — and the offline line is the one that stops a
           // host forcing the round early to work around a problem that is not there.
           hint: [
-            here.length > 0 && left === 0 ? 'Tu peux ouvrir la notation.' : '',
+            here.length > 0 && left === 0
+              ? 'Tout le monde a envoyé : les joueurs peuvent encore améliorer leur prompt. Ouvre la notation quand tu veux.'
+              : '',
             gone.length > 0
               ? `${noun(gone.length, 'joueur est hors ligne', 'joueurs sont hors ligne')} — la manche avance sans attendre.`
               : '',
@@ -1113,6 +1099,38 @@ export default function Admin() {
               </p>
             )}
 
+            {/* What the phones are showing right now, so the host can talk about it without
+                looking over a shoulder: the didacticiel question, the exercise of the round, and
+                during the rating the prompt the class is scoring. */}
+            {phase === 'quiz' && quizState && quizState.prompt && (
+              <section className="stack" aria-label="Question affichée aux joueurs">
+                <p className="label">
+                  Question {quizState.index + 1} sur {quizState.total} — affichée aux joueurs
+                </p>
+                <p className="prose">{quizState.prompt}</p>
+                <ol className="prose prose--sm">
+                  {quizState.choices.map((c, i) => (
+                    <li key={i}>
+                      {quizState.correct === i ? <strong>{c} ✓</strong> : c}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+            {(phase === 'playing' || phase === 'rating' || phase === 'summary') && state?.target && (
+              <Readout
+                label={`Exercice de la manche ${state.current + 1} — affiché aux joueurs`}
+                value={state.target}
+                image={state.target_image}
+              />
+            )}
+            {phase === 'rating' && state?.reveal && (
+              <section className="stack" aria-label="Prompt en cours de notation">
+                <p className="label">Prompt noté en ce moment</p>
+                <pre className="slot">{state.reveal.prompt}</pre>
+              </section>
+            )}
+
             <Readout label="Code de la partie" value={code} code />
 
             <Roster players={players} online={state?.online_count ?? 0} myName="" />
@@ -1168,6 +1186,25 @@ export default function Admin() {
                 the room already says where it is and how far through the didacticiel it is, and a
                 label the host has to keep in step with a state machine is a label that will be
                 wrong during the round the host most needs to trust it. */}
+            {phase === 'waiting' && (
+              <div className="field">
+                <label className="label" htmlFor="quiz-seconds">
+                  Temps par question du didacticiel (secondes)
+                </label>
+                <input
+                  id="quiz-seconds"
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={300}
+                  value={quizSeconds}
+                  onChange={(e) => setQuizSeconds(e.target.value)}
+                />
+                <p className="hint">5–300 secondes, appliqué à chaque question. Sans effet si le didacticiel est désactivé.</p>
+              </div>
+            )}
+
             <div className="actions">
               {advance && (
                 <button
@@ -1180,11 +1217,11 @@ export default function Admin() {
                       // `start` for an empty room and `next` for everything after it. The lobby
                       // is the one phase where the transition is a different endpoint rather than
                       // the same one resolving differently, and it is the only one that has one.
-                      const path =
-                        phase === 'waiting'
-                          ? `/api/admin/rooms/${code}/start`
-                          : `/api/admin/rooms/${code}/next`
-                      await post(path)
+                      if (phase === 'waiting') {
+                        await post(`/api/admin/rooms/${code}/start`, { quiz_seconds: quizSeconds })
+                      } else {
+                        await post(`/api/admin/rooms/${code}/next`)
+                      }
                     })
                   }
                 >

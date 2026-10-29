@@ -170,7 +170,19 @@ impl RoomHub {
         }
         let covers = self.requested.load(SeqCst);
         let online = self.online();
-        let mut snap = rooms::room_snapshot(pool, code, Some(&online)).await.ok()?;
+        let mut snap = match rooms::room_snapshot(pool, code, Some(&online)).await {
+            Ok(snap) => snap,
+            // A deleted room is expected (the sweeper, an admin); anything else
+            // means screens stop updating, so it is an ERROR.
+            Err(sqlx::Error::RowNotFound) => {
+                tracing::debug!(room = %code, "snapshot skipped: room gone");
+                return None;
+            }
+            Err(e) => {
+                tracing::error!(room = %code, error = %e, "snapshot build failed");
+                return None;
+            }
+        };
         snap["error"] = self.current_error().into();
         self.built.store(covers, SeqCst);
         let seq = self.next_seq().await;
@@ -229,7 +241,10 @@ impl RoomHub {
             newly_online
         };
         if newly_online {
+            tracing::info!(room = %code, player_id, "player online");
             let _ = self.republish(pool, code).await;
+        } else {
+            tracing::debug!(room = %code, player_id, "player opened another socket");
         }
     }
 
@@ -272,6 +287,7 @@ impl RoomHub {
                 stale
             };
             if evicted {
+                tracing::info!(room = %code, player_id, grace_s = grace.as_secs(), "player offline");
                 hub.mark_seen();
                 // One fewer present player lowers the majority: the votes
                 // already cast may now be enough to move the room.

@@ -12,12 +12,21 @@ import {
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
-import { buzz, useCountUp } from './fx'
+import { buzz, copyText, useCountUp } from './fx'
 import type { AnswerFeed, Link } from './useRoom'
 
 type Result = { score: number; comment: string; output: string; round: number; truncated: boolean }
 
 // The one-word reaction over the score, the way a game shouts "Excellent !" before the number.
+// The material of an exercise without its instruction: every target opens with the
+// instruction paragraph, then a blank line, then the data to work on. Empty when the exercise
+// is the instruction alone (nothing to paste into a prompt).
+function exerciseContent(target: string | null): string {
+  if (!target) return ''
+  const cut = target.indexOf('\n\n')
+  return cut === -1 ? '' : target.slice(cut + 2).trim()
+}
+
 function cheer(score: number): string {
   if (score >= 9) return 'Parfait !'
   if (score >= 7) return 'Excellent !'
@@ -27,8 +36,9 @@ function cheer(score: number): string {
 }
 
 // The score ticking up to its value. A component of its own so the hook restarts per verdict.
+// Counted in tenths: the AI note is a real division, and an integer count-up would round it.
 function ScoreUp({ score }: { score: number }) {
-  return <>{useCountUp(score)}</>
+  return <>{fr(useCountUp(Math.round(score * 10)) / 10)}</>
 }
 
 export default function Game({
@@ -56,6 +66,7 @@ export default function Game({
   const verdictRef = useRef<HTMLDivElement>(null)
   // True the moment the `done` frame lands, before the next snapshot says so. See `send`.
   const [sent, setSent] = useState(false)
+  const [copied, setCopied] = useState<'no' | 'yes' | 'failed'>('no')
   // The answer as it is being written, and then the verdict. Two pieces of one thing rather
   // than two, because the player's question — « where is my note » — has one answer, and a
   // screen that could show either would have to say which half is on.
@@ -125,6 +136,7 @@ export default function Game({
     setErr('')
     setSent(false)
     setLive(null)
+    setCopied('no')
   }
 
   const myName = getName(code)
@@ -194,23 +206,29 @@ export default function Game({
   // The server refuses anything past 1000 characters, so the composer enforces the same
   // bound before sending: a submit the server would reject is a billed round-trip for nothing.
   const tooLong = prompt.trim().length > 1000
+  // Three prompts per round: the server refuses a fourth, the screen stops offering it.
+  const attemptsLeft = Math.max(0, state.max_attempts - state.my_attempts)
+  const outOfAttempts = attemptsLeft === 0
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
   // button telling the player the model is still working when it stopped two seconds ago.
-  const submitLabel = alreadyDone
-    ? 'Réponse envoyée'
-    : busy
-      ? live?.scoring
-        ? 'Le jury délibère…'
-        : 'Le modèle réfléchit…'
-      : stale
-        ? 'En attente de la reconnexion…'
-        : 'Envoyer au modèle'
+  // Sending again is allowed while the round is open: a new attempt replaces the previous one.
+  const submitLabel = busy
+    ? live?.scoring
+      ? 'Le jury délibère…'
+      : 'Le modèle réfléchit…'
+    : stale
+      ? 'En attente de la reconnexion…'
+      : outOfAttempts
+        ? 'Plus d’essai pour cette manche'
+        : alreadyDone
+          ? `Envoyer un nouvel essai (${state.my_attempts + 1}/${state.max_attempts})`
+          : 'Envoyer au modèle'
 
   function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
     // Same refusals as the button, so a shortcut can never send what a click would not.
-    if (busy || alreadyDone || stale || !prompt.trim() || tooLong) return
+    if (busy || stale || outOfAttempts || !prompt.trim() || tooLong) return
     e.preventDefault()
     e.currentTarget.requestSubmit()
   }
@@ -249,8 +267,8 @@ export default function Game({
       // until the `done` frame, and a composer disabled on the strength of a delta would lock a
       // player out of a round the server has not yet accepted — and lock them out of retrying
       // if the jury then falls over.
+      // The prompt stays in the field: the next attempt is usually a correction of this one.
       setSent(true)
-      setPrompt('')
     } catch (e) {
       // A refusal off the socket lands here through the waiter: nothing was
       // persisted, so the composer stays usable instead of locking the player
@@ -372,7 +390,7 @@ export default function Game({
             message is not reliably announced — the region has to already exist for the change
             to be a change — so this one carries the empty string until a score lands. */}
         <p className="visually-hidden" aria-live="polite">
-          {result ? `Note obtenue : ${result.score} sur 10, à la manche ${result.round + 1}.` : ''}
+          {result ? `Note de l’IA : ${fr(result.score)} sur 10, à la manche ${result.round + 1}.` : ''}
         </p>
 
         {/* The score, and it is above the target and above the field rather than under them.
@@ -412,7 +430,26 @@ export default function Game({
                 <span className="verdict__round">manche {result.round + 1}</span>
               </div>
               <ScoreScale score={result.score} />
-              <p className="prose prose--sm">{result.comment}</p>
+              {/* The note is explained by the exercise's criteria, not by model prose. Only while
+                  the verdict belongs to the round on screen: a kept verdict from an earlier round
+                  under this round's criteria would be graded against the wrong list. */}
+              {result.round === state.current && state.target_criteria.length > 0 && (
+                <div>
+                  <p className="label">Critères de notation</p>
+                  <ul className="prose prose--sm">
+                    {state.target_criteria.map((c) => (
+                      <li key={c}>{c}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {!scored && result.round === state.current && (
+                <p className="prose prose--sm prose--dim">
+                  {outOfAttempts
+                    ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ce dernier prompt qui sera noté.`
+                    : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}
+                </p>
+              )}
               <div>
                 <p className="label">Le modèle a répondu</p>
                 <ModelOutput text={result.output} />
@@ -430,21 +467,9 @@ export default function Game({
           )}
 
           {/* The synthesis of the round that has just been scored, above the target rather than
-              on a screen of its own. It stays here because the player is still in the middle of
-              writing ten prompts: what came of the last one is the reading they do while the next
-              one waits, not a different activity that deserves its own tab.
-              It prints every term the note is made of, in one sentence, because the numbers only
-              mean anything together: proximity and the retained quality are the two inputs, and
-              the critic's score and the peers' average are the two the quality itself is made of.
-              A note stated alone asks a class to accept an arithmetic result they cannot check.
-              The weights are named because the note is no longer an even split — proximity counts
-              for a third and quality for two thirds — so the same two inputs give a different note
-              than the old mean did, and a player comparing rounds deserves to know why.
-              Every figure goes through `fr`, because the note is a real division and the server
-              stopped pretending otherwise: a round of proximity 7 and quality 6 is 5, and a
-              sentence that printed "5.0" would be the only Americanism in a French room.
-              The peer half is dropped for a plain clause when `quality_peers` is null — a round
-              where nobody rated — so the note never names a peer score nobody gave. */}
+              on a screen of its own: what came of the last prompt is the reading the player does
+              while the next one waits. Three numbers and nothing else — the AI's note, the class's
+              note and the final one — because a player reads a result, not the arithmetic. */}
           {scored && state.summary && (
             <section className="tally">
               <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
@@ -464,37 +489,22 @@ export default function Game({
                         className="board__name board__name--me"
                       />
                     </div>
-                    {/* The score as the sentence it is, with all four numbers and their weights.
-                        `role="status"` is the pattern the rest of the screen already uses for text
-                        that changes with the phase. */}
+                    {/* `fr` prints null as a dash: a round nobody rated has no class note. */}
                     <p className="prose" role="status">
-                      Proximité (poids 1/3) : <span className="num">{fr(mine.proximity)}</span>/10
+                      Note de l’IA : <span className="num">{fr(mine.ai_score === null ? null : Math.round(mine.ai_score * 10) / 10)}</span>/10
                       {' · '}
-                      Qualité retenue (poids 2/3) : <span className="num">{fr(mine.quality)}</span>/10
-                      {' ('}le LLM <span className="num">{fr(mine.quality_llm)}</span>
-                      {mine.quality_peers === null ? (
-                        ', les joueurs n’ont pas noté'
-                      ) : (
-                        <>
-                          , les joueurs <span className="num">{fr(mine.quality_peers)}</span>
-                        </>
-                      )}
-                      {') → '}
-                      Ta note finale :{' '}
+                      Note des autres joueurs : <span className="num">{fr(mine.quality_peers)}</span>/10
+                      {' · '}
+                      Note finale :{' '}
                       {/* The number and its unit are one nowrap unit, and the space between them
                           is a real text node: JSX drops whitespace that sits between two tags on
                           different lines, which is what rendered "6sur 10". */}
                       <span className="num tally__round">
-                        {fr(mine.round_score)}
+                        {fr(Math.round(mine.round_score * 10) / 10)}
                         <span className="tally__roundden">{' '}sur 10</span>
                       </span>
                       .
                     </p>
-                    <pre className="slot tally__prompt">{mine.prompt}</pre>
-                    <details className="tally__more">
-                      <summary className="tally__morebtn">Voir la réponse du modèle</summary>
-                      <ModelOutput text={mine.output} />
-                    </details>
                   </div>
                 )
               })()}
@@ -537,6 +547,25 @@ export default function Game({
               image={state.target_image}
             />
 
+            {!scored && exerciseContent(state.target) && (
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() =>
+                  void copyText(exerciseContent(state.target)).then(
+                    () => setCopied('yes'),
+                    () => setCopied('failed'),
+                  )
+                }
+              >
+                {copied === 'yes'
+                  ? '✓ Contenu copié'
+                  : copied === 'failed'
+                    ? 'Copie impossible, sélectionne le texte à la main'
+                    : 'Copier le contenu de l’exercice'}
+              </button>
+            )}
+
             {!scored && (
               <>
                 {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
@@ -564,7 +593,7 @@ export default function Game({
                       autoCapitalize="sentences"
                       autoCorrect="off"
                       spellCheck={false}
-                      disabled={alreadyDone}
+                      disabled={busy}
                       // The message is a sentence about this field, so the field points at it. The
                       // prompt is never cleared on a failure — it is the work, and a rejected
                       // submission that ate it would be the real defect.
@@ -580,7 +609,7 @@ export default function Game({
                   <button
                     type="submit"
                     className="btn btn--signal btn--wide"
-                    disabled={busy || alreadyDone || stale || !prompt.trim() || tooLong}
+                    disabled={busy || stale || outOfAttempts || !prompt.trim() || tooLong}
                   >
                     {submitLabel}
                   </button>

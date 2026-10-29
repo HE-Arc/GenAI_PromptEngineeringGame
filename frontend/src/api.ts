@@ -23,6 +23,9 @@ export type Phase = 'waiting' | 'quiz' | 'playing' | 'rating' | 'summary' | 'don
 export interface QuizState {
   index: number
   total: number
+  // The question on screen, for the console: not secret, every phone already shows it.
+  prompt: string
+  choices: string[]
   deadline_ms: number
   server_ms: number
   revealed: boolean
@@ -51,6 +54,9 @@ export interface RevealState {
   // server's 409. It works under anonymity, where `author` is null and cannot name the reader:
   // the comparison is made server-side, where the reader's id is known, and sent as a boolean.
   mine: boolean
+  // Per-viewer: the note this reader gave the prompt on screen, or null. Lets a reconnect show
+  // the note again; tapping another one replaces it.
+  my_score: number | null
 }
 
 // One line of the round synthesis, shown once anonymity is lifted. `quality_llm`,
@@ -73,6 +79,9 @@ export interface SummaryRow {
   quality_peers: number | null
   quality: number
   quality_comment: string
+  // The AI's own note, (proximity + 2 × quality_llm) / 3: what `round_score` would be with no
+  // peer rating, and the same number the player saw right after sending.
+  ai_score: number | null
   round_score: number
 }
 
@@ -176,6 +185,8 @@ export type State = {
   target: string | null
   // The picture an exercise refers to ("générez cette image"), or null.
   target_image: string | null
+  // What the exercise is graded on, shown beside the note. Empty when there is no target.
+  target_criteria: string[]
   // The clock of the phase on screen — writing a prompt, rating one — or null when nothing is
   // timed. Same two clocks as `QuizState`, read through `useQuizWindow`.
   timer: { deadline_ms: number; server_ms: number } | null
@@ -184,6 +195,10 @@ export type State = {
   anonymous: boolean
   // Enchaîne les manches sans intervention quand vrai. Additif : les vieux clients l'ignorent.
   auto_mode: boolean
+  // Prompts a player may send per round, and how many THIS viewer has used this round
+  // (per-viewer; 0 for the console). A crashed attempt does not count.
+  max_attempts: number
+  my_attempts: number
   players: Player[]
   // How many of `players` are connected. Never use it in place of `players.length`: the two
   // answer different questions and the game depends on the difference.
@@ -293,6 +308,8 @@ export function wsRefusal(code: string, message: string): ApiError {
       return new ApiError(403, 'bad token')
     case 'unknown_room':
       return new ApiError(404, 'unknown room')
+    case 'too_many_attempts':
+      return new ApiError(409, 'no attempts left')
     case 'inflight':
       return new ApiError(409, message || 'answer already streaming')
     default:
@@ -346,7 +363,8 @@ const REASONS: Record<string, string> = {
   'name required': 'Choisis un pseudo.',
   'name taken': 'Ce pseudo est déjà pris. Choisis-en un autre.',
   'game already started': "La partie a déjà commencé. L’animateur doit en créer une nouvelle.",
-  'already answered': 'Tu as déjà répondu pour cette manche.',
+  'already answered': 'Tu as déjà répondu à cette question.',
+  'no attempts left': 'Tu as utilisé tes 3 essais pour cette manche.',
   // Two refusals specific to the timed didacticiel. They are 409s, so without these they would
   // land on the generic "Impossible pour le moment. Réessaie dans un instant." — which is the
   // wrong advice here: the window has closed and retrying cannot reopen it. A player tapping at

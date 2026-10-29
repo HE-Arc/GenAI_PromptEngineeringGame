@@ -2,51 +2,111 @@
  {
   "category": "resume_email",
   "text": "Vous avez reçu un email. Faites un prompt pour résumer ce mail.\n\nBonjour Monsieur Jean Dupont,\n\nNous vous faisons parvenir ce message afin de confirmer votre rendez-vous auprès du Centre Médical des Tilleuls.\n\nVotre consultation est prévue le 14 octobre 2026 à 10h30 au service de médecine interne. Dossier : MT-2026-1047.\n\nCette consultation concerne l'évaluation d'un syndrome neurovasculaire idiopathique à manifestations céphalalgiques intermittentes, nécessitant un bilan complémentaire.\n\nMerci de vous présenter 15 minutes avant le rendez-vous avec vos éventuels documents médicaux récents.\n\nCordialement,\n\nDr Éléonore Montferrand\nCentre Médical des Tilleuls\nTél. : +41 81 000 00 00\nsecretariat@medical.ch",
-  "image": null
+  "image": null,
+  "criteria": [
+   "Les données personnelles sont anonymisées (nom, n° de dossier, téléphone, email, médecin)",
+   "Le contexte est donné : un email de rendez-vous médical à résumer",
+   "Les informations essentielles à garder sont nommées (date, heure, lieu, consignes)",
+   "Le format du résumé est précisé (longueur, liste, phrases)"
+  ]
  },
  {
   "category": "maths_fourier",
   "text": "Faites un prompt afin de vous aider pour cet exercice de math.\n\nProblème\nOn considère la fonction périodique f(x) définie sur $[-\\pi, \\pi]$ par :\n\n$$\nf(x) = x\n$$\n\net prolongée périodiquement avec une période $2\\pi$.\n\n1. Montrer que sa série de Fourier ne contient que des termes en sinus.\n2. Déterminer les coefficients $b_n$.\n3. En déduire que :\n\n   $$\n   x = 2 \\sum_{n=1}^{\\infty} (-1)^{n+1} \\, \\frac{\\sin(nx)}{n}\n   $$\n\n4. Utiliser cette série pour obtenir une approximation de $\\pi$.\n\nNotions utilisées : intégrales, fonctions périodiques, coefficients de Fourier et séries infinies.",
-  "image": null
+  "image": null,
+  "criteria": [
+   "Un rôle est donné à l'IA (ex. professeur de mathématiques)",
+   "Le niveau de l'élève et le but sont précisés (comprendre, pas seulement la réponse)",
+   "L'énoncé ou les questions à traiter sont fournis",
+   "Une démarche étape par étape est demandée, avec un format clair"
+  ]
  },
  {
   "category": "reformuler_ingenieur",
   "text": "Reformulez ce texte pour correspondre aux attentes d'un ingénieur.\n\nLa lumiere va super vite, elle peut faire environ 300 000 kilometres en une seconde.\n\nOn veut savoir combien de temp elle met pour parcourir une certaine distance. Par exemple, si elle doit parcourir 600 kilometres entre deux villes.\n\nVu que la lumiere très vite, le temp que sa prend est vraiment tres petit.\n\nApres on peut essayer de calculer le temp exact et voir ce que sa donne si on augmente la distance.\n\nRef : Wikipédia, « Vitesse de la lumière »\n\nNotions : notation scientifique des nombres, référence plus explicite, format scientifique.",
-  "image": null
+  "image": null,
+  "criteria": [
+   "Le public cible (ingénieur) et le ton attendu sont précisés",
+   "La notation scientifique et les unités sont demandées",
+   "La correction des fautes est demandée",
+   "Une référence explicite et un format scientifique sont demandés"
+  ]
  },
  {
   "category": "pseudo_code",
   "text": "Il y a un problème dans ce pseudo-code. Aidez-vous d'un prompt pour résoudre le problème.\n\nDEBUT\n\ndistance = 600\nvitesse = 300000\nsecondes = 60\nfacteur = 2\n\ntemps = distance / vitesse\nafficher \"Temps :\", temps\n\nsecondes = secondes - (30 * facteur)\n\nsi secondes >= 0 alors\n    vitesse = vitesse * secondes\n    temps = distance / vitesse\n    afficher \"Nouveau temps :\", temps\nsinon\n    afficher \"Valeur invalide\"\nfin si\n\ndistance = distance + 200\ntemps = distance / vitesse\n\nafficher \"Temps final :\", temps\n\nFIN",
-  "image": null
+  "image": null,
+  "criteria": [
+   "Le pseudo-code est fourni en entier",
+   "Le comportement attendu ou le problème observé est décrit",
+   "Une explication de l'erreur est demandée, pas seulement la correction",
+   "Le format de sortie est précisé (code corrigé, commentaires, étapes)"
+  ]
  },
  {
   "category": "comptage",
   "text": "À l'aide d'un prompt, comptez le nombre de « é » dans le mot suivant :\n\ncélestéiale",
-  "image": null
+  "image": null,
+  "criteria": [
+   "Le mot est recopié exactement, entre guillemets",
+   "Un comptage lettre par lettre est demandé",
+   "La distinction entre « é », « e » et « è » est précisée",
+   "Le format de la réponse est imposé (le nombre, puis la vérification)"
+  ]
  },
  {
   "category": "meta_prompt",
   "text": "Vous voulez comprendre la physique quantique, mais vous n'êtes pas expert. Faites un méta-prompt pour comprendre le domaine.",
-  "image": null
+  "image": null,
+  "criteria": [
+   "L'IA est explicitement chargée de rédiger un prompt (méta-prompt)",
+   "Le niveau de départ (non-expert) est précisé",
+   "L'objectif d'apprentissage sur la physique quantique est clair",
+   "Le format attendu du prompt produit est précisé"
+  ]
  },
  {
   "category": "preparer_examen",
   "text": "Vous devez vous préparer pour un examen. Quels prompts faites-vous pour vous préparer à partir des notions ci-dessous ?\n\nNombres\n- Nombre rationnel : nombre qui peut être écrit comme une fraction de deux nombres entiers. Par exemple, 3/4, −2 ou 0,5.\n- Nombre irrationnel : nombre qui ne peut pas être écrit exactement sous forme de fraction. Par exemple, √2 ou π.\n- Nombre réel : ensemble comprenant les nombres rationnels et irrationnels. Tous les nombres réels peuvent être représentés sur une droite graduée.\n- Valeur absolue : représente la distance entre un nombre et zéro, sans tenir compte de son signe. Ainsi, ∣−5∣ = 5.\n\nCalculs\n- Puissance : permet d'écrire plus simplement une multiplication répétée. Par exemple, 2³ signifie 2 × 2 × 2.\n- Racine carrée : opération qui permet de trouver le nombre qui, multiplié par lui-même, donne le nombre de départ. Par exemple, √25 = 5.\n\nAlgèbre\n- Équation : égalité mathématique dans laquelle une ou plusieurs valeurs peuvent être inconnues. Le but est généralement de trouver ces valeurs.\n- Inconnue : valeur que l'on cherche dans une équation. Elle est souvent représentée par une lettre comme x.\n- Fonction : relation mathématique qui associe généralement une valeur d'entrée à une valeur de sortie.\n- Variable : quantité dont la valeur peut changer. Elle est souvent représentée par une lettre.\n- Coefficient : nombre placé devant une variable et qui la multiplie. Dans 5x, 5 est le coefficient de x.\n- Constante : valeur qui reste fixe dans une expression ou un problème. Dans 3x + 7, 7 est une constante.",
-  "image": null
+  "image": null,
+  "criteria": [
+   "Les notions à réviser sont fournies dans le prompt",
+   "Le type d'entraînement est précisé (quiz, flashcards, exercices)",
+   "Le niveau et la difficulté sont précisés",
+   "Les corrections ou explications sont demandées"
+  ]
  },
  {
   "category": "faire_deviner",
   "text": "Faites deviner à l'IA « Où est Charlie ? », sans donner le nom du jeu dans aucune langue.",
-  "image": null
+  "image": null,
+  "criteria": [
+   "Le nom du jeu n'apparaît dans aucune langue",
+   "Les indices décrivent le jeu de façon suffisante (personnage, foule, recherche)",
+   "La consigne demande explicitement de deviner le nom",
+   "Le format de la réponse est imposé (le nom seul, par exemple)"
+  ]
  },
  {
   "category": "generer_image",
   "text": "Générez cette image à l'aide d'un prompt.",
-  "image": "/exercices/trapeze.png"
+  "image": "/exercices/trapeze.png",
+  "criteria": [
+   "Le sujet est décrit précisément (formes, proportions, éléments)",
+   "Le style visuel est précisé (schéma, couleurs, fond)",
+   "La disposition des éléments est décrite",
+   "Les éléments à éviter sont indiqués (texte parasite, décor inutile)"
+  ]
  },
  {
   "category": "graphique_donnees",
   "text": "À partir des données ci-dessous, générez ce graphique à l'aide d'un prompt. Les données sont fictives.\n\nMois : Précipitations (mm)\nJanvier : 68\nFévrier : 61\nMars : 66\nAvril : 72\nMai : 98\nJuin : 104\nJuillet : 96\nAoût : 102\nSeptembre : 88\nOctobre : 82\nNovembre : 79\nDécembre : 81",
-  "image": "/exercices/precipitations.png"
+  "image": "/exercices/precipitations.png",
+  "criteria": [
+   "Toutes les données sont fournies dans le prompt",
+   "Le type de graphique est précisé (barres, courbe…)",
+   "Le titre, les axes et l'unité (mm) sont demandés",
+   "L'outil ou le format de sortie est précisé"
+  ]
  }
 ]

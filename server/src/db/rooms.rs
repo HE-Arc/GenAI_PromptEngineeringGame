@@ -70,7 +70,7 @@ pub async fn create_room(pool: &SqlitePool, code: &str) -> Result<Room, sqlx::Er
 }
 
 pub async fn get_room(pool: &SqlitePool, code: &str) -> Result<Room, sqlx::Error> {
-    sqlx::query_as::<_, Room>("SELECT code, phase, current, admin_key, tutorial, quiz_index, COALESCE(quiz_seconds, 30) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode FROM room WHERE code = ?")
+    sqlx::query_as::<_, Room>("SELECT code, phase, current, admin_key, tutorial, quiz_index, COALESCE(quiz_seconds, 60) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode FROM room WHERE code = ?")
         .bind(code)
         .fetch_one(pool)
         .await
@@ -190,7 +190,7 @@ mod tests {
         answers::insert_answer(&pool, round.id, p.id, "x", "out", 7)
             .await
             .unwrap();
-        // UNIQUE(round_id, player_id): the already_answered 409 rests on this.
+        // UNIQUE(round_id, player_id): one row per player per round, a retry upserts it.
         let dup = answers::insert_answer(&pool, round.id, p.id, "y", "out", 5).await;
         assert!(dup.is_err());
     }

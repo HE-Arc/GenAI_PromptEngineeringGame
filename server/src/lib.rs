@@ -8,9 +8,21 @@ pub mod rest;
 pub mod router;
 pub mod ws;
 
-// Rate-limited stderr note for hot paths (no tracing/log dependency by
-// design): at most one line per 5s per process, so an LLM outage logs the
-// fact instead of one line per failed answer.
+// Structured logging for the whole process. Level comes from RUST_LOG
+// (default: info for this crate, warn for chatty dependencies); LOG_FORMAT=json
+// switches to one JSON object per line for log aggregators (k8s). Safe to call
+// twice: a second init is ignored, which keeps tests that boot the app happy.
+pub fn init_logging() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,hyper=warn,reqwest=warn,tower_http=warn"));
+    let json = std::env::var("LOG_FORMAT").is_ok_and(|v| v.eq_ignore_ascii_case("json"));
+    let builder = fmt().with_env_filter(filter).with_target(true);
+    let _ = if json { builder.json().try_init() } else { builder.try_init() };
+}
+
+// Rate-limited WARN for hot paths: at most one line per 5s per process, so an
+// LLM outage logs the fact instead of one line per failed answer.
 pub fn log_warn(msg: &str) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST_MS: AtomicU64 = AtomicU64::new(0);
@@ -22,6 +34,6 @@ pub fn log_warn(msg: &str) {
     // one line per 5s in the common case.
     if now.saturating_sub(LAST_MS.load(Ordering::Relaxed)) >= 5000 {
         LAST_MS.store(now, Ordering::Relaxed);
-        eprintln!("{msg}");
+        tracing::warn!("{msg}");
     }
 }

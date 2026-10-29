@@ -62,19 +62,23 @@ pub trait LlmSource: Send + Sync + 'static {
         tx: mpsc::UnboundedSender<String>,
     ) -> Pin<Box<dyn Future<Output = StreamResult> + Send + '_>>;
 
+    // `criteria`: the exercise's grading criteria (data/targets.json), the
+    // same list the player sees beside the note.
     fn score(
         &self,
         prompt: &str,
         output: &str,
         target: &str,
+        criteria: &[String],
     ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
 
-    // The critic: rates the prompt's METHOD (role, context, format, length),
+    // The critic: rates the prompt's METHOD against the exercise criteria,
     // never its output. Anchors the ±3 band the peer mean is held to.
     fn grade_prompt(
         &self,
         prompt: &str,
         target: &str,
+        criteria: &[String],
     ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
 }
 
@@ -89,6 +93,9 @@ pub fn from_env() -> Arc<dyn LlmSource> {
     };
     match has_key("OPENAI_API_KEY") || has_key("LLM_API_KEY") {
         true => Arc::new(openai::OpenAiSource::from_env()),
-        false => Arc::new(StubSource),
+        false => {
+            tracing::warn!("no LLM API key: using the local stub, scores are not real verdicts");
+            Arc::new(StubSource)
+        }
     }
 }

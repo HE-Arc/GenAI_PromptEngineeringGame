@@ -194,7 +194,9 @@ export default function Quiz({
   // region of its own: two regions carrying the same four transitions is a screen that says
   // everything twice to the one reader who cannot see either copy.
   const voice = revealed
-    ? picked === null
+    ? !sent
+      ? 'Tu n’as pas répondu à temps. La bonne réponse est affichée.'
+      : picked === null
       ? 'La bonne réponse est affichée.'
       : right
         ? 'Tu as juste.'
@@ -463,7 +465,16 @@ export default function Quiz({
                   ref={revealRef}
                   tabIndex={-1}
                 >
-                  {picked === null ? (
+                  {/* `picked` is null both when the player never answered and when the server knew
+                      an answer this browser did not: only `sent` tells the two apart. */}
+                  {!sent ? (
+                    <>
+                      <span className="revealnote__t">Tu n’as pas répondu à temps</span>
+                      <span className="revealnote__s">
+                        La bonne réponse était {key !== null ? LETTERS[key] : ''}.
+                      </span>
+                    </>
+                  ) : picked === null ? (
                     <>
                       <span className="revealnote__t">Tu avais déjà répondu à celle-ci</span>
                       <span className="revealnote__s">

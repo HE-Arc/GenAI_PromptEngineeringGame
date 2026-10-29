@@ -28,7 +28,8 @@ pub enum WsOut {
     #[serde(rename = "answer.done")]
     AnswerDone {
         player: String,
-        score: i64,
+        // The AI's note (game::ai_score): a real division, hence a float.
+        score: f64,
         feedback: String,
         // The token cap cut the answer short; the player is told so.
         #[serde(default)]

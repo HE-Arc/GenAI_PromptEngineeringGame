@@ -25,6 +25,14 @@ async fn online(state: &AppState, code: &str) -> std::collections::HashSet<i64> 
     get_hub(&state.hubs, code).await.online()
 }
 
+// Logs a write whose result the handler otherwise ignores: the request still
+// answers, but an operator sees why a room ended up half-reset.
+fn log_failed(code: &str, action: &str, r: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error>) {
+    if let Err(e) = r {
+        tracing::error!(room = %code, action, error = %e, "database write failed");
+    }
+}
+
 fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(json!({"error": msg})))
 }
@@ -51,7 +59,11 @@ fn admin_password() -> String {
 // Global admin (create/list/login): the session cookie, with the
 // password bearer kept so existing integrations keep working.
 fn global_admin(headers: &HeaderMap) -> bool {
-    admin_session::request_is_admin(headers) || bearer(headers) == admin_password()
+    let ok = admin_session::request_is_admin(headers) || bearer(headers) == admin_password();
+    if !ok {
+        tracing::warn!("admin console refused: not authenticated");
+    }
+    ok
 }
 
 async fn require_room_admin(
@@ -66,6 +78,7 @@ async fn require_room_admin(
         return Ok(room);
     }
     if bearer(headers) != room.admin_key {
+        tracing::warn!(room = %code, "admin action refused: not authenticated");
         return Err(err(StatusCode::FORBIDDEN, "admin only"));
     }
     Ok(room)
@@ -125,6 +138,7 @@ pub async fn join(
         .await
         .unwrap_or(None);
         if let Some(p) = existing {
+            tracing::info!(room = %code, player_id = p.id, "player rejoined");
             touch(&state, &code).await;
             return (StatusCode::OK, Json(json!({"token": p.token, "name": p.name}))).into_response();
         }
@@ -139,9 +153,11 @@ pub async fn join(
                     return err(StatusCode::CONFLICT, "name taken").into_response();
                 }
             }
+            tracing::error!(room = %code, error = %e, "player insert failed");
             return err(StatusCode::CONFLICT, "name taken").into_response();
         }
     };
+    tracing::info!(room = %code, player_id = player.id, "player joined");
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"token": player.token, "name": player.name}))).into_response()
 }
@@ -214,6 +230,7 @@ pub async fn rate(
                 }
             }
             let msg = e.to_string();
+            tracing::error!(room = %code, player_id = player.id, error = %msg, "rating write failed");
             if msg.contains("already rated") || msg.contains("own prompt") {
                 return err(StatusCode::CONFLICT, "already rated").into_response();
             }
@@ -404,6 +421,7 @@ pub async fn quiz_post(
                     return err(StatusCode::CONFLICT, "already answered").into_response();
                 }
             }
+            tracing::error!(room = %code, player_id = player.id, error = %e, "quiz attempt write failed");
             return err(StatusCode::CONFLICT, "already answered").into_response();
         }
     }
@@ -435,8 +453,11 @@ pub struct LoginBody {
 // how the console subscribes without ever holding a per-room key.
 pub async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
     if body.password != admin_password() {
+        // Never the attempted password: a typo of the real one would leak it.
+        tracing::warn!("admin login failed: wrong password");
         return err(StatusCode::FORBIDDEN, "bad password").into_response();
     }
+    tracing::info!("admin logged in");
     let mut headers = HeaderMap::new();
     if let Ok(v) = admin_session::set_cookie_header().parse() {
         headers.insert(header::SET_COOKIE, v);
@@ -535,17 +556,21 @@ pub async fn admin_create(
         }
     }
     if code.is_empty() {
+        tracing::error!("room create failed: no free code after 50 tries");
         return err(StatusCode::INTERNAL_SERVER_ERROR, "could not allocate a room code")
             .into_response();
     }
     let room = match rooms::create_room(&state.pool, &code).await {
         Ok(r) => r,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(room = %code, error = %e, "room create failed");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
+        }
     };
     let flag = |key: &str| data.get(key).and_then(|v| v.as_bool()).unwrap_or(true);
     let auto_mode = data.get("auto_mode").and_then(|v| v.as_bool()).unwrap_or(false);
     let quiz_seconds = game::clamp_seconds(data.get("quiz_seconds"), game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE);
-    let _ = sqlx::query(
+    let settings = sqlx::query(
         "UPDATE room SET tutorial = ?, anonymous = ?, auto_mode = ?, round_seconds = ?, rate_seconds = ?, quiz_seconds = ? WHERE code = ?",
     )
     .bind(flag("tutorial") as i64)
@@ -557,9 +582,14 @@ pub async fn admin_create(
     .bind(&code)
     .execute(&state.pool)
     .await;
+    if let Err(e) = &settings {
+        tracing::error!(room = %code, error = %e, "room settings write failed, defaults kept");
+    }
     if let Err(e) = game::create_bank(&state.pool, &code).await {
+        tracing::error!(room = %code, error = %e, "didacticiel bank create failed");
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
     }
+    tracing::info!(room = %code, tutorial = flag("tutorial"), anonymous = flag("anonymous"), auto_mode, "room created");
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"code": room.code, "auto_mode": auto_mode, "quiz_seconds": quiz_seconds}))).into_response()
 }
@@ -573,16 +603,35 @@ pub async fn admin_start(
     State(state): State<AppState>,
     Path(code): Path<String>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
     let room = match require_room_admin(&state.pool, &headers, &code).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
     let _ = room;
+    // The didacticiel's time per question is chosen at launch. Body optional:
+    // an empty or unreadable one keeps the room's current setting.
+    let data: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    if data.get("quiz_seconds").is_some() {
+        let secs = game::clamp_seconds(data.get("quiz_seconds"), game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE);
+        match sqlx::query("UPDATE room SET quiz_seconds = ? WHERE code = ? AND phase = 'waiting'")
+            .bind(secs)
+            .bind(&code)
+            .execute(&state.pool)
+            .await
+        {
+            Ok(_) => tracing::info!(room = %code, quiz_seconds = secs, "didacticiel duration set at launch"),
+            Err(e) => tracing::error!(room = %code, error = %e, "didacticiel duration write failed"),
+        }
+    }
     match game::start_game(&state.pool, &code).await {
         Ok(true) => {}
         Ok(false) => return err(StatusCode::CONFLICT, "already started").into_response(),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(room = %code, error = %e, "game start failed");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
+        }
     }
     touch(&state, &code).await;
     let phase = game::load(&state.pool, &code).await.map(|g| g.phase).unwrap_or_default();
@@ -613,6 +662,7 @@ pub async fn admin_next(
         )
         .into_response();
     }
+    tracing::info!(room = %code, phase = %room.phase, "admin pressed next");
     if let Err(e) = game::advance(&state.pool, &code).await {
         return err(StatusCode::CONFLICT, &e).into_response();
     }
@@ -643,14 +693,14 @@ pub async fn admin_restart(
         return err(StatusCode::NOT_FOUND, "unknown room").into_response();
     }
     // Idempotent wipe: players and tokens survive, rounds/attempts/votes go.
-    let _ = sqlx::query("DELETE FROM rating WHERE answer_id IN (SELECT answer.id FROM answer JOIN round ON round.id = answer.round_id WHERE round.room_code = ?)")
-        .bind(&code).execute(&state.pool).await;
-    let _ = sqlx::query("DELETE FROM answer WHERE round_id IN (SELECT id FROM round WHERE room_code = ?)")
-        .bind(&code).execute(&state.pool).await;
-    let _ = sqlx::query("DELETE FROM round WHERE room_code = ?").bind(&code).execute(&state.pool).await;
-    let _ = sqlx::query("DELETE FROM quiz_attempt WHERE player_id IN (SELECT id FROM player WHERE room_code = ?)")
-        .bind(&code).execute(&state.pool).await;
-    let _ = sqlx::query("DELETE FROM ready WHERE room_code = ?").bind(&code).execute(&state.pool).await;
+    log_failed(&code, "restart", sqlx::query("DELETE FROM rating WHERE answer_id IN (SELECT answer.id FROM answer JOIN round ON round.id = answer.round_id WHERE round.room_code = ?)")
+        .bind(&code).execute(&state.pool).await);
+    log_failed(&code, "restart", sqlx::query("DELETE FROM answer WHERE round_id IN (SELECT id FROM round WHERE room_code = ?)")
+        .bind(&code).execute(&state.pool).await);
+    log_failed(&code, "restart", sqlx::query("DELETE FROM round WHERE room_code = ?").bind(&code).execute(&state.pool).await);
+    log_failed(&code, "restart", sqlx::query("DELETE FROM quiz_attempt WHERE player_id IN (SELECT id FROM player WHERE room_code = ?)")
+        .bind(&code).execute(&state.pool).await);
+    log_failed(&code, "restart", sqlx::query("DELETE FROM ready WHERE room_code = ?").bind(&code).execute(&state.pool).await);
     let mut upd = "UPDATE room SET current = 0, phase = 'waiting', quiz_index = 0, quiz_deadline = NULL, phase_deadline = NULL WHERE code = ?".to_string();
     let tutorial_bool = body.and_then(|b| b.0.tutorial).and_then(|v| v.as_bool());
     if let Some(t) = tutorial_bool {
@@ -659,8 +709,11 @@ pub async fn admin_restart(
             if t { 1 } else { 0 }
         );
     }
-    let _ = sqlx::query(&upd).bind(&code).execute(&state.pool).await;
-    let _ = rooms::create_round(&state.pool, &code, 0, "").await;
+    log_failed(&code, "restart", sqlx::query(&upd).bind(&code).execute(&state.pool).await);
+    if let Err(e) = rooms::create_round(&state.pool, &code, 0, "").await {
+        tracing::error!(room = %code, error = %e, "restart: placeholder round create failed");
+    }
+    tracing::info!(room = %code, tutorial = ?tutorial_bool, "game restarted, back to lobby");
     get_hub(&state.hubs, &code).await.mark_seen();
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"ok": true, "phase": "waiting"}))).into_response()
@@ -690,8 +743,12 @@ pub async fn admin_delete(
             }
             _ => return err(StatusCode::NOT_FOUND, "unknown room").into_response(),
         },
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(room = %code, error = %e, "room delete failed");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
+        }
     }
     state.hubs.write().await.remove(&code);
+    tracing::info!(room = %code, "room deleted by admin");
     (StatusCode::OK, Json(json!({"ok": true}))).into_response()
 }

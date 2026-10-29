@@ -100,6 +100,7 @@ impl super::LlmSource for StubSource {
         _prompt: &str,
         output: &str,
         target: &str,
+        _criteria: &[String],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
         let verdict = stub_score(output, target);
         Box::pin(async move { verdict })
@@ -109,6 +110,7 @@ impl super::LlmSource for StubSource {
         &self,
         prompt: &str,
         _target: &str,
+        _criteria: &[String],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
         let verdict = stub_grade(prompt);
         Box::pin(async move { verdict })
