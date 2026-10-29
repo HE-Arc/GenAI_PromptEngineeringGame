@@ -391,10 +391,13 @@ export default function Admin() {
   const [autoMode, setAutoMode] = useState(false)
   // The two time limits, in seconds, as typed. Sent as typed; the server keeps them inside its
   // own bounds and falls back to its defaults on anything it cannot read.
-  const [roundSeconds, setRoundSeconds] = useState('60')
-  const [rateSeconds, setRateSeconds] = useState('20')
-  // Chosen at launch, in the lobby console, not at creation: 60 s per question by default.
+  const [roundSeconds, setRoundSeconds] = useState('180')
+  const [rateSeconds, setRateSeconds] = useState('30')
+  // Seconds per didacticiel question: chosen at creation (60 s by default)…
   const [quizSeconds, setQuizSeconds] = useState('60')
+  // …and adjustable at launch. Null until edited, so the lobby shows the room's own value (from
+  // the snapshot) and a room reopened from the list never has it reset to the default.
+  const [launchSeconds, setLaunchSeconds] = useState<string | null>(null)
   // A confirm only holds until anything about the room changes, and says which action it is
   // confirming: two of the destructive controls now arm the same way, and an arm that did not
   // carry its action could confirm "throw the room away" after the host had reached for the
@@ -775,10 +778,26 @@ export default function Admin() {
                 />
                 <p className="hint">5–300 secondes</p>
               </div>
+              <div className="field">
+                <label className="label" htmlFor="create-quiz-seconds">
+                  Temps par question du didacticiel en secondes
+                </label>
+                <input
+                  id="create-quiz-seconds"
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={300}
+                  value={quizSeconds}
+                  onChange={(e) => setQuizSeconds(e.target.value)}
+                />
+                <p className="hint">5–300 secondes, modifiable au lancement</p>
+              </div>
             </div>
             <p className="prose prose--sm prose--dim">
-              Ces durées s’appliquent à toutes les manches et ne sont plus modifiables après
-              création.
+              Ces durées s’appliquent à toutes les manches. Seul le temps du didacticiel reste
+              modifiable au lancement de la partie.
             </p>
           </div>
 
@@ -799,6 +818,7 @@ export default function Admin() {
                   auto_mode: autoMode,
                   round_seconds: roundSeconds,
                   rate_seconds: rateSeconds,
+                  quiz_seconds: quizSeconds,
                 })
                 enter(c)
               }, lostSession)
@@ -1198,8 +1218,8 @@ export default function Admin() {
                   inputMode="numeric"
                   min={5}
                   max={300}
-                  value={quizSeconds}
-                  onChange={(e) => setQuizSeconds(e.target.value)}
+                  value={launchSeconds ?? String(state?.quiz_seconds ?? 60)}
+                  onChange={(e) => setLaunchSeconds(e.target.value)}
                 />
                 <p className="hint">5–300 secondes, appliqué à chaque question. Sans effet si le didacticiel est désactivé.</p>
               </div>
@@ -1218,7 +1238,11 @@ export default function Admin() {
                       // is the one phase where the transition is a different endpoint rather than
                       // the same one resolving differently, and it is the only one that has one.
                       if (phase === 'waiting') {
-                        await post(`/api/admin/rooms/${code}/start`, { quiz_seconds: quizSeconds })
+                        // Only an edited value is sent: otherwise the room keeps what was set at creation.
+                        await post(
+                          `/api/admin/rooms/${code}/start`,
+                          launchSeconds === null ? {} : { quiz_seconds: launchSeconds },
+                        )
                       } else {
                         await post(`/api/admin/rooms/${code}/next`)
                       }

@@ -25,8 +25,8 @@ pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const ROUNDS_PER_GAME: usize = 10;
 // Prompts a player may send for one round; the last one sent is the one kept.
 pub const MAX_ATTEMPTS: i64 = 3;
-pub const ROUND_SECONDS: i64 = 60;
-pub const RATE_SECONDS: i64 = 20;
+pub const ROUND_SECONDS: i64 = 180;
+pub const RATE_SECONDS: i64 = 30;
 // En mode automatique, le résumé reste affiché 30 s pour relire les réponses
 // avant d'enchaîner seul ; en manuel, pas de délai (l'animateur avance).
 pub const SUMMARY_AUTO_SECONDS: i64 = 30;
@@ -1247,6 +1247,7 @@ pub async fn room_snapshot(
         "timer": timer,
         "anonymous": anonymous,
         "auto_mode": room.auto_mode != 0,
+        "quiz_seconds": room.quiz_seconds,
         "max_attempts": MAX_ATTEMPTS,
         "my_attempts": 0,
         "players": rows.into_iter().map(|r| r.2).collect::<Vec<_>>(),

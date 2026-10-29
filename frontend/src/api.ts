@@ -197,6 +197,8 @@ export type State = {
   auto_mode: boolean
   // Prompts a player may send per round, and how many THIS viewer has used this round
   // (per-viewer; 0 for the console). A crashed attempt does not count.
+  // Seconds per didacticiel question, set at creation and adjustable at launch.
+  quiz_seconds: number
   max_attempts: number
   my_attempts: number
   players: Player[]
