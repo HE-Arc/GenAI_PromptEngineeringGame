@@ -64,8 +64,20 @@ export default function ModelOutput({ text, streaming = false }: { text: string;
 // Targets carry a generic instruction first ("Faites un prompt pour…") then the specific
 // exercise after a blank line. The lead is split out so it can wear the accent while the body
 // stays body text. Single-paragraph targets (short answers, QCM prompts) render untouched.
-export function TargetText({ text, className }: { text: string; className?: string }) {
-  const cut = text.search(/\n\s*\n/)
+//
+// `consigne` marks the lead as the exercise's instruction ("Consigne : …") so a player can tell it
+// from the material under it. A one-paragraph exercise is then all instruction.
+export function TargetText({
+  text,
+  className,
+  consigne,
+}: {
+  text: string
+  className?: string
+  consigne?: boolean
+}) {
+  const split = text.search(/\n\s*\n/)
+  const cut = split < 0 && consigne ? text.length : split
   if (cut < 0) {
     return (
       <div className={`mdt${className ? ` ${className}` : ''}`}>
@@ -75,7 +87,7 @@ export function TargetText({ text, className }: { text: string; className?: stri
       </div>
     )
   }
-  const lead = text.slice(0, cut)
+  const lead = consigne ? `**Consigne :** ${text.slice(0, cut)}` : text.slice(0, cut)
   const rest = text.slice(cut).trim()
   return (
     <div className={`mdt${className ? ` ${className}` : ''}`}>
@@ -84,11 +96,13 @@ export function TargetText({ text, className }: { text: string; className?: stri
           {lead}
         </Markdown>
       </div>
-      <div className="mdt__body">
-        <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
-          {rest}
-        </Markdown>
-      </div>
+      {rest && (
+        <div className="mdt__body">
+          <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
+            {rest}
+          </Markdown>
+        </div>
+      )}
     </div>
   )
 }

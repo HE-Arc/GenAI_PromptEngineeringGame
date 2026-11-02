@@ -1,51 +1,56 @@
 [
  {
   "category": "resume_email",
-  "text": "Vous avez reçu un email. Faites un prompt pour résumer ce mail.\n\nBonjour Monsieur Jean Dupont,\n\nNous vous faisons parvenir ce message afin de confirmer votre rendez-vous auprès du Centre Médical des Tilleuls.\n\nVotre consultation est prévue le 14 octobre 2026 à 10h30 au service de médecine interne. Dossier : MT-2026-1047.\n\nCette consultation concerne l'évaluation d'un syndrome neurovasculaire idiopathique à manifestations céphalalgiques intermittentes, nécessitant un bilan complémentaire.\n\nMerci de vous présenter 15 minutes avant le rendez-vous avec vos éventuels documents médicaux récents.\n\nCordialement,\n\nDr Éléonore Montferrand\nCentre Médical des Tilleuls\nTél. : +41 81 000 00 00\nsecretariat@medical.ch",
+  "text": "Vous avez reçu un email et vous souhaitez générer un résumé de cet email afin de n'en retenir que les informations importantes. Faites un prompt pour résumer ce mail.\n\nObjet : Confirmation de votre rendez-vous du 14 octobre 2026 – Dossier MT-2026-1047\n\nBonjour Monsieur Dupont,\n\nNous vous écrivons pour confirmer votre rendez-vous au Centre Médical des Tilleuls. Vous trouverez aussi ci-dessous quelques informations utiles pour préparer votre venue.\n\nVotre consultation aura lieu le mercredi 14 octobre 2026 à 10h30, au service de médecine interne (bâtiment B, 2e étage). Elle sera assurée par le Dr Éléonore Montferrand et durera environ 45 minutes. Votre numéro de dossier est le MT-2026-1047. Merci de le rappeler dans tous vos échanges avec notre secrétariat.\n\nCette consultation porte sur l'évaluation d'un syndrome neurovasculaire idiopathique avec des maux de tête intermittents, qui nécessite un bilan complémentaire. Le médecin reviendra d'abord sur vos antécédents. Il vous posera ensuite des questions sur la fréquence, la durée et l'intensité de vos maux de tête, puis vous examinera, notamment sur le plan neurologique. Selon les résultats, d'autres examens pourront vous être proposés : une prise de sang, une IRM du cerveau ou un examen Doppler des vaisseaux du cou. Si c'est nécessaire, ils seront planifiés lors d'un prochain rendez-vous.\n\nPour faciliter l'évaluation, merci d'apporter vos documents médicaux récents : comptes rendus, résultats d'analyses, images ou CD d'imagerie. Apportez aussi la liste à jour de vos médicaments avec leurs doses et, si vous en avez une, la lettre de votre médecin traitant. Si vous notez vos maux de tête dans un journal, même de façon sommaire, il nous sera très utile. N'oubliez pas votre carte d'assuré maladie et une pièce d'identité. Vous n'avez pas besoin d'être à jeun, et vous pouvez prendre vos médicaments habituels comme d'habitude.\n\nMerci de vous présenter 15 minutes avant l'heure du rendez-vous à l'accueil principal, au rez-de-chaussée, pour l'enregistrement administratif. Le centre se trouve à l'Avenue des Tilleuls 12. Un parking payant est disponible devant le bâtiment, et l'arrêt de bus « Les Tilleuls » est à deux minutes à pied. Le bâtiment est entièrement accessible aux personnes à mobilité réduite. Vous pouvez venir accompagné si vous le souhaitez.\n\nSi vous ne pouvez pas venir, merci de nous prévenir au moins 48 heures à l'avance. Nous pourrons ainsi proposer ce créneau à un autre patient. Un rendez-vous annulé moins de 48 heures à l'avance, ou manqué sans prévenir, pourra vous être facturé. Notre secrétariat répond du lundi au vendredi, de 8h00 à 12h00 et de 13h30 à 17h00, par téléphone ou par courriel.\n\nEnfin, d'ici votre rendez-vous, vous pourriez avoir un mal de tête soudain et beaucoup plus fort que d'habitude. S'il s'accompagne de troubles de la vue ou de la parole, d'une faiblesse d'un côté du corps ou d'une confusion, n'attendez pas la consultation : appelez immédiatement le 144.\n\nNous restons à votre disposition pour toute question et vous remercions de votre confiance.\n\nCordialement,\n\nDr Éléonore Montferrand\nMédecin, service de médecine interne\nCentre Médical des Tilleuls\nAvenue des Tilleuls 12\nTél. : +41 81 000 00 00\nsecretariat@medical.ch\n\nCe message et ses éventuelles pièces jointes sont confidentiels et destinés uniquement à leur destinataire. Si vous l'avez reçu par erreur, merci d'en informer l'expéditeur et de le supprimer.",
+  "tip": "L'email que vous avez reçu contient des informations sensibles que le LLM pourrait réutiliser ou revendre. Protégez vos données ! Promptez en garantissant l'anonymat.",
   "image": null,
   "criteria": [
-   "Les données personnelles sont anonymisées (nom, n° de dossier, téléphone, email, médecin)",
+   "Les données personnelles sont anonymisées (nom, n° de dossier, médecin, adresse, téléphone, email)",
    "Le contexte est donné : un email de rendez-vous médical à résumer",
-   "Les informations essentielles à garder sont nommées (date, heure, lieu, consignes)",
+   "Les informations essentielles à garder sont nommées (date, heure, lieu, documents à apporter, annulation)",
    "Le format du résumé est précisé (longueur, liste, phrases)"
   ]
  },
  {
-  "category": "maths_fourier",
-  "text": "Faites un prompt afin de vous aider pour cet exercice de math.\n\nProblème\nOn considère la fonction périodique f(x) définie sur $[-\\pi, \\pi]$ par :\n\n$$\nf(x) = x\n$$\n\net prolongée périodiquement avec une période $2\\pi$.\n\n1. Montrer que sa série de Fourier ne contient que des termes en sinus.\n2. Déterminer les coefficients $b_n$.\n3. En déduire que :\n\n   $$\n   x = 2 \\sum_{n=1}^{\\infty} (-1)^{n+1} \\, \\frac{\\sin(nx)}{n}\n   $$\n\n4. Utiliser cette série pour obtenir une approximation de $\\pi$.\n\nNotions utilisées : intégrales, fonctions périodiques, coefficients de Fourier et séries infinies.",
+  "category": "maths_trigo",
+  "text": "Vous ne comprenez pas grand-chose à l'exercice qu'on vous demande de résoudre. Utilisez le chatbot pour comprendre ce qui est attendu de vous.\n\nUne rampe d'accès pour fauteuil roulant mesure 5 m de long et fait un angle de 10° avec le sol. À quelle hauteur la rampe permet-elle de monter ?",
+  "tip": "Demandez au chatbot de vous indiquer une piste pour arriver à la bonne solution, en vous expliquant les concepts de base de la trigonométrie, voire de vous faire un schéma pour mieux comprendre le problème.",
   "image": null,
   "criteria": [
-   "Un rôle est donné à l'IA (ex. professeur de mathématiques)",
-   "Le niveau de l'élève et le but sont précisés (comprendre, pas seulement la réponse)",
-   "L'énoncé ou les questions à traiter sont fournis",
-   "Une démarche étape par étape est demandée, avec un format clair"
+   "L'énoncé de l'exercice est fourni en entier",
+   "Le but est précisé : comprendre la démarche, pas seulement obtenir la réponse",
+   "Une explication des notions de trigonométrie utiles (sinus, triangle rectangle) est demandée",
+   "Un schéma ou une démarche étape par étape est demandé"
   ]
  },
  {
   "category": "reformuler_ingenieur",
-  "text": "Reformulez ce texte pour correspondre aux attentes d'un ingénieur.\n\nLa lumiere va super vite, elle peut faire environ 300 000 kilometres en une seconde.\n\nOn veut savoir combien de temp elle met pour parcourir une certaine distance. Par exemple, si elle doit parcourir 600 kilometres entre deux villes.\n\nVu que la lumiere très vite, le temp que sa prend est vraiment tres petit.\n\nApres on peut essayer de calculer le temp exact et voir ce que sa donne si on augmente la distance.\n\nRef : Wikipédia, « Vitesse de la lumière »\n\nNotions : notation scientifique des nombres, référence plus explicite, format scientifique.",
+  "text": "Dans le cadre d'un projet de semestre, vous avez rencontré une entreprise qui souhaite relier deux de ses sites par fibre optique. Pendant la réunion, vous avez pris les notes ci-dessous à la va-vite. Votre professeur vous demande maintenant de les transformer en une note technique claire, précise et vérifiable. Rédigez un prompt pour que l'IA vous aide à reformuler vos notes selon les standards attendus d'un ingénieur.\n\nRéunion avec l'entreprise ce matin pour le projet. Ils veulent relier leur siège et leur nouvel entrepôt par fibre optique, les deux sites sont à environ 600 km l'un de l'autre.\n\nLeur responsable pense que vu que la fibre c'est de la lumière, la connexion sera instantanée. La lumière fait 300 000 km par seconde, mais dans la fibre elle va moins vite, genre 200 000 km par seconde je crois.\n\nLeur logiciel de gestion de stock a des problèmes si le délai dépasse 5 millisecondes. Il faut qu'on vérifie si sa passe, et combien de temps sa prend pour l'aller-retour.\n\nIls parlent aussi d'ouvrir un autre site plus tard, à environ 1500 km.\n\nSource pour la vitesse dans la fibre : un article un site wikipedia fibre optique",
+  "tip": "Appliquez la bonne structuration du prompt pour obtenir une réponse synthétique et précise, avec la notation scientifique des nombres, des références explicites et vérifiables et une formulation adaptée.",
   "image": null,
   "criteria": [
-   "Le public cible (ingénieur) et le ton attendu sont précisés",
+   "Le rôle et le public cible (note technique d'ingénieur) sont précisés",
    "La notation scientifique et les unités sont demandées",
-   "La correction des fautes est demandée",
-   "Une référence explicite et un format scientifique sont demandés"
+   "Une référence explicite et vérifiable est demandée à la place de la source vague",
+   "Le format de la note est précisé (structure, ton, correction des fautes)"
   ]
  },
  {
-  "category": "pseudo_code",
-  "text": "Il y a un problème dans ce pseudo-code. Aidez-vous d'un prompt pour résoudre le problème.\n\nDEBUT\n\ndistance = 600\nvitesse = 300000\nsecondes = 60\nfacteur = 2\n\ntemps = distance / vitesse\nafficher \"Temps :\", temps\n\nsecondes = secondes - (30 * facteur)\n\nsi secondes >= 0 alors\n    vitesse = vitesse * secondes\n    temps = distance / vitesse\n    afficher \"Nouveau temps :\", temps\nsinon\n    afficher \"Valeur invalide\"\nfin si\n\ndistance = distance + 200\ntemps = distance / vitesse\n\nafficher \"Temps final :\", temps\n\nFIN",
+  "category": "corriger_resolution",
+  "text": "Vous faites un devoir de mathématiques à la maison. Vous avez résolu l'exercice ci-dessous, mais en relisant votre travail, vous avez l'impression que quelque chose ne colle pas. Votre professeur n'est pas joignable et vous n'avez personne autour de vous pour vous aider. Aidez-vous d'un prompt pour résoudre le problème.\n\n**Problème**\nUne balle est lancée vers le haut depuis le toit d'un bâtiment. Sa hauteur h (en mètres) en fonction du temps t (en secondes) est donnée par :\nh(t) = −5t² + 10t + 15\nÀ quel instant la balle touche-t-elle le sol ?\n\n**Votre résolution**\nLa balle touche le sol quand h(t) = 0, je dois donc résoudre :\n−5t² + 10t + 15 = 0\nJ'identifie les coefficients : a = −5, b = 10 et c = 15. Je calcule le discriminant :\nΔ = b² − 4ac = 10² − 4 × (−5) × 15 = 100 + 300 = 400\nComme Δ > 0, il y a deux solutions, avec √Δ = 20 :\nt₁ = (−b + √Δ) / (2a) = (−10 + 20) / 10 = 1\nt₂ = (−b − √Δ) / (2a) = (−10 − 20) / 10 = −3",
+  "tip": "Demandez à l'IA d'examiner votre résolution de maths, de vous indiquer où est l'erreur et de vous expliquer le concept qui a été mal compris.",
   "image": null,
   "criteria": [
-   "Le pseudo-code est fourni en entier",
-   "Le comportement attendu ou le problème observé est décrit",
-   "Une explication de l'erreur est demandée, pas seulement la correction",
-   "Le format de sortie est précisé (code corrigé, commentaires, étapes)"
+   "L'énoncé et la résolution sont fournis en entier",
+   "Il est demandé de vérifier la résolution et de localiser l'erreur",
+   "Une explication du concept mal compris est demandée, pas seulement la correction",
+   "Le format de sortie est précisé (étapes corrigées, réponse finale)"
   ]
  },
  {
   "category": "comptage",
-  "text": "À l'aide d'un prompt, comptez le nombre de « é » dans le mot suivant :\n\ncélestéiale",
+  "text": "À l'aide d'un prompt, comptez le nombre de « é » dans le mot suivant : « célestéiale ». Il ne s'agit pas du nombre de « e », mais bien de « é ».",
+  "tip": "Faites attention : l'IA fait souvent des erreurs. Il faudra être très précis dans le contexte, car ce mot n'existe pas dans le dictionnaire et l'IA risque de le confondre avec un vrai mot. Le but est surtout de comprendre que l'IA commet des erreurs.",
   "image": null,
   "criteria": [
    "Le mot est recopié exactement, entre guillemets",
@@ -57,6 +62,7 @@
  {
   "category": "meta_prompt",
   "text": "Vous voulez comprendre la physique quantique, mais vous n'êtes pas expert. Faites un méta-prompt pour comprendre le domaine.",
+  "tip": "Le but est de demander à l'IA de rédiger elle-même la bonne question (le bon prompt) à poser pour comprendre un thème.",
   "image": null,
   "criteria": [
    "L'IA est explicitement chargée de rédiger un prompt (méta-prompt)",
@@ -67,44 +73,48 @@
  },
  {
   "category": "preparer_examen",
-  "text": "Vous devez vous préparer pour un examen. Quels prompts faites-vous pour vous préparer à partir des notions ci-dessous ?\n\nNombres\n- Nombre rationnel : nombre qui peut être écrit comme une fraction de deux nombres entiers. Par exemple, 3/4, −2 ou 0,5.\n- Nombre irrationnel : nombre qui ne peut pas être écrit exactement sous forme de fraction. Par exemple, √2 ou π.\n- Nombre réel : ensemble comprenant les nombres rationnels et irrationnels. Tous les nombres réels peuvent être représentés sur une droite graduée.\n- Valeur absolue : représente la distance entre un nombre et zéro, sans tenir compte de son signe. Ainsi, ∣−5∣ = 5.\n\nCalculs\n- Puissance : permet d'écrire plus simplement une multiplication répétée. Par exemple, 2³ signifie 2 × 2 × 2.\n- Racine carrée : opération qui permet de trouver le nombre qui, multiplié par lui-même, donne le nombre de départ. Par exemple, √25 = 5.\n\nAlgèbre\n- Équation : égalité mathématique dans laquelle une ou plusieurs valeurs peuvent être inconnues. Le but est généralement de trouver ces valeurs.\n- Inconnue : valeur que l'on cherche dans une équation. Elle est souvent représentée par une lettre comme x.\n- Fonction : relation mathématique qui associe généralement une valeur d'entrée à une valeur de sortie.\n- Variable : quantité dont la valeur peut changer. Elle est souvent représentée par une lettre.\n- Coefficient : nombre placé devant une variable et qui la multiplie. Dans 5x, 5 est le coefficient de x.\n- Constante : valeur qui reste fixe dans une expression ou un problème. Dans 3x + 7, 7 est une constante.",
+  "text": "Vous devez vous préparer pour un examen. Quels prompts faites-vous pour vous préparer à partir des notions ci-dessous ?\n\n**Nombres**\n- Nombre rationnel : nombre qui peut être écrit comme une fraction de deux nombres entiers. Par exemple, 3/4, −2 ou 0,5.\n- Nombre irrationnel : nombre qui ne peut pas être écrit exactement sous forme de fraction. Par exemple, √2 ou π.\n- Nombre réel : ensemble comprenant les nombres rationnels et irrationnels. Tous les nombres réels peuvent être représentés sur une droite graduée.\n- Valeur absolue : représente la distance entre un nombre et zéro, sans tenir compte de son signe. Ainsi, |−5| = 5.\n\n**Calculs**\n- Puissance : permet d'écrire plus simplement une multiplication répétée. Par exemple, 2³ signifie 2 × 2 × 2.\n- Racine carrée : opération qui permet de trouver le nombre qui, multiplié par lui-même, donne le nombre de départ. Par exemple, √25 = 5.\n\n**Algèbre**\n- Équation : égalité mathématique dans laquelle une ou plusieurs valeurs peuvent être inconnues. Le but est généralement de trouver ces valeurs.\n- Inconnue : valeur que l'on cherche dans une équation. Elle est souvent représentée par une lettre comme x.\n- Fonction : relation mathématique qui associe généralement une valeur d'entrée à une valeur de sortie.\n- Variable : quantité dont la valeur peut changer. Elle est souvent représentée par une lettre.\n- Coefficient : nombre placé devant une variable et qui la multiplie. Dans 5x, 5 est le coefficient de x.\n- Constante : valeur qui reste fixe dans une expression ou un problème. Dans 3x + 7, 7 est une constante.",
+  "tip": "Le but est d'enchaîner plusieurs prompts : d'abord un prompt qui donne le contexte avec les bonnes informations, puis un prompt qui demande de synthétiser ces informations, et enfin un prompt qui demande à l'IA de vous tester en préparant un examen d'exemple.",
   "image": null,
   "criteria": [
-   "Les notions à réviser sont fournies dans le prompt",
-   "Le type d'entraînement est précisé (quiz, flashcards, exercices)",
-   "Le niveau et la difficulté sont précisés",
-   "Les corrections ou explications sont demandées"
+   "Le contexte (examen, niveau) et les notions à réviser sont fournis",
+   "Une synthèse des notions est demandée",
+   "Un test d'entraînement est demandé (quiz, exercices, examen blanc)",
+   "Les corrections ou explications des réponses sont demandées"
   ]
  },
  {
-  "category": "faire_deviner",
-  "text": "Faites deviner à l'IA « Où est Charlie ? », sans donner le nom du jeu dans aucune langue.",
+  "category": "donner_contexte",
+  "text": "Vous devez donner un maximum de contexte à l'IA pour qu'elle comprenne ce problème et réponde à la question « Comment calculer la résistance ? ».\n\nVous venez d'emménager dans votre chambre d'étudiant et vous voulez installer une étagère pour vos livres de cours. Vous avez une planche en bois de 80 cm de long et 2 cm d'épaisseur, que vous comptez poser sur deux équerres fixées au mur, une à chaque bout. Vos livres pèsent environ 20 kg au total.\n\nPour faire joli, vous voulez aussi coller un ruban LED sous la planche. Le kit que vous avez acheté contient un transformateur 12 V et une petite résistance de 220 Ω. Votre colocataire, qui étudie l'électronique, vous a prévenu : « Avant de brancher quoi que ce soit, pense à bien calculer la résistance. »\n\nMais pour l'instant, ce qui vous inquiète surtout, c'est que la planche plie ou casse sous le poids de vos livres.\n\nComment calculer la résistance ?",
+  "tip": "Attention : il faudra bien préciser de quel type de résistance on parle, en donnant du contexte.",
   "image": null,
   "criteria": [
-   "Le nom du jeu n'apparaît dans aucune langue",
-   "Les indices décrivent le jeu de façon suffisante (personnage, foule, recherche)",
-   "La consigne demande explicitement de deviner le nom",
-   "Le format de la réponse est imposé (le nom seul, par exemple)"
+   "Le type de résistance visé est précisé (résistance mécanique de la planche, pas électrique)",
+   "Les données utiles sont fournies (planche 80 cm × 2 cm, bois, deux appuis, 20 kg)",
+   "Les informations hors sujet (LED, 12 V, 220 Ω) sont écartées ou signalées comme telles",
+   "Le format de la réponse est précisé (formule, étapes de calcul, conclusion)"
   ]
  },
  {
   "category": "generer_image",
-  "text": "Générez cette image à l'aide d'un prompt.",
+  "text": "Vous devez obtenir une image d'un trapèze ABCD : générez l'image ci-dessous à l'aide d'un prompt.",
+  "tip": "Le but est d'évaluer à quel point vous êtes précis en donnant du contexte. Pensez à préciser la grille, que les mesures sont en cm, qu'il y a une légende, etc. Si quelque chose est oublié, l'IA ne pourra pas le deviner.",
   "image": "/exercices/trapeze.png",
   "criteria": [
-   "Le sujet est décrit précisément (formes, proportions, éléments)",
+   "Le sujet est décrit précisément (trapèze ABCD, sommets, mesures en cm)",
+   "La grille et la légende sont demandées",
    "Le style visuel est précisé (schéma, couleurs, fond)",
-   "La disposition des éléments est décrite",
    "Les éléments à éviter sont indiqués (texte parasite, décor inutile)"
   ]
  },
  {
   "category": "graphique_donnees",
-  "text": "À partir des données ci-dessous, générez ce graphique à l'aide d'un prompt. Les données sont fictives.\n\nMois : Précipitations (mm)\nJanvier : 68\nFévrier : 61\nMars : 66\nAvril : 72\nMai : 98\nJuin : 104\nJuillet : 96\nAoût : 102\nSeptembre : 88\nOctobre : 82\nNovembre : 79\nDécembre : 81",
+  "text": "À partir des données ci-dessous, générez ce graphique à l'aide d'un prompt. Les données sont fictives.\n\n| Mois | Précipitations (mm) |\n|---|---|\n| Janvier | 68 |\n| Février | 61 |\n| Mars | 66 |\n| Avril | 72 |\n| Mai | 98 |\n| Juin | 104 |\n| Juillet | 96 |\n| Août | 102 |\n| Septembre | 88 |\n| Octobre | 82 |\n| Novembre | 79 |\n| Décembre | 81 |",
+  "tip": "Le but est de trouver, grâce à l'IA, un graphique qui permette de visualiser facilement ce genre de données, et donc de donner le bon contexte pour cela.",
   "image": "/exercices/precipitations.png",
   "criteria": [
    "Toutes les données sont fournies dans le prompt",
-   "Le type de graphique est précisé (barres, courbe…)",
+   "Le type de graphique est précisé ou demandé à l'IA (barres, courbe…)",
    "Le titre, les axes et l'unité (mm) sont demandés",
    "L'outil ou le format de sortie est précisé"
   ]

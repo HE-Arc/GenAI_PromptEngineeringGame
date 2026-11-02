@@ -185,6 +185,8 @@ export type State = {
   target: string | null
   // The picture an exercise refers to ("générez cette image"), or null.
   target_image: string | null
+  // A hint for the exercise, opened from an icon while writing, or null.
+  target_tip: string | null
   // What the exercise is graded on. Sent only during the rating phase (empty otherwise), so a
   // player writing a prompt cannot read them, not even in devtools.
   target_criteria: string[]

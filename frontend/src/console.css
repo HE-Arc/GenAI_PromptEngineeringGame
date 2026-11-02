@@ -192,6 +192,50 @@
   background: var(--good-wash);
   color: var(--good);
 }
+/* The label row: the pill on the left, the tip bulb on the right. */
+.readout__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.readout__tipbtn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--rail-lit);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  filter: grayscale(0.6);
+  transition: filter 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.readout__tipbtn:hover,
+.readout__tipbtn.is-open {
+  filter: none;
+  border-color: var(--signal);
+  box-shadow: 0 0 12px rgba(255, 200, 61, 0.35);
+}
+.readout__tipbtn:focus-visible {
+  outline: 2px solid var(--signal-lit);
+  outline-offset: 2px;
+}
+.readout__tip {
+  margin: 0 0 0.8rem;
+  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--signal);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+.readout__tip strong { color: var(--signal-lit); }
 .readout__hint {
   display: block;
   margin-top: 0.4rem;

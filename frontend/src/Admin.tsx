@@ -1110,6 +1110,8 @@ export default function Admin() {
                 label={`Exercice de la manche ${state.current + 1} — affiché aux joueurs`}
                 value={state.target}
                 image={state.target_image}
+                consigne
+                tip={state.target_tip}
               />
             )}
             {phase === 'rating' && state?.reveal && (

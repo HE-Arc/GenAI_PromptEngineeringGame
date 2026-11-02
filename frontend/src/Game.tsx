@@ -524,7 +524,9 @@ export default function Game({
             {/* The one illuminated panel. The label says what the words below are for, which
                 is the piece the old "Reponse a atteindre" never did: this is not a response to
                 match, it is the answer you have to make the model produce. */}
+            {/* Keyed by round so an opened tip closes when the next exercise arrives. */}
             <Readout
+              key={state.current}
               label={
                 scored
                   ? `La cible de la manche ${state.current + 1}`
@@ -532,6 +534,8 @@ export default function Game({
               }
               value={state.target ?? '—'}
               image={state.target_image}
+              consigne={!!state.target}
+              tip={scored ? null : state.target_tip}
             />
 
             {!scored && exerciseContent(state.target) && (

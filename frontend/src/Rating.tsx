@@ -141,7 +141,7 @@ export default function Rating({
             what was asked, and the panel is the console's own way of drawing a fixed fact. */}
         <div className="ratehead">
           <p className="label">La cible de la manche</p>
-          <TargetText className="ratehead__target" text={state.target ?? '—'} />
+          <TargetText className="ratehead__target" text={state.target ?? '—'} consigne={!!state.target} />
           {state.target_image && (
             <img className="ratehead__image" src={state.target_image} alt="Image de l’exercice" />
           )}

@@ -56,6 +56,9 @@ pub struct QuizItem {
 pub struct Target {
     pub text: String,
     pub image: Option<String>,
+    // A hint the player can open from an icon while writing.
+    #[serde(default)]
+    pub tip: Option<String>,
     // What the critic grades the prompt on, shown to the player beside the
     // note: the note explains itself through these, not through prose.
     #[serde(default)]
@@ -82,6 +85,13 @@ pub fn image_for(target: &str) -> Option<String> {
         .iter()
         .find(|t| t.text == target)
         .and_then(|t| t.image.clone())
+}
+
+pub fn tip_for(target: &str) -> Option<String> {
+    targets()
+        .iter()
+        .find(|t| t.text == target)
+        .and_then(|t| t.tip.clone())
 }
 
 pub fn criteria_for(target: &str) -> Vec<String> {
@@ -1242,6 +1252,7 @@ pub async fn room_snapshot(
         "current": room.current,
         "total": total_rounds,
         "target_image": target.as_deref().and_then(image_for),
+        "target_tip": target.as_deref().and_then(tip_for),
         // Only while the class rates: a phone still writing must not hold the
         // checklist, not even in devtools.
         "target_criteria": if room.phase == "rating" {

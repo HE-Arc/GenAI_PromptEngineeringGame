@@ -375,13 +375,21 @@ export function Readout({
   value,
   code,
   image,
+  consigne,
+  tip,
 }: {
   label: string
   value: string
   code?: boolean
   // A picture the text refers to ("générez cette image"), shown under it.
   image?: string | null
+  // The value is an exercise: its first paragraph is labelled as the instruction.
+  consigne?: boolean
+  // A hint, hidden until the player taps the bulb, so reading it is a choice.
+  tip?: string | null
 }) {
+  const [tipOpen, setTipOpen] = useState(false)
+  const tipId = useId()
   const size = TIERS.find((t) => value.length <= t.max)!.size
   return (
     // The tier rides on the panel, not on the text, so every rule below can be written as
@@ -392,9 +400,29 @@ export function Readout({
         <CodeTiles label={label} value={value} />
       ) : (
         <>
-          <span className="readout__label">{label}</span>
+          <div className="readout__head">
+            <span className="readout__label">{label}</span>
+            {tip && (
+              <button
+                type="button"
+                className={`readout__tipbtn${tipOpen ? ' is-open' : ''}`}
+                aria-expanded={tipOpen}
+                aria-controls={tipId}
+                aria-label={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
+                title={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
+                onClick={() => setTipOpen((o) => !o)}
+              >
+                💡
+              </button>
+            )}
+          </div>
+          {tip && tipOpen && (
+            <p id={tipId} className="readout__tip">
+              <strong>Tip :</strong> {tip}
+            </p>
+          )}
           {/* Markdown, so an exercise's lists, emphasis and formulas render as they were written. */}
-          <TargetText className="readout__value" text={value} />
+          <TargetText className="readout__value" text={value} consigne={consigne} />
         </>
       )}
       {image && <img className="readout__image" src={image} alt="Image de l’exercice" />}
