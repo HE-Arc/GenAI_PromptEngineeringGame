@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, DangerButton, Readout, Roster, RosterList, Step } from './ui'
+import { AnswerMeter, Board, ConsoleBar, Criteria, DangerButton, Readout, Roster, RosterList, Step } from './ui'
 import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
 import { absent, ApiError, describe, listRooms, post, present, type Phase, type QuizState, type RoomSummary, type State } from './api'
@@ -1114,6 +1114,8 @@ export default function Admin() {
                 tip={state.target_tip}
               />
             )}
+            {/* Projected at the round's end only, with the notes it explains. */}
+            {phase === 'summary' && state && <Criteria items={state.target_criteria} />}
             {phase === 'rating' && state?.reveal && (
               <section className="stack" aria-label="Prompt en cours de notation">
                 <p className="label">Prompt noté en ce moment</p>

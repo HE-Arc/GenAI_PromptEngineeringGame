@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, Confetti, ConsoleBar, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
+import { AnswerMeter, Board, Confetti, ConsoleBar, Criteria, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
   absent,
@@ -509,6 +509,8 @@ export default function Game({
                   </div>
                 )
               })()}
+              {/* Beside the note, the grid it was given against: the player reads why. */}
+              <Criteria items={state.target_criteria} />
             </section>
           )}
 

@@ -187,7 +187,7 @@ export type State = {
   target_image: string | null
   // A hint for the exercise, opened from an icon while writing, or null.
   target_tip: string | null
-  // What the exercise is graded on. Sent only during the rating phase (empty otherwise), so a
+  // What the exercise is graded on. Sent only on the round summary (empty otherwise), so a
   // player writing a prompt cannot read them, not even in devtools.
   target_criteria: string[]
   // The clock of the phase on screen — writing a prompt, rating one — or null when nothing is

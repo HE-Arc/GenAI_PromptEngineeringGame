@@ -940,3 +940,19 @@ export function Confetti({ pieces = 70 }: { pieces?: number }) {
     document.body,
   )
 }
+
+// What an exercise is graded on. The server sends the list only on the round summary, so a
+// screen can render this unconditionally: it is empty, and draws nothing, at any other time.
+export function Criteria({ items }: { items: string[] }) {
+  if (items.length === 0) return null
+  return (
+    <section className="stack" aria-label="Critères de notation">
+      <p className="label">Critères de notation</p>
+      <ul className="prose prose--sm">
+        {items.map((c) => (
+          <li key={c}>{c}</li>
+        ))}
+      </ul>
+    </section>
+  )
+}
