@@ -1553,3 +1553,6 @@
     display: none;
   }
 }
+
+/* Scrolled to on a send: clears the sticky top rail so the panel's top is not under it. */
+.verdict { scroll-margin-top: 4.75rem; }

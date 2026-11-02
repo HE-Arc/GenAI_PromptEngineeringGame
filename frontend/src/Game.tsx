@@ -12,8 +12,11 @@ import {
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
-import { buzz, copyText, useCountUp } from './fx'
+import { buzz, copyText, reduced, useCountUp } from './fx'
 import type { AnswerFeed, Link } from './useRoom'
+
+// Same bound as the server's MAX_PROMPT_CHARS (server/src/ws/mod.rs).
+const MAX_PROMPT_CHARS = 2000
 
 type Result = { score: number; comment: string; output: string; round: number; truncated: boolean }
 
@@ -203,9 +206,9 @@ export default function Game({
         ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
         : ''
 
-  // The server refuses anything past 1000 characters, so the composer enforces the same
+  // The server refuses anything past MAX_PROMPT_CHARS, so the composer enforces the same
   // bound before sending: a submit the server would reject is a billed round-trip for nothing.
-  const tooLong = prompt.trim().length > 1000
+  const tooLong = prompt.trim().length > MAX_PROMPT_CHARS
   // Three prompts per round: the server refuses a fourth, the screen stops offering it.
   const attemptsLeft = Math.max(0, state.max_attempts - state.my_attempts)
   const outOfAttempts = attemptsLeft === 0
@@ -238,7 +241,7 @@ export default function Game({
     // Re-checked here, not only on the button: the bound is also enforced by `maxLength`,
     // but a value set past it must fail closed rather than ride a send the server rejects.
     if (tooLong) {
-      setErr('Ton prompt est trop long (1000 caractères maximum).')
+      setErr(`Ton prompt est trop long (${MAX_PROMPT_CHARS} caractères maximum).`)
       return
     }
     setErr('')
@@ -351,11 +354,22 @@ export default function Game({
     areaRef.current?.blur()
     const v = verdictRef.current
     if (!v) return
-    v.scrollIntoView({ block: 'nearest' })
+    // 'start': the score heads the panel, so its top is what the player must see first.
+    v.scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' })
     // Focus as well as scroll: `block: 'nearest'` moves the page, focus is what tells a
     // screen reader the player has just been handed something.
     v.focus()
   }, [result])
+
+  // The answer panel opens above the composer, out of sight once the player has scrolled down
+  // to write: bring its top into view as soon as the model starts, so the text is read where it
+  // is being written. Keyed on the panel opening, not on each chunk, so reading is never yanked.
+  const liveOpen = live !== null
+  useEffect(() => {
+    if (!liveOpen) return
+    areaRef.current?.blur()
+    verdictRef.current?.scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' })
+  }, [liveOpen])
 
   return (
     <div className="deck">
@@ -576,7 +590,7 @@ export default function Game({
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       placeholder="Décris la scène, le ton, la longueur…"
-                      maxLength={1000}
+                      maxLength={MAX_PROMPT_CHARS}
                       // The prompt is a piece of instruction, not prose. Autocorrect and the
                       // spellchecker are both actively hostile to it: they "fix" the deliberate
                       // misspellings and the invented vocabulary that make a model produce
@@ -605,7 +619,7 @@ export default function Game({
                     {submitLabel}
                   </button>
                   <p className="hint">
-                    {prompt.length} / 1000
+                    {prompt.length} / {MAX_PROMPT_CHARS}
                   </p>
                   <p className="hint">
                     <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer

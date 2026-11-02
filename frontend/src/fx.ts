@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react'
 
-const reduced = () =>
+export const reduced = () =>
   typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
 // A short tap on phones that support it (Android). iOS Safari has no vibration API, so this is a
