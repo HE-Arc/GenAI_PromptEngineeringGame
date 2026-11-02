@@ -1151,6 +1151,14 @@ export default function Admin() {
                 {state.error}
               </p>
             )}
+            {/* The host pressed on (or the clock ran out) while answers were still being
+                generated: the room moves on by itself once they land. */}
+            {state?.waiting_answers && state.phase === 'playing' && (
+              <p className="notice" role="status">
+                Des réponses sont encore en cours de génération : la manche se termine dès
+                qu’elles sont arrivées.
+              </p>
+            )}
 
             {/* What the phones are showing right now, so the host can talk about it without
                 looking over a shoulder: the didacticiel question, the exercise of the round, and

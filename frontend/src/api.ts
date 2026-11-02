@@ -231,6 +231,9 @@ export type State = {
   // facilitator's token-less console sees it too — and it expires server-side on its own, so a
   // screen draws it while it is present and forgets it the moment it clears.
   error: string | null
+  // The round is ending but waits for answers still being generated: no new prompt is taken,
+  // and the room moves on once they land. Optional: older servers do not send it.
+  waiting_answers?: boolean
 }
 
 // The cross-rating scale, declared here because this file is where the room-state contract

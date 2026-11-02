@@ -6,7 +6,7 @@ import type { State } from './api'
 export type AnswerEvent =
   | { kind: 'chunk'; player: string; delta: string }
   | { kind: 'scoring'; player: string }
-  | { kind: 'done'; player: string; score: number; feedback: string; truncated: boolean }
+  | { kind: 'done'; player: string; score: number; best: number; feedback: string; truncated: boolean }
   | { kind: 'error'; code: string; message: string }
 
 export interface RoomWsHandlers {
@@ -143,6 +143,8 @@ export function connectRoomWs(code: string, token: string, handlers: RoomWsHandl
             kind: 'done',
             player: msg.player as string,
             score: msg.score as number,
+            // The note the round keeps (best attempt so far); older servers send none.
+            best: typeof msg.best === 'number' ? msg.best : (msg.score as number),
             feedback: msg.feedback as string,
             // The token cap cut the answer short: the verdict screen says so.
             truncated: msg.truncated === true,

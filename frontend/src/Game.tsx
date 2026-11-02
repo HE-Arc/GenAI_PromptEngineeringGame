@@ -16,9 +16,10 @@ import { buzz, copyText, reduced, useCountUp } from './fx'
 import type { AnswerFeed, Link } from './useRoom'
 
 // Same bound as the server's MAX_PROMPT_CHARS (server/src/ws/mod.rs).
-const MAX_PROMPT_CHARS = 2000
+const MAX_PROMPT_CHARS = 4096
 
-type Result = { score: number; comment: string; output: string; round: number; truncated: boolean }
+// `best`: the note the round keeps, the best attempt so far (may beat `score`).
+type Result = { score: number; best: number; comment: string; output: string; round: number; truncated: boolean }
 
 // The one-word reaction over the score, the way a game shouts "Excellent !" before the number.
 // The material of an exercise without its instruction: every target opens with the
@@ -87,7 +88,7 @@ export default function Game({
     player: string
     text: string
     scoring: boolean
-    resolve: (v: { score: number; comment: string; text: string; truncated: boolean }) => void
+    resolve: (v: { score: number; best: number; comment: string; text: string; truncated: boolean }) => void
     reject: (e: unknown) => void
   } | null>(null)
 
@@ -178,6 +179,8 @@ export default function Game({
   // whatever round is live now, so the answer is refused rather than silently misfiled. The
   // stream reopens by itself within a few seconds and the button comes back.
   const stale = link !== 'live'
+  // The round is over but answers are still arriving: nothing new can be sent.
+  const ending = !scored && !!state.waiting_answers
 
   // What the wait is actually waiting on, in one sentence. `left` counts this player in — they
   // are present and on the stream — so being the only one left is `left === 1` while the box
@@ -207,7 +210,11 @@ export default function Game({
   // skipped while the screen was off). Two distinct sentences because they are two facts.
   const notice = state.error
     ? state.error
-    : missed
+    : ending
+      ? busy
+        ? 'La manche se termine : ta réponse arrive, la suite attend qu’elle soit prête.'
+        : 'La manche se termine : on attend les dernières réponses du modèle avant de continuer…'
+      : missed
       ? `La manche est passée de ${missed.from + 1} à ${missed.to + 1} pendant que l’écran était éteint. Ton prompt n’a pas été envoyé.`
       : stale
         ? 'Reconnexion en cours — ce que tu lis peut dater de la manche précédente.'
@@ -237,14 +244,16 @@ export default function Game({
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
   // button telling the player the model is still working when it stopped two seconds ago.
-  // Sending again is allowed while the round is open: a new attempt replaces the previous one.
+  // Sending again is allowed while the round is open: the best attempt is the one kept.
   const submitLabel = busy
     ? live?.scoring
       ? 'Le jury délibère…'
       : 'Le modèle réfléchit…'
     : stale
       ? 'En attente de la reconnexion…'
-      : conv
+      : ending
+        ? 'La manche se termine…'
+        : conv
         ? outOfAttempts
           ? 'Conversation terminée'
           : `Envoyer le prompt ${cur + 1}/${state.max_attempts}`
@@ -257,7 +266,7 @@ export default function Game({
   function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
     // Same refusals as the button, so a shortcut can never send what a click would not.
-    if (busy || stale || outOfAttempts || !text.trim() || tooLong) return
+    if (busy || stale || ending || outOfAttempts || !text.trim() || tooLong) return
     e.preventDefault()
     e.currentTarget.requestSubmit()
   }
@@ -282,7 +291,7 @@ export default function Game({
     const roundNow = state.current
     const slot = cur
     try {
-      const done = await new Promise<{ score: number; comment: string; text: string; truncated: boolean }>(
+      const done = await new Promise<{ score: number; best: number; comment: string; text: string; truncated: boolean }>(
         (resolve, reject) => {
           // Armed before the send: the server may answer faster than React re-renders,
           // and a frame landing before the waiter exists would wait forever.
@@ -291,7 +300,7 @@ export default function Game({
         },
       )
       const verdict = { score: done.score, comment: done.comment, output: done.text, truncated: done.truncated }
-      setResult({ score: verdict.score, comment: verdict.comment, output: verdict.output, round: roundNow, truncated: verdict.truncated })
+      setResult({ score: verdict.score, best: done.best, comment: verdict.comment, output: verdict.output, round: roundNow, truncated: verdict.truncated })
       setLive(null)
       // Only the verdict earns the round its answer. Not the first chunk: the row does not exist
       // until the `done` frame, and a composer disabled on the strength of a delta would lock a
@@ -347,7 +356,7 @@ export default function Game({
         w.scoring = true
       } else if (ev.kind === 'done') {
         waiterRef.current = null
-        w.resolve({ score: ev.score, comment: ev.feedback, text: w.text, truncated: ev.truncated })
+        w.resolve({ score: ev.score, best: ev.best, comment: ev.feedback, text: w.text, truncated: ev.truncated })
         return
       }
     }
@@ -451,7 +460,7 @@ export default function Game({
         <button
           type="submit"
           className="btn btn--signal btn--wide"
-          disabled={busy || stale || outOfAttempts || !text.trim() || tooLong}
+          disabled={busy || stale || ending || outOfAttempts || !text.trim() || tooLong}
         >
           {submitLabel}
         </button>
@@ -494,9 +503,11 @@ export default function Game({
                     ? outOfAttempts
                       ? `Tu as envoyé tes ${state.max_attempts} prompts : c’est toute la conversation qui sera notée.`
                       : `Continue la conversation (${noun(attemptsLeft, 'prompt restant', 'prompts restants')}) : le modèle se souvient des échanges précédents, et c’est toute la conversation qui est notée.`
-                    : outOfAttempts
-                      ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ce dernier prompt qui sera noté.`
-                      : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}
+                    : `${result.best > result.score ? `Cet essai fait moins bien : ta meilleure note (${fr(Math.round(result.best * 10) / 10)}/10) est gardée. ` : ''}${
+                        outOfAttempts
+                          ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ton meilleur prompt qui sera noté.`
+                          : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton meilleur essai compte.`
+                      }`}
                 </p>
               )}
               {/* A conversation's answers are read in its slots, in order, not here. */}

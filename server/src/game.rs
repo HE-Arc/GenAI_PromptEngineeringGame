@@ -23,7 +23,7 @@ pub const QUIZ_SECONDS_DEFAULT: i64 = 60;
 pub const QUIZ_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const ROUNDS_PER_GAME: usize = 10;
-// Prompts a player may send for one round; the last one sent is the one kept.
+// Prompts a player may send for one round; the best-scored one is kept.
 pub const MAX_ATTEMPTS: i64 = 3;
 // Image rounds allow fewer: each attempt is a billed picture.
 pub const MAX_IMAGE_ATTEMPTS: i64 = 2;
@@ -615,6 +615,55 @@ pub async fn advance(pool: &SqlitePool, code: &str) -> Result<(), String> {
     })
 }
 
+// Longest an ending round waits for answers still being generated: the play
+// stream and both verdicts, with margin. Past it the round closes anyway.
+pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(240);
+
+// The admin's next/skip while answers are still being generated: they land
+// first, so every player sees the answer they paid a prompt for. Returns true
+// when the action was deferred (the caller must not run it): the round takes
+// no new prompt, its clock stops so the ticker cannot close it under the
+// admin, and the action runs once the last answer is stored.
+pub async fn defer_while_answering(state: &AppState, code: &str, skip_round: bool) -> bool {
+    let pool = &state.pool;
+    let Ok(room) = load(pool, code).await else { return false };
+    if room.phase != "playing" {
+        return false;
+    }
+    let Some((round_id, _)) = current_round(pool, &room).await else { return false };
+    let hub = crate::hub::get_hub(&state.hubs, code).await;
+    if !hub.round_inflight(round_id).await {
+        return false;
+    }
+    // Already ending (a second click, or the clock got there first): one close.
+    if !hub.set_closing(room.current) {
+        return true;
+    }
+    let _ = sqlx::query("UPDATE room SET phase_deadline = NULL WHERE code = ? AND phase = 'playing'")
+        .bind(code)
+        .execute(pool)
+        .await;
+    tracing::info!(room = %code, round = room.current + 1, skip = skip_round, "round ending: waiting for answers in flight");
+    let _ = hub.republish(pool, code).await;
+    let state = state.clone();
+    let code = code.to_string();
+    let current = room.current;
+    tokio::spawn(async move {
+        hub.wait_round_idle(round_id, DRAIN_TIMEOUT).await;
+        // A restart while waiting starts another game: leave it alone.
+        match load(&state.pool, &code).await {
+            Ok(r) if r.phase == "playing" && r.current == current => {}
+            _ => return,
+        }
+        let r = if skip_round { skip(&state.pool, &code).await } else { advance(&state.pool, &code).await };
+        if let Err(e) = r {
+            tracing::warn!(room = %code, error = %e, "deferred round close failed");
+        }
+        let _ = hub.republish(&state.pool, &code).await;
+    });
+    true
+}
+
 async fn has_answers(pool: &SqlitePool, room: &GameRoom) -> bool {
     match current_round(pool, room).await {
         Some((id, _)) => !round_answers(pool, id).await.is_empty(),
@@ -816,6 +865,10 @@ pub async fn expire_phase(state: &AppState, code: &str) -> bool {
     if room.phase == "playing" {
         let hub = crate::hub::get_hub(&state.hubs, code).await;
         if hub.round_inflight(round_id).await {
+            // Said once, so the screens show why the round has not moved.
+            if hub.set_closing(room.current) {
+                let _ = hub.republish(pool, code).await;
+            }
             return false;
         }
     }

@@ -30,7 +30,7 @@ pub struct WsParams {
 const CLOSE_BAD_TOKEN: u16 = 4403;
 const CLOSE_UNKNOWN_ROOM: u16 = 4404;
 // Same bound the composer enforces (`maxLength`), checked again server-side.
-const MAX_PROMPT_CHARS: usize = 2000;
+const MAX_PROMPT_CHARS: usize = 4096;
 // Player-facing, so French: shown to the author and as the room notice.
 const CRASH_NOTICE: &str = "La partie a planté côté serveur. Préviens l'animateur.";
 // Stored and shown in place of a silent answer: a blank output box reads as
@@ -182,7 +182,14 @@ pub async fn begin_answer(
         });
     }
     // Only the writing phase takes prompts, and only while its clock runs.
+    let hub = get_hub(&state.hubs, code).await;
     match game::load(&state.pool, code).await {
+        Ok(g) if g.phase == "playing" && hub.is_closing(g.current) => {
+            return Err(AnswerReject {
+                code: "bad_phase",
+                message: "La manche se termine : plus de nouveau prompt.",
+            })
+        }
         Ok(g) if g.phase == "playing" && !g.phase_expired() => {}
         Ok(g) if g.phase == "playing" => {
             return Err(AnswerReject {
@@ -209,7 +216,6 @@ pub async fn begin_answer(
             message: "prompt too long",
         });
     }
-    let hub = get_hub(&state.hubs, code).await;
     if !hub.try_claim(round.id, player.id).await {
         return Err(AnswerReject {
             code: "inflight",
@@ -284,22 +290,36 @@ async fn insert_answer_row(
 ) -> Result<(), sqlx::Error> {
     // One write per answer: concurrent streams never contend on a shared
     // row, and busy_timeout absorbs the burst instead of locking. A retry
-    // replaces the earlier attempt, but only while the round is still being
+    // may replace the earlier attempt (see `better`), but only while the round is still being
     // written: a stream that lands after the rating opened must not swap the
     // prompt the class is rating. A failed retry (`replace` false) never
     // overwrites a good earlier attempt with the crash marker.
     // A crash marker counts as no attempt (0): a provider failure must not
     // eat one of the player's tries.
-    let on_conflict = if replace {
-        "ON CONFLICT (round_id, player_id) DO UPDATE SET
-            prompt = excluded.prompt, output = excluded.output, score = excluded.score,
-            comment = excluded.comment, quality_llm = excluded.quality_llm,
-            quality_comment = excluded.quality_comment, turns = excluded.turns,
-            attempts = attempts + 1
-         WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code
-                WHERE round.id = excluded.round_id) = 'playing'"
+    // The best attempt is kept, not the latest: a retry that scores lower
+    // only counts as a try. "Best" is the AI note (game::ai_score, scaled
+    // by 3), ties go to the newer attempt, and a crash marker (attempts 0)
+    // always gives way. A conversation is one growing chain: always replaced.
+    let better = if job.history.is_some() {
+        "1".to_string()
     } else {
-        "ON CONFLICT (round_id, player_id) DO NOTHING"
+        "(answer.attempts = 0 OR excluded.score + 2 * excluded.quality_llm
+             >= answer.score + 2 * COALESCE(answer.quality_llm, 0))"
+            .to_string()
+    };
+    let on_conflict = if replace {
+        let keep = |col: &str| format!("{col} = CASE WHEN {better} THEN excluded.{col} ELSE answer.{col} END");
+        format!(
+            "ON CONFLICT (round_id, player_id) DO UPDATE SET
+            {}, attempts = attempts + 1
+         WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code
+                WHERE round.id = excluded.round_id) = 'playing'",
+            ["prompt", "output", "score", "comment", "quality_llm", "quality_comment", "turns"]
+                .map(keep)
+                .join(",\n            ")
+        )
+    } else {
+        "ON CONFLICT (round_id, player_id) DO NOTHING".to_string()
     };
     // The row lands only while the round is being written: once the admin
     // has moved on (rating or summary), a late answer would join a round
@@ -453,15 +473,31 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 let verdict_ms = verdict_start.elapsed().as_millis() as u64;
                 tracing::debug!(room = %job.code, player_id = job.player_id, proximity = verdict.score, critic = critique.score, verdict_ms, "verdicts received");
                 let ai = game::ai_score(verdict.score, critique.score);
-                insert_answer_row(&state.pool, &job, &graded_prompt, &graded_output, turns.as_deref(), &verdict, &critique, true)
-                    .await
-                    .map(|_| (ai, truncated))
-                    .map_err(|e| e.to_string())
+                match insert_answer_row(&state.pool, &job, &graded_prompt, &graded_output, turns.as_deref(), &verdict, &critique, true).await {
+                    Ok(()) => {
+                        // The note the round keeps, which may be an earlier attempt's.
+                        let kept: Option<(i64, Option<i64>)> = sqlx::query_as(
+                            "SELECT score, quality_llm FROM answer WHERE round_id = ? AND player_id = ?",
+                        )
+                        .bind(job.round_id)
+                        .bind(job.player_id)
+                        .fetch_optional(&state.pool)
+                        .await
+                        .ok()
+                        .flatten();
+                        let best = match kept {
+                            Some((p, Some(c))) => game::ai_score(p, c),
+                            _ => ai,
+                        };
+                        Ok((ai, best, truncated))
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
             }
             Err(e) => Err(e),
         };
         match outcome {
-            Ok((ai, truncated)) => {
+            Ok((ai, best, truncated)) => {
                 tracing::info!(
                     room = %job.code,
                     player_id = job.player_id,
@@ -478,6 +514,7 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 job.hub.publish_event(WsOut::AnswerDone {
                     player,
                     score: ai,
+                    best,
                     feedback: String::new(),
                     truncated,
                 });
@@ -798,7 +835,7 @@ mod tests {
         };
         assert!(chunks >= 1, "stub must stream at least one chunk");
         assert!(matches!(done, WsOut::AnswerDone { .. }));
-        // A new attempt while the round is open replaces the first one.
+        // A new attempt while the round is open replaces the first one (equal stub notes: the newer wins).
         let job = begin_answer(&state, "EF56", &player.token, "third prompt")
             .await
             .expect("a retry is admitted while playing");
@@ -908,6 +945,171 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
             unreachable!("a failed stream is never graded")
         }
+    }
+
+    // Streams only once the test opens the gate: an answer still being
+    // generated when the admin ends the round.
+    struct GatedSource(Arc<tokio::sync::Notify>);
+
+    impl crate::llm::LlmSource for GatedSource {
+        fn stream_into(
+            &self,
+            _prompt: String,
+            tx: mpsc::UnboundedSender<String>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::StreamResult> + Send + '_>> {
+            Box::pin(async move {
+                self.0.notified().await;
+                let _ = tx.send("la réponse".into());
+                Ok(false)
+            })
+        }
+        fn score(
+            &self,
+            _p: &str,
+            _o: &str,
+            _t: &str,
+            _c: &[String],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
+            Box::pin(async { crate::llm::Verdict { score: 7, feedback: String::new() } })
+        }
+        fn grade_prompt(
+            &self,
+            _p: &str,
+            _t: &str,
+            _c: &[String],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
+            Box::pin(async { crate::llm::Verdict { score: 7, feedback: String::new() } })
+        }
+    }
+
+    // Notes a prompt by its words: "bon" earns 9, anything else 4.
+    struct ByWordSource;
+
+    impl crate::llm::LlmSource for ByWordSource {
+        fn stream_into(
+            &self,
+            _prompt: String,
+            tx: mpsc::UnboundedSender<String>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::StreamResult> + Send + '_>> {
+            Box::pin(async move {
+                let _ = tx.send("réponse".into());
+                Ok(false)
+            })
+        }
+        fn score(
+            &self,
+            p: &str,
+            _o: &str,
+            _t: &str,
+            _c: &[String],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
+            let score = if p.contains("bon") { 9 } else { 4 };
+            Box::pin(async move { crate::llm::Verdict { score, feedback: String::new() } })
+        }
+        fn grade_prompt(
+            &self,
+            p: &str,
+            t: &str,
+            c: &[String],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
+            self.score(p, "", t, c)
+        }
+    }
+
+    #[tokio::test]
+    async fn best_attempt_is_kept_not_the_latest() {
+        let pool = test_pool().await;
+        let mut state = AppState::new(pool.clone());
+        state.llm = Arc::new(ByWordSource);
+        rooms::create_room(&pool, "BE01").await.unwrap();
+        let ana = rooms::add_player(&pool, "BE01", "ana").await.unwrap();
+        sqlx::query("UPDATE round SET target = 'resume ce mail' WHERE room_code = 'BE01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'BE01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let hub = get_hub(&state.hubs, "BE01").await;
+        let mut erx = hub.subscribe_events().await;
+        let mut send = async |p: &str| {
+            let job = begin_answer(&state, "BE01", &ana.token, p).await.unwrap();
+            spawn_answer(state.clone(), job);
+            loop {
+                if let WsOut::AnswerDone { score, best, .. } = erx.recv().await.unwrap() {
+                    break (score, best);
+                }
+            }
+        };
+        assert_eq!(send("un bon prompt").await, (9.0, 9.0));
+        // Worse retry: counted as a try, but the round keeps the first one.
+        assert_eq!(send("vague").await, (4.0, 9.0));
+        let row = || async {
+            sqlx::query_as::<_, (String, i64)>("SELECT prompt, attempts FROM answer WHERE player_id = ?")
+                .bind(ana.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        };
+        assert_eq!(row().await, ("un bon prompt".to_string(), 2));
+        // A tie goes to the newer attempt.
+        assert_eq!(send("encore un bon").await, (9.0, 9.0));
+        assert_eq!(row().await, ("encore un bon".to_string(), 3));
+    }
+
+    #[tokio::test]
+    async fn admin_next_waits_for_answers_in_flight() {
+        let pool = test_pool().await;
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut state = AppState::new(pool.clone());
+        state.llm = Arc::new(GatedSource(gate.clone()));
+        rooms::create_room(&pool, "WT01").await.unwrap();
+        let ana = rooms::add_player(&pool, "WT01", "ana").await.unwrap();
+        let bob = rooms::add_player(&pool, "WT01", "bob").await.unwrap();
+        sqlx::query("UPDATE round SET target = 'resume ce mail' WHERE room_code = 'WT01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'WT01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let hub = get_hub(&state.hubs, "WT01").await;
+        let mut erx = hub.subscribe_events().await;
+        let job = begin_answer(&state, "WT01", &ana.token, "un prompt").await.unwrap();
+        spawn_answer(state.clone(), job);
+
+        assert!(game::defer_while_answering(&state, "WT01", false).await, "deferred while ana's answer streams");
+        assert_eq!(game::load(&pool, "WT01").await.unwrap().phase, "playing");
+        assert_eq!(hub.cached().await.1["waiting_answers"], true);
+        let err = match begin_answer(&state, "WT01", &bob.token, "trop tard").await {
+            Ok(_) => panic!("an ending round takes no new prompt"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "bad_phase");
+
+        gate.notify_one();
+        loop {
+            if let WsOut::AnswerDone { .. } = erx.recv().await.unwrap() {
+                break;
+            }
+        }
+        // The deferred advance runs once the answer is stored: ana's answer is rated.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while game::load(&pool, "WT01").await.unwrap().phase == "playing" {
+            assert!(std::time::Instant::now() < deadline, "the round must close after the answer");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(game::load(&pool, "WT01").await.unwrap().phase, "rating");
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM answer WHERE player_id = ?")
+            .bind(ana.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, 1, "the late answer is kept, not dropped");
+        // Nothing in flight: the admin's next runs at once.
+        assert!(!game::defer_while_answering(&state, "WT01", false).await);
     }
 
     // The stored target IS the exercice: an empty target refuses with an

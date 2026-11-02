@@ -668,6 +668,9 @@ pub async fn admin_next(
         Err(e) => return e.into_response(),
     };
     tracing::info!(room = %code, phase = %room.phase, "admin pressed next");
+    if game::defer_while_answering(&state, &code, false).await {
+        return (StatusCode::OK, Json(json!({"ok": true, "phase": room.phase, "waiting_answers": true}))).into_response();
+    }
     if let Err(e) = game::advance(&state.pool, &code).await {
         return err(StatusCode::CONFLICT, &e).into_response();
     }
@@ -693,6 +696,9 @@ pub async fn admin_skip(
         Err(e) => return e.into_response(),
     };
     tracing::info!(room = %code, phase = %room.phase, "admin pressed skip");
+    if game::defer_while_answering(&state, &code, true).await {
+        return (StatusCode::OK, Json(json!({"ok": true, "waiting_answers": true}))).into_response();
+    }
     if let Err(e) = game::skip(&state.pool, &code).await {
         return err(StatusCode::CONFLICT, &e).into_response();
     }

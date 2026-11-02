@@ -42,6 +42,9 @@ pub struct RoomHub {
     // One live LLM stream per (round, player); replaces the Django
     // process-local _inflight set so every Tokio task sees the same claims.
     inflight: Mutex<HashSet<(i64, i64)>>,
+    // The round (room.current) that is ending but still waits for answers
+    // being generated: no new prompt is taken, screens say why they wait.
+    closing: std::sync::Mutex<Option<i64>>,
     // Online players by id (admins excluded). A std Mutex: every critical
     // section is a few map ops with no await inside.
     presence: std::sync::Mutex<Presence>,
@@ -78,6 +81,7 @@ impl RoomHub {
             snapshot: RwLock::new((0, Value::Null)),
             events,
             inflight: Mutex::new(HashSet::new()),
+            closing: std::sync::Mutex::new(None),
             presence: std::sync::Mutex::new(Presence::default()),
             error: std::sync::Mutex::new(None),
             last_seen: std::sync::Mutex::new(Instant::now()),
@@ -126,6 +130,29 @@ impl RoomHub {
 
     pub async fn release(&self, round_id: i64, player_id: i64) {
         self.inflight.lock().await.remove(&(round_id, player_id));
+    }
+
+    // True when this call marked the round closing, false when it already was:
+    // the caller that marks it is the one that closes it.
+    pub fn set_closing(&self, current: i64) -> bool {
+        let mut c = self.closing.lock().unwrap();
+        if *c == Some(current) {
+            return false;
+        }
+        *c = Some(current);
+        true
+    }
+
+    pub fn is_closing(&self, current: i64) -> bool {
+        *self.closing.lock().unwrap() == Some(current)
+    }
+
+    // Polls until no answer of the round is being generated, or `limit`.
+    pub async fn wait_round_idle(&self, round_id: i64, limit: std::time::Duration) {
+        let until = Instant::now() + limit;
+        while self.round_inflight(round_id).await && Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     }
 
     // A round's clock must not close it while an answer is still streaming.
@@ -184,6 +211,9 @@ impl RoomHub {
             }
         };
         snap["error"] = self.current_error().into();
+        snap["waiting_answers"] = (snap["phase"] == "playing"
+            && snap["current"].as_i64().is_some_and(|c| self.is_closing(c)))
+        .into();
         self.built.store(covers, SeqCst);
         let seq = self.next_seq().await;
         self.publish_snapshot(seq, snap).await;
