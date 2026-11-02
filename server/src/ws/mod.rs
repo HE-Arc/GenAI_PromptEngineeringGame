@@ -166,10 +166,15 @@ pub async fn begin_answer(
         .ok()
         .flatten()
         .unwrap_or(0);
-    if used >= game::MAX_ATTEMPTS {
+    let max = game::max_attempts_for(&round.target);
+    if used >= max {
         return Err(AnswerReject {
             code: "too_many_attempts",
-            message: "Tu as utilisé tes 3 essais pour cette manche.",
+            message: if max == game::MAX_IMAGE_ATTEMPTS {
+                "Tu as utilisé tes 2 essais pour cette manche."
+            } else {
+                "Tu as utilisé tes 3 essais pour cette manche."
+            },
         });
     }
     // Only the writing phase takes prompts, and only while its clock runs.
@@ -920,5 +925,18 @@ mod tests {
         assert!(!data.is_empty());
         assert_eq!(score, critic, "no judge on an image round");
         assert!(critic >= game::MIN_AI_SCORE, "AI notes are floored");
+        // Two attempts on an image round, not three.
+        let job = begin_answer(&state, "IM01", &ana.token, "deuxieme essai").await.expect("second attempt");
+        spawn_answer(state.clone(), job);
+        loop {
+            if let WsOut::AnswerDone { .. } = erx.recv().await.unwrap() {
+                break;
+            }
+        }
+        let err = match begin_answer(&state, "IM01", &ana.token, "troisieme essai").await {
+            Ok(_) => panic!("a third attempt on an image round must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "too_many_attempts");
     }
 }

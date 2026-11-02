@@ -25,6 +25,8 @@ pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const ROUNDS_PER_GAME: usize = 10;
 // Prompts a player may send for one round; the last one sent is the one kept.
 pub const MAX_ATTEMPTS: i64 = 3;
+// Image rounds allow fewer: each attempt is a billed picture.
+pub const MAX_IMAGE_ATTEMPTS: i64 = 2;
 pub const ROUND_SECONDS: i64 = 180;
 pub const RATE_SECONDS: i64 = 30;
 // En mode automatique, le résumé reste affiché 30 s pour relire les réponses
@@ -90,6 +92,14 @@ pub fn image_for(target: &str) -> Option<String> {
 #[cfg(test)]
 pub fn targets_with_image() -> impl Iterator<Item = &'static str> {
     targets().iter().filter(|t| t.image.is_some()).map(|t| t.text.as_str())
+}
+
+pub fn max_attempts_for(target: &str) -> i64 {
+    if image_for(target).is_some() {
+        MAX_IMAGE_ATTEMPTS
+    } else {
+        MAX_ATTEMPTS
+    }
 }
 
 pub fn tip_for(target: &str) -> Option<String> {
@@ -1302,7 +1312,7 @@ pub async fn room_snapshot(
         "tutorial": room.tutorial != 0,
         "round_seconds": room.round_seconds,
         "rate_seconds": room.rate_seconds,
-        "max_attempts": MAX_ATTEMPTS,
+        "max_attempts": target.as_deref().map(max_attempts_for).unwrap_or(MAX_ATTEMPTS),
         "my_attempts": 0,
         "players": rows.into_iter().map(|r| r.2).collect::<Vec<_>>(),
         "online_count": online_count,

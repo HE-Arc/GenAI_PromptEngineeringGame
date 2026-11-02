@@ -209,7 +209,8 @@ export default function Game({
   // The server refuses anything past MAX_PROMPT_CHARS, so the composer enforces the same
   // bound before sending: a submit the server would reject is a billed round-trip for nothing.
   const tooLong = prompt.trim().length > MAX_PROMPT_CHARS
-  // Three prompts per round: the server refuses a fourth, the screen stops offering it.
+  // The round's attempt cap (3, or 2 on an image round): past it the server refuses, and the
+  // screen stops offering a send.
   const attemptsLeft = Math.max(0, state.max_attempts - state.my_attempts)
   const outOfAttempts = attemptsLeft === 0
   // What the button is waiting for. Two waits and two words: the pause after the text is two
