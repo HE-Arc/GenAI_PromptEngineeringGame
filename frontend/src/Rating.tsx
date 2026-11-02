@@ -3,7 +3,6 @@ import { AnswerMeter, ConsoleBar, PhaseClock, RoundTrack, ScoreScale } from './u
 import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
 import { buzz } from './fx'
-import { TargetText } from './ModelOutput'
 
 /* The cross-rating screen. The most constrained surface in the console, and the constraints are
  * the feature: a prompt, the target it was written against, and one number to give. */
@@ -136,18 +135,8 @@ export default function Rating({
 
         <PhaseClock timer={state.timer} what="pour noter ce prompt" />
 
-        {/* The target, read-only, above the prompt it is being judged against. It is not
-            decoration: you cannot tell whether a prompt asks for the right thing without knowing
-            what was asked, and the panel is the console's own way of drawing a fixed fact. */}
-        <div className="ratehead">
-          <p className="label">La cible de la manche</p>
-          <TargetText className="ratehead__target" text={state.target ?? '—'} consigne={!!state.target} />
-          {state.target_image && (
-            <img className="ratehead__image" src={state.target_image} alt="Image de l’exercice" />
-          )}
-
-        </div>
-
+        {/* No exercise here: the prompt is rated on its own, the instructions and their
+            material (email, image) are shown only while the prompt is being written. */}
         <div className="rateline">
           {/* `author_label` and never `author`: under anonymity the name is null and the screen
               would then have no label to draw at all, which is a branch on anonymity that exists

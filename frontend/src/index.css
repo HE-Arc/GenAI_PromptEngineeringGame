@@ -435,7 +435,9 @@ h2.label {
 }
 .area {
   min-height: 8rem;
-  resize: vertical;
+  /* AutoArea grows with the text: no inner scrollbar, no drag handle; the page scrolls. */
+  resize: none;
+  overflow-y: hidden;
 }
 .input--code {
   font-family: var(--font-display);

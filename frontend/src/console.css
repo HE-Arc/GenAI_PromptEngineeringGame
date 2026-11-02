@@ -1600,3 +1600,13 @@
   padding-bottom: 0;
   border-bottom: 0;
 }
+/* Later slots read as "coming next": present and writable, but quieter than the current one. */
+.thread__turn--later {
+  opacity: 0.75;
+}
+.thread__turn--later:focus-within {
+  opacity: 1;
+}
+.thread__turn--later .area {
+  min-height: 4.5rem;
+}

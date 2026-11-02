@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { countdown, fr, noun, nounOf } from './format'
 import { buzz, copyText, hueOf, initials, useWindowLength } from './fx'
@@ -963,5 +963,38 @@ export function ConfirmModal({
         ))}
       </div>
     </dialog>
+  )
+}
+
+function fitHeight(el: HTMLTextAreaElement | null) {
+  if (!el) return
+  // Shrink first, or scrollHeight never reports less than the current height.
+  el.style.height = 'auto'
+  // border-box: the borders sit outside scrollHeight and must be added back.
+  el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`
+}
+
+// A textarea as tall as its text, so a long prompt is read by scrolling the page rather than a
+// box a few lines high (on a phone the drag handle is out of reach). Measured after every
+// render, not only on input: a draft set from code (round change, restored text) resizes too.
+export function AutoArea({ ref, value, ...rest }: ComponentProps<'textarea'>) {
+  const inner = useRef<HTMLTextAreaElement | null>(null)
+  useLayoutEffect(() => fitHeight(inner.current), [value])
+  // A rotated phone rewraps the text: the height follows the new width.
+  useEffect(() => {
+    const onResize = () => fitHeight(inner.current)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return (
+    <textarea
+      {...rest}
+      value={value}
+      ref={(el) => {
+        inner.current = el
+        if (typeof ref === 'function') ref(el)
+        else if (ref) ref.current = el
+      }}
+    />
   )
 }

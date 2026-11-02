@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, Board, Confetti, ConsoleBar, Criteria, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
+import { AnswerMeter, AutoArea, Board, Confetti, ConsoleBar, Criteria, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
 import { fr, noun } from './format'
 import {
   absent,
@@ -60,6 +60,11 @@ export default function Game({
   sendPrompt: (prompt: string) => void
 }) {
   const [prompt, setPrompt] = useState('')
+  // Conversation rounds: one draft per prompt slot, so later steps can be written ahead.
+  const [drafts, setDrafts] = useState<string[]>([])
+  // Slots this screen has sent, counted locally: the `done` frame can land before the snapshot
+  // that carries the new turn, and the slot must not offer a second send in that gap.
+  const [sentCount, setSentCount] = useState(0)
   const [result, setResult] = useState<Result | null>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -136,6 +141,8 @@ export default function Game({
       setBusy(false)
     }
     setPrompt('')
+    setDrafts([])
+    setSentCount(0)
     setErr('')
     setSent(false)
     setLive(null)
@@ -208,15 +215,25 @@ export default function Game({
 
   // The server refuses anything past MAX_PROMPT_CHARS, so the composer enforces the same
   // bound before sending: a submit the server would reject is a billed round-trip for nothing.
-  const tooLong = prompt.trim().length > MAX_PROMPT_CHARS
-  // The round's attempt cap (3, or 2 on an image round): past it the server refuses, and the
-  // screen stops offering a send.
-  const attemptsLeft = Math.max(0, state.max_attempts - state.my_attempts)
-  const outOfAttempts = attemptsLeft === 0
   // A conversation round: sends add to the chain instead of replacing the last prompt.
   const conv = state.conversation
   // Older servers send no turns; an absent list is an empty conversation.
   const turns = state.my_turns ?? []
+  // The slot the next send fills; equal to max_attempts once the conversation is complete.
+  const cur = Math.max(turns.length, sentCount)
+  // What the next send carries: the current slot's draft, or the single field.
+  const text = conv ? (drafts[cur] ?? '') : prompt
+  const setDraft = (i: number, v: string) =>
+    setDrafts((d) => {
+      const next = [...d]
+      next[i] = v
+      return next
+    })
+  const tooLong = text.trim().length > MAX_PROMPT_CHARS
+  // The round's attempt cap (3, or 2 on an image round): past it the server refuses, and the
+  // screen stops offering a send.
+  const attemptsLeft = Math.max(0, state.max_attempts - state.my_attempts)
+  const outOfAttempts = attemptsLeft === 0
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
   // button telling the player the model is still working when it stopped two seconds ago.
@@ -230,7 +247,7 @@ export default function Game({
       : conv
         ? outOfAttempts
           ? 'Conversation terminée'
-          : `Envoyer le prompt ${state.my_attempts + 1}/${state.max_attempts}`
+          : `Envoyer le prompt ${cur + 1}/${state.max_attempts}`
         : outOfAttempts
           ? 'Plus d’essai pour cette manche'
           : alreadyDone
@@ -240,7 +257,7 @@ export default function Game({
   function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
     // Same refusals as the button, so a shortcut can never send what a click would not.
-    if (busy || stale || outOfAttempts || !prompt.trim() || tooLong) return
+    if (busy || stale || outOfAttempts || !text.trim() || tooLong) return
     e.preventDefault()
     e.currentTarget.requestSubmit()
   }
@@ -263,13 +280,14 @@ export default function Game({
     // reaches the screen. The `done` frame carries no round — the round is the
     // one the prompt was sent on — and the socket never truncates mid-frame.
     const roundNow = state.current
+    const slot = cur
     try {
       const done = await new Promise<{ score: number; comment: string; text: string; truncated: boolean }>(
         (resolve, reject) => {
           // Armed before the send: the server may answer faster than React re-renders,
           // and a frame landing before the waiter exists would wait forever.
           waiterRef.current = { player: myName, text: '', scoring: false, resolve, reject }
-          answerStart(sendPrompt, prompt)
+          answerStart(sendPrompt, text)
         },
       )
       const verdict = { score: done.score, comment: done.comment, output: done.text, truncated: done.truncated }
@@ -280,8 +298,8 @@ export default function Game({
       // player out of a round the server has not yet accepted — and lock them out of retrying
       // if the jury then falls over.
       // The prompt stays in the field: the next attempt is usually a correction of this one.
-      // Not in a conversation: the next prompt is the next step, and it now sits in the thread.
-      if (conv) setPrompt('')
+      // In a conversation the sent slot locks and the next one takes the keyboard.
+      if (conv) setSentCount(slot + 1)
       setSent(true)
     } catch (e) {
       // A refusal off the socket lands here through the waiter: nothing was
@@ -382,6 +400,122 @@ export default function Game({
     verdictRef.current?.scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' })
   }, [liveOpen])
 
+  // The field the next send is written in: the only one on a plain round, the current slot of
+  // a conversation.
+  const composer = (
+    <>
+      {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
+          reaching for the mouse is a textarea half-used. Cmd/Ctrl+Enter submits; a bare
+          Enter does not, because a prompt is instruction text and often wants line
+          breaks. The chord is also the guard the shortcut needs: it cannot be hit by
+          accident while a thumb or a hand is mid-word, which a bare-Enter submit could. */}
+      <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
+        <div className="field">
+          <label className="label" htmlFor="prompt">
+            {conv ? `Prompt ${cur + 1} sur ${state.max_attempts}` : 'Ton prompt'}
+          </label>
+          <AutoArea
+            id="prompt"
+            ref={areaRef}
+            className="area"
+            value={text}
+            onChange={(e) => (conv ? setDraft(cur, e.target.value) : setPrompt(e.target.value))}
+            placeholder={
+              conv
+                ? cur === 0
+                  ? 'Commence par donner le contexte et les informations utiles…'
+                  : 'Ton prompt suivant, dans la même conversation…'
+                : 'Décris la scène, le ton, la longueur…'
+            }
+            maxLength={MAX_PROMPT_CHARS}
+            // The prompt is a piece of instruction, not prose. Autocorrect and the
+            // spellchecker are both actively hostile to it: they "fix" the deliberate
+            // misspellings and the invented vocabulary that make a model produce
+            // something specific, and they do it while the player is mid-word.
+            autoCapitalize="sentences"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={busy}
+            // The message is a sentence about this field, so the field points at it. The
+            // prompt is never cleared on a failure — it is the work, and a rejected
+            // submission that ate it would be the real defect.
+            aria-invalid={err ? true : undefined}
+            aria-describedby={err ? 'prompt-err' : undefined}
+          />
+        </div>
+        {err && (
+          <p className="err err--inline" id="prompt-err" role="alert">
+            {err}
+          </p>
+        )}
+        <button
+          type="submit"
+          className="btn btn--signal btn--wide"
+          disabled={busy || stale || outOfAttempts || !text.trim() || tooLong}
+        >
+          {submitLabel}
+        </button>
+        <p className="hint">
+          {text.length} / {MAX_PROMPT_CHARS}
+        </p>
+        <p className="hint">
+          <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
+        </p>
+      </form>
+    </>
+  )
+
+  // The answer being written, then the verdict it becomes: one place in the document, so the
+  // text never jumps. Placed at the top of a plain round, inside the slots of a conversation.
+  const livePanel = live && (
+    <div className="verdict verdict--live" ref={verdictRef} tabIndex={-1}>
+              <div>
+                <p className="label verdict__livelabel">
+                  <span className="spinner" aria-hidden="true" />
+                  {live.scoring ? 'Le jury délibère…' : 'Le modèle écrit…'}
+                </p>
+                <ModelOutput text={live.text} streaming={!live.scoring} />
+              </div>
+            </div>
+  )
+  const resultPanel = result && (
+    <div className="verdict verdict--done" ref={verdictRef} tabIndex={-1} data-tier={result.score >= 7 ? 'high' : result.score >= 4 ? 'mid' : 'low'}>
+              {result.score >= 7 && <Confetti key={`${result.round}-${result.score}`} />}
+              <p className="verdict__cheer" aria-hidden="true">{cheer(result.score)}</p>
+              <div className="verdict__top">
+                <span className="verdict__score num"><ScoreUp score={result.score} /></span>
+                <span className="verdict__den">sur 10</span>
+                <span className="verdict__round">manche {result.round + 1}</span>
+              </div>
+              <ScoreScale score={result.score} />
+              {!scored && result.round === state.current && (
+                <p className="prose prose--sm prose--dim">
+                  {conv
+                    ? outOfAttempts
+                      ? `Tu as envoyé tes ${state.max_attempts} prompts : c’est toute la conversation qui sera notée.`
+                      : `Continue la conversation (${noun(attemptsLeft, 'prompt restant', 'prompts restants')}) : le modèle se souvient des échanges précédents, et c’est toute la conversation qui est notée.`
+                    : outOfAttempts
+                      ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ce dernier prompt qui sera noté.`
+                      : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}
+                </p>
+              )}
+              {/* A conversation's answers are read in its slots, in order, not here. */}
+              {!conv && <div>
+                <p className="label">Le modèle a répondu</p>
+                <ModelOutput text={result.output} />
+                {/* Said here because the truncation is a fact about the answer, not about the
+                    game: the note below was given for a text that stops mid-sentence, and a class
+                    reading a bad score deserves to know the answer is why. */}
+                {result.truncated && (
+                  <p className="prose prose--sm prose--dim">
+                    La réponse s’arrête ici : le modèle a atteint sa limite de longueur. C’est ce
+                    texte, coupé à cet endroit, que le jury a noté.
+                  </p>
+                )}
+              </div>}
+            </div>
+  )
+
   return (
     <div className="deck">
       <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
@@ -433,55 +567,9 @@ export default function Game({
             column, the standings fell under the composer, and a score on screen pushed the target
             into the narrow column. */}
         <div className="maincol">
-          {live && (
-            <div className="verdict verdict--live" ref={verdictRef} tabIndex={-1}>
-              <div>
-                <p className="label verdict__livelabel">
-                  <span className="spinner" aria-hidden="true" />
-                  {live.scoring ? 'Le jury délibère…' : 'Le modèle écrit…'}
-                </p>
-                <ModelOutput text={live.text} streaming={!live.scoring} />
-              </div>
-            </div>
-          )}
-
-          {result && (
-            <div className="verdict verdict--done" ref={verdictRef} tabIndex={-1} data-tier={result.score >= 7 ? 'high' : result.score >= 4 ? 'mid' : 'low'}>
-              {result.score >= 7 && <Confetti key={`${result.round}-${result.score}`} />}
-              <p className="verdict__cheer" aria-hidden="true">{cheer(result.score)}</p>
-              <div className="verdict__top">
-                <span className="verdict__score num"><ScoreUp score={result.score} /></span>
-                <span className="verdict__den">sur 10</span>
-                <span className="verdict__round">manche {result.round + 1}</span>
-              </div>
-              <ScoreScale score={result.score} />
-              {!scored && result.round === state.current && (
-                <p className="prose prose--sm prose--dim">
-                  {conv
-                    ? outOfAttempts
-                      ? `Tu as envoyé tes ${state.max_attempts} prompts : c’est toute la conversation qui sera notée.`
-                      : `Continue la conversation (${noun(attemptsLeft, 'prompt restant', 'prompts restants')}) : le modèle se souvient des échanges précédents, et c’est toute la conversation qui est notée.`
-                    : outOfAttempts
-                      ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ce dernier prompt qui sera noté.`
-                      : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}
-                </p>
-              )}
-              {/* A conversation's answers are read in the thread, in order, not here. */}
-              {!conv && <div>
-                <p className="label">Le modèle a répondu</p>
-                <ModelOutput text={result.output} />
-                {/* Said here because the truncation is a fact about the answer, not about the
-                    game: the note below was given for a text that stops mid-sentence, and a class
-                    reading a bad score deserves to know the answer is why. */}
-                {result.truncated && (
-                  <p className="prose prose--sm prose--dim">
-                    La réponse s’arrête ici : le modèle a atteint sa limite de longueur. C’est ce
-                    texte, coupé à cet endroit, que le jury a noté.
-                  </p>
-                )}
-              </div>}
-            </div>
-          )}
+          {/* A conversation draws these inside its slots, beside the prompt they answer. */}
+          {(!conv || scored) && livePanel}
+          {(!conv || scored) && resultPanel}
 
           {/* The synthesis of the round that has just been scored, above the target rather than
               on a screen of its own: what came of the last prompt is the reading the player does
@@ -557,18 +645,17 @@ export default function Game({
                 is the piece the old "Reponse a atteindre" never did: this is not a response to
                 match, it is the answer you have to make the model produce. */}
             {/* Keyed by round so an opened tip closes when the next exercise arrives. */}
-            <Readout
-              key={state.current}
-              label={
-                scored
-                  ? `La cible de la manche ${state.current + 1}`
-                  : 'Le modèle doit répondre'
-              }
-              value={state.target ?? '—'}
-              image={state.target_image}
-              consigne={!!state.target}
-              tip={scored ? null : state.target_tip}
-            />
+            {/* The exercise only while writing: the summary shows the note, not the instructions. */}
+            {!scored && (
+              <Readout
+                key={state.current}
+                label="Le modèle doit répondre"
+                value={state.target ?? '—'}
+                image={state.target_image}
+                consigne={!!state.target}
+                tip={state.target_tip}
+              />
+            )}
 
             {!scored && exerciseContent(state.target) && (
               <button
@@ -589,91 +676,61 @@ export default function Game({
               </button>
             )}
 
-            {/* The conversation so far, oldest first, above the field that continues it: the
-                player writes the next step while reading what the model already said. */}
+            {/* Every slot of a conversation on screen from the start, so the player sees at once
+                that the exercise takes several prompts. Sent slots lock and show the model's
+                answer; the next one sends; the later ones can be drafted ahead. */}
             {!scored && conv && (
               <section className="thread" aria-label="Ta conversation avec le modèle">
-                {turns.length === 0 ? (
-                  <p className="prose prose--sm prose--dim">
-                    Cet exercice se fait en plusieurs prompts ({state.max_attempts} au maximum) :
-                    chaque envoi continue la même conversation avec le modèle, qui se souvient des
-                    échanges précédents. C’est toute la conversation qui est notée.
-                  </p>
-                ) : (
-                  turns.map((t, i) => (
-                    <div className="thread__turn" key={i}>
-                      <p className="label">Ton prompt {i + 1}</p>
-                      <pre className="slot">{t.prompt}</pre>
-                      <p className="label">Le modèle a répondu</p>
-                      <ModelOutput text={t.output} />
+                <p className="prose prose--sm prose--dim">
+                  Cet exercice se fait en {state.max_attempts} prompts envoyés l’un après l’autre :
+                  chaque prompt continue la même conversation, et le modèle se souvient des
+                  échanges précédents. C’est toute la conversation qui est notée.
+                </p>
+                {Array.from({ length: state.max_attempts }, (_, i) => {
+                  const done = turns[i]
+                  if (done)
+                    return (
+                      <div className="thread__turn" key={i}>
+                        <p className="label">Prompt {i + 1} · envoyé</p>
+                        <pre className="slot">{done.prompt}</pre>
+                        <p className="label">Le modèle a répondu</p>
+                        <ModelOutput text={done.output} />
+                        {i === turns.length - 1 && resultPanel}
+                      </div>
+                    )
+                  if (i === cur) return <div className="thread__turn" key={i}>{composer}{livePanel}</div>
+                  // Sent this session but the snapshot with its turn has not landed yet.
+                  if (i < cur)
+                    return (
+                      <div className="thread__turn" key={i}>
+                        <p className="label">Prompt {i + 1} · envoyé</p>
+                        <pre className="slot">{drafts[i]}</pre>
+                        {i === cur - 1 && resultPanel}
+                      </div>
+                    )
+                  return (
+                    <div className="thread__turn thread__turn--later" key={i}>
+                      <label className="label" htmlFor={`prompt-${i}`}>
+                        Prompt {i + 1} sur {state.max_attempts} · à envoyer après le prompt {i}
+                      </label>
+                      <AutoArea
+                        id={`prompt-${i}`}
+                        className="area"
+                        value={drafts[i] ?? ''}
+                        onChange={(e) => setDraft(i, e.target.value)}
+                        placeholder={i === 1 ? 'Par exemple : demander une synthèse…' : i === 2 ? 'Par exemple : demander un test d’entraînement…' : 'Une relance, une correction…'}
+                        maxLength={MAX_PROMPT_CHARS}
+                        autoCapitalize="sentences"
+                        autoCorrect="off"
+                        spellCheck={false}
+                      />
                     </div>
-                  ))
-                )}
+                  )
+                })}
               </section>
             )}
 
-            {!scored && (
-              <>
-                {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
-                    reaching for the mouse is a textarea half-used. Cmd/Ctrl+Enter submits; a bare
-                    Enter does not, because a prompt is instruction text and often wants line
-                    breaks. The chord is also the guard the shortcut needs: it cannot be hit by
-                    accident while a thumb or a hand is mid-word, which a bare-Enter submit could. */}
-                <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
-                  <div className="field">
-                    <label className="label" htmlFor="prompt">
-                      {conv ? `Ton prompt ${Math.min(state.my_attempts + 1, state.max_attempts)} sur ${state.max_attempts}` : 'Ton prompt'}
-                    </label>
-                    <textarea
-                      id="prompt"
-                      ref={areaRef}
-                      className="area"
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      placeholder={
-                        conv
-                          ? turns.length === 0
-                            ? 'Commence par donner le contexte et les informations utiles…'
-                            : 'Ton prompt suivant, dans la même conversation…'
-                          : 'Décris la scène, le ton, la longueur…'
-                      }
-                      maxLength={MAX_PROMPT_CHARS}
-                      // The prompt is a piece of instruction, not prose. Autocorrect and the
-                      // spellchecker are both actively hostile to it: they "fix" the deliberate
-                      // misspellings and the invented vocabulary that make a model produce
-                      // something specific, and they do it while the player is mid-word.
-                      autoCapitalize="sentences"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      disabled={busy}
-                      // The message is a sentence about this field, so the field points at it. The
-                      // prompt is never cleared on a failure — it is the work, and a rejected
-                      // submission that ate it would be the real defect.
-                      aria-invalid={err ? true : undefined}
-                      aria-describedby={err ? 'prompt-err' : undefined}
-                    />
-                  </div>
-                  {err && (
-                    <p className="err err--inline" id="prompt-err" role="alert">
-                      {err}
-                    </p>
-                  )}
-                  <button
-                    type="submit"
-                    className="btn btn--signal btn--wide"
-                    disabled={busy || stale || outOfAttempts || !prompt.trim() || tooLong}
-                  >
-                    {submitLabel}
-                  </button>
-                  <p className="hint">
-                    {prompt.length} / {MAX_PROMPT_CHARS}
-                  </p>
-                  <p className="hint">
-                    <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
-                  </p>
-                </form>
-              </>
-            )}
+            {!scored && !conv && composer}
 
             {scored && (
               <p className="prose prose--dim">
