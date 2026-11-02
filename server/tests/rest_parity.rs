@@ -343,20 +343,19 @@ async fn join_same_pseudo_after_start_rejoins_ok() {
 }
 
 #[tokio::test]
-async fn admin_next_during_rating_409_vote_en_cours() {
-    // Pendant la notation, « prompt suivant » attend la fin du vote ; une
-    // fois le résumé affiché, la reprise manuelle remarche.
+async fn admin_next_and_skip_always_move_the_game() {
+    // The admin is never blocked: an empty round closes into its summary,
+    // rating can be skipped, and so can the didacticiel.
     let (server, pool, _) = server_with_pool().await;
     rooms::create_room(&pool, "VT17").await.unwrap();
-    sqlx::query("UPDATE room SET tutorial = 0 WHERE code = 'VT17'")
-        .execute(&pool)
-        .await
-        .unwrap();
     server::game::start_game(&pool, "VT17").await.unwrap();
-    sqlx::query("UPDATE room SET phase = 'rating' WHERE code = 'VT17'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let phase = |pool: sqlx::SqlitePool| async move {
+        sqlx::query_scalar::<_, String>("SELECT phase FROM room WHERE code = 'VT17'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(phase(pool.clone()).await, "quiz");
 
     let login = server
         .post("/api/admin/login")
@@ -373,23 +372,31 @@ async fn admin_next_during_rating_409_vote_en_cours() {
         .next()
         .unwrap()
         .to_owned();
+    let post = |path: &'static str| server.post(path).add_header("cookie", cookie.clone());
 
-    let blocked = server
-        .post("/api/admin/rooms/VT17/next")
-        .add_header("cookie", cookie.clone())
-        .await;
-    blocked.assert_status(axum::http::StatusCode::CONFLICT);
-    blocked.assert_text(r#"{"error":"vote en cours"}"#);
+    // Skip the didacticiel: straight to the first round.
+    post("/api/admin/rooms/VT17/skip").await.assert_status_ok();
+    assert_eq!(phase(pool.clone()).await, "playing");
+    // Nobody wrote: "next" closes the round into its summary.
+    post("/api/admin/rooms/VT17/next").await.assert_status_ok();
+    assert_eq!(phase(pool.clone()).await, "summary");
+    // Nothing to skip on a summary.
+    post("/api/admin/rooms/VT17/skip")
+        .await
+        .assert_status(axum::http::StatusCode::CONFLICT);
 
-    sqlx::query("UPDATE room SET phase = 'summary' WHERE code = 'VT17'")
+    // A rating in progress: "next" moves on, and skip ends the rating.
+    sqlx::query("UPDATE room SET phase = 'rating' WHERE code = 'VT17'")
         .execute(&pool)
         .await
         .unwrap();
-    let resumed = server
-        .post("/api/admin/rooms/VT17/next")
-        .add_header("cookie", cookie)
-        .await;
-    resumed.assert_status_ok();
+    post("/api/admin/rooms/VT17/next").await.assert_status_ok();
+    sqlx::query("UPDATE room SET phase = 'rating' WHERE code = 'VT17'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    post("/api/admin/rooms/VT17/skip").await.assert_status_ok();
+    assert_eq!(phase(pool.clone()).await, "summary");
 }
 
 #[tokio::test]

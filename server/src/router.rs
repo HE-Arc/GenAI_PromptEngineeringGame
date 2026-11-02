@@ -113,6 +113,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/admin/rooms/:code/start", post(rest::admin_start))
         .route("/api/admin/rooms/:code/next", post(rest::admin_next))
+        .route("/api/admin/rooms/:code/skip", post(rest::admin_skip))
         .route("/api/admin/rooms/:code", delete(rest::admin_delete))
         .route("/api/admin/rooms/:code/restart", post(rest::admin_restart))
         .route("/api/rooms/:code/join", get(rest::join_get).post(rest::join))

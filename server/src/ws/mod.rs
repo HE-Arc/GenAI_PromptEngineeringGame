@@ -269,9 +269,14 @@ async fn insert_answer_row(
     } else {
         "ON CONFLICT (round_id, player_id) DO NOTHING"
     };
+    // The row lands only while the round is being written: once the admin
+    // has moved on (rating or summary), a late answer would join a round
+    // already rated or settled, so it is dropped.
     sqlx::query(&format!(
         "INSERT INTO answer (round_id, player_id, prompt, output, score, comment, quality_llm, quality_comment, attempts)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) {on_conflict}"
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code WHERE round.id = ?) = 'playing'
+         {on_conflict}"
     ))
     .bind(job.round_id)
     .bind(job.player_id)
@@ -282,6 +287,7 @@ async fn insert_answer_row(
     .bind(critique.score)
     .bind(&critique.feedback)
     .bind(if replace { 1 } else { 0 })
+    .bind(job.round_id)
     .execute(pool)
     .await?;
     Ok(())

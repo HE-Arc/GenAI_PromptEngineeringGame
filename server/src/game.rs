@@ -570,6 +570,8 @@ pub async fn advance(pool: &SqlitePool, code: &str) -> Result<(), String> {
                 go(pool, &room, "playing").await.map(|_| ())
             }
         }
+        // Nothing to rate: the round closes into its summary, as the clock does.
+        "playing" if !has_answers(pool, &room).await => close_round(pool, &room).await,
         "playing" => open_rating(pool, &room).await,
         "rating" => match current_round(pool, &room).await {
             Some((_, revealed)) => advance_reveal_and_settle(pool, &room, revealed).await,
@@ -584,12 +586,32 @@ pub async fn advance(pool: &SqlitePool, code: &str) -> Result<(), String> {
     })
 }
 
-pub async fn round_has_answers(pool: &SqlitePool, code: &str) -> bool {
-    let Ok(room) = load(pool, code).await else { return false };
-    match current_round(pool, &room).await {
+async fn has_answers(pool: &SqlitePool, room: &GameRoom) -> bool {
+    match current_round(pool, room).await {
         Some((id, _)) => !round_answers(pool, id).await.is_empty(),
         None => false,
     }
+}
+
+// Straight to the summary, settled with whatever ratings exist (none: the
+// final note is the AI's).
+async fn close_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Error> {
+    if go(pool, room, "summary").await? {
+        settle_round(pool, room).await?;
+    }
+    Ok(())
+}
+
+// The admin's skip: the didacticiel jumps to the first round, a round being
+// written or rated jumps to its summary.
+pub async fn skip(pool: &SqlitePool, code: &str) -> Result<(), String> {
+    let room = load(pool, code).await.map_err(|e| e.to_string())?;
+    let r = match room.phase.as_str() {
+        "quiz" => go(pool, &room, "playing").await.map(|_| ()),
+        "playing" | "rating" => close_round(pool, &room).await,
+        other => return Err(format!("rien à passer en phase {other}")),
+    };
+    r.map_err(|e| e.to_string())
 }
 
 // --- automatic advances ---------------------------------------------------
@@ -786,9 +808,7 @@ pub async fn expire_phase(state: &AppState, code: &str) -> bool {
     } else if round_answers(pool, round_id).await.is_empty() {
         // An unanswered round is still a round: it gets its summary with
         // `rows: []` instead of staying silent on `playing`.
-        if go(pool, &room, "summary").await.unwrap_or(false) {
-            let _ = settle_round(pool, &room).await;
-        }
+        let _ = close_round(pool, &room).await;
     } else {
         let _ = open_rating(pool, &room).await;
     }

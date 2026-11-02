@@ -1556,3 +1556,29 @@
 
 /* Scrolled to on a send: clears the sticky top rail so the panel's top is not under it. */
 .verdict { scroll-margin-top: 4.75rem; }
+
+/* ---- confirm dialog ------------------------------------------------------------------ */
+.confirm {
+  width: min(28rem, calc(100vw - 2rem));
+  padding: 1.25rem 1.25rem 1rem;
+  border: 1px solid var(--rail-lit);
+  color: var(--ink);
+}
+.confirm::backdrop {
+  background: rgba(5, 0, 24, 0.65);
+  backdrop-filter: blur(3px);
+}
+.confirm__title {
+  margin: 0 0 0.6rem;
+  font-size: 1.2rem;
+  line-height: 1.2;
+}
+.confirm__body p { margin: 0 0 0.5rem; }
+.confirm__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+.confirm__actions .btn { flex: 1 1 auto; }

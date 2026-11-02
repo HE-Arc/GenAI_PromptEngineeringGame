@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { AnswerMeter, Board, ConsoleBar, Criteria, DangerButton, Readout, Roster, RosterList, Step } from './ui'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { AnswerMeter, Board, ConfirmModal, ConsoleBar, Criteria, Readout, Roster, RosterList, Step, type ConfirmChoice } from './ui'
 import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
 import { absent, ApiError, describe, listRooms, post, present, type Phase, type QuizState, type RoomSummary, type State } from './api'
@@ -70,7 +70,13 @@ const PHASE_NAME: Record<Phase | 'connecting', string> = {
 // snapshot — so the label is derived here rather than stored, because a button label a host has
 // to keep in step with a state machine is a label that will be wrong during the round the host
 // most needs to trust it.
-function advanceLabel(phase: Phase, quiz: QuizState | null, windowClosed: boolean): string | null {
+function advanceLabel(
+  phase: Phase,
+  quiz: QuizState | null,
+  windowClosed: boolean,
+  submitted: number,
+  lastPrompt: boolean,
+): string | null {
   switch (phase) {
     case 'waiting':
       return 'Lancer la partie'
@@ -79,15 +85,19 @@ function advanceLabel(phase: Phase, quiz: QuizState | null, windowClosed: boolea
       if (!windowClosed) return 'Fermer la question'
       return quiz.index + 1 >= quiz.total ? 'Ouvrir la partie' : 'Question suivante'
     case 'playing':
-      return 'Ouvrir la notation'
+      // Nothing to rate: the same press closes the round into its summary.
+      return submitted === 0 ? 'Passer la manche' : 'Ouvrir la notation'
     case 'rating':
-      return 'Prompt suivant'
+      return lastPrompt ? 'Terminer la notation' : 'Prompt suivant'
     case 'summary':
       return 'Manche suivante'
     case 'done':
       return null
   }
 }
+
+// A confirm waiting for the host, tied to the room state it was asked about (`key`).
+type Pending = { key: string; title: string; body: ReactNode; choices: ConfirmChoice[] }
 
 // One block of plain French about where the game is. Four parts and no more: what the phase is
 // called, one sentence about the state of it, the counts, and what the host can do about it.
@@ -499,7 +509,7 @@ export default function Admin() {
   // and with the relaunch as the only control left to arm there is nothing to confuse. The key
   // is the part that survives a phase moving underneath it, which is why this is now a bare
   // string rather than `null`.
-  const [armed, setArmed] = useState<string | null>(null)
+  const [pending, setPending] = useState<Pending | null>(null)
   // Whether the session is alive, and `null` for the only state that is not an answer: between
   // mounting and the check below coming back, nobody knows.
   //
@@ -612,7 +622,7 @@ export default function Admin() {
         verified.current = false
         setCode(null)
         setErr('')
-        setArmed(null)
+        setPending(null)
         setGoneNotice('Cette partie a été supprimée après une période d’inactivité.')
       } catch {
         // Probe failed: leave the retry screen in place.
@@ -828,8 +838,18 @@ export default function Admin() {
   // The phase is part of the arm key as well as the round: an advance moves the phase, and a
   // confirm must never survive it.
   const roomKeyNow = `${code}:${phase}:${state?.current ?? 0}`
-  const arm = () => setArmed(roomKeyNow)
-  const armedNow = armed === roomKeyNow
+  // A confirm is shown only for the room state it was asked about: if the phase or round moves
+  // under it, it closes rather than confirming an action meant for a screen that is gone.
+  const pendingNow = pending?.key === roomKeyNow ? pending : null
+  const ask = (p: Omit<Pending, 'key'>) => setPending({ ...p, key: roomKeyNow })
+  // Every confirm closes itself before running its action.
+  const choice = (label: string, act: () => unknown): ConfirmChoice => ({
+    label,
+    onChoose: () => {
+      setPending(null)
+      void act()
+    },
+  })
 
   // The window's state, on the host's screen as well as the players'. `revealed` is the server's
   // own word and it only turns on the next frame; the comparison turns at the deadline itself, so
@@ -840,14 +860,59 @@ export default function Admin() {
   // `null` means there is no honest button: before the first frame the console does not know
   // whether the room is in the lobby or mid-game, and a disabled "Lancer la partie" would be
   // wrong half the time. `done` is the other null, and that one is honest.
-  const advance = phase === 'connecting' ? null : advanceLabel(phase, quizState, quizClosed)
-  // Prompts submitted this round, read off the snapshot like every other figure on this
-  // screen. The server refuses the advance on an empty round, so the button stays disabled
-  // rather than offering a press that cannot work.
+  // Prompts submitted this round, read off the snapshot like every other figure on this screen.
   const submitted = players.filter((p) => p.answered).length
-  const advanceBlocked = phase === 'playing' && submitted === 0
-  // Pendant la notation, le serveur refuse l'avance : bouton verrouillé.
-  const voteOngoing = phase === 'rating'
+  const reveal = state?.reveal ?? null
+  const lastPrompt = reveal !== null && reveal.index + 1 >= reveal.count
+  const advance = phase === 'connecting' ? null : advanceLabel(phase, quizState, quizClosed, submitted, lastPrompt)
+  // Why the advance cuts players off, or null when it cuts nobody off. The host can always move
+  // on; this only decides whether they are asked first.
+  const advanceWarning = ((): string | null => {
+    switch (phase) {
+      case 'quiz': {
+        const q = state?.quiz
+        if (!q || quizClosed || q.done >= q.online_count) return null
+        return `${noun(q.online_count - q.done, 'joueur n’a', 'joueurs n’ont')} pas encore répondu : la question se ferme pour tout le monde.`
+      }
+      case 'playing':
+        if (submitted === 0) return 'Personne n’a envoyé de prompt : la manche passe directement au résumé, sans notation.'
+        if (left > 0)
+          return `${noun(left, 'joueur n’a', 'joueurs n’ont')} pas encore envoyé de prompt : ils ne pourront plus répondre à cette manche, et un prompt en cours de génération sera perdu.`
+        return null
+      case 'rating': {
+        // Everyone present but the author can rate; anonymity hides who the author is, so this
+        // counts one rater fewer than the room, which is exact when the author is online.
+        const raters = Math.max(0, here.length - 1)
+        if (!reveal || reveal.rated >= raters) return null
+        return `${noun(raters - reveal.rated, 'joueur n’a', 'joueurs n’ont')} pas encore noté ce prompt : ${lastPrompt ? 'la notation se termine' : 'on passe au suivant'} sans attendre.`
+      }
+      default:
+        return null
+    }
+  })()
+  // The second way forward: past the rest of the didacticiel, or past the class's rating.
+  const skip = ((): { label: string; body: string } | null => {
+    switch (phase) {
+      case 'quiz':
+        return {
+          label: 'Passer le didacticiel',
+          body: 'Les questions restantes du didacticiel sont sautées et la première manche s’ouvre tout de suite. Impossible d’y revenir.',
+        }
+      case 'playing':
+        if (submitted === 0) return null
+        return {
+          label: 'Passer la notation',
+          body: `La manche va directement au résumé, sans notation par la classe : la note finale de chaque prompt sera celle de l’IA.${left > 0 ? ` ${noun(left, 'joueur n’a', 'joueurs n’ont')} pas encore envoyé de prompt et ne pourront plus répondre.` : ''}`,
+        }
+      case 'rating':
+        return {
+          label: 'Passer la notation',
+          body: 'La notation s’arrête et la manche va au résumé. Les notes déjà données comptent ; les prompts pas encore notés gardent la note de l’IA.',
+        }
+      default:
+        return null
+    }
+  })()
 
   // Where the game is, in one block. Every figure is read off the snapshot and nothing is stored,
   // so the block cannot disagree with the instruments below it — which is the failure it is
@@ -995,7 +1060,7 @@ export default function Admin() {
     // Nothing to report about a room that is gone, and the list being revealed is a different
     // screen from the one the error belongs to.
     setErr('')
-    setArmed(null)
+    setPending(null)
   }
 
   // The code in localStorage outlives the room behind it: the database was reset, or the
@@ -1186,34 +1251,55 @@ export default function Admin() {
             )}
 
             <div className="actions">
+              {pendingNow && (
+                <ConfirmModal
+                  title={pendingNow.title}
+                  body={pendingNow.body}
+                  choices={pendingNow.choices}
+                  onCancel={() => setPending(null)}
+                />
+              )}
               {advance && (
                 <button
                   type="button"
                   className="btn btn--signal btn--wide"
-                  disabled={busy || advanceBlocked || voteOngoing}
-                  title={voteOngoing ? 'Vote en cours…' : undefined}
-                  onClick={() =>
-                    void run(async () => {
-                      // `start` for an empty room and `next` for everything after it. The lobby
-                      // is the one phase where the transition is a different endpoint rather than
-                      // the same one resolving differently, and it is the only one that has one.
-                      if (phase === 'waiting') {
-                        // Only the edited settings are sent: the rest stay as the room has them.
-                        await post(`/api/admin/rooms/${code}/start`, draft)
-                        setDraft({})
-                      } else {
-                        await post(`/api/admin/rooms/${code}/next`)
-                      }
-                    })
-                  }
+                  disabled={busy}
+                  onClick={() => {
+                    const go = () =>
+                      run(async () => {
+                        // `start` for an empty room and `next` for everything after it. The lobby
+                        // is the one phase where the transition is a different endpoint rather
+                        // than the same one resolving differently, and it is the only one.
+                        if (phase === 'waiting') {
+                          // Only the edited settings are sent: the rest stay as the room has them.
+                          await post(`/api/admin/rooms/${code}/start`, draft)
+                          setDraft({})
+                        } else {
+                          await post(`/api/admin/rooms/${code}/next`)
+                        }
+                      })
+                    if (advanceWarning) ask({ title: `${advance} ?`, body: <p>{advanceWarning}</p>, choices: [choice(advance, go)] })
+                    else void go()
+                  }}
                 >
                   {advance}
                 </button>
               )}
-              {advanceBlocked && (
-                <p className="prose prose--sm prose--dim" role="status">
-                  En attente d’au moins un prompt pour ouvrir la notation.
-                </p>
+              {skip && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--wide"
+                  disabled={busy}
+                  onClick={() =>
+                    ask({
+                      title: `${skip.label} ?`,
+                      body: <p>{skip.body}</p>,
+                      choices: [choice(skip.label, () => run(() => post(`/api/admin/rooms/${code}/skip`)))],
+                    })
+                  }
+                >
+                  {skip.label}
+                </button>
               )}
 
               {/* Until the first frame lands the console cannot know whether the room is in the
@@ -1232,7 +1318,19 @@ export default function Admin() {
                   room picks the other. */}
               {phase === 'done' ? (
                 <>
-                  <RelaunchButtons busy={busy} primary onRestart={restart} />
+                  <RelaunchButtons
+                    busy={busy}
+                    primary
+                    onRestart={(withTutorial) =>
+                      ask({
+                        title: 'Relancer la partie ?',
+                        body: <p>Les résultats de cette partie sont effacés et les mêmes joueurs repartent de zéro. Impossible de revenir en arrière.</p>,
+                        choices: [
+                          choice(withTutorial ? 'Relancer avec le didacticiel' : 'Relancer sans didacticiel', () => restart(withTutorial)),
+                        ],
+                      })
+                    }
+                  />
                   {/* Visible seulement une fois la partie terminée : efface la
                       partie côté serveur après confirmation, puis retourne à
                       la liste. */}
@@ -1241,18 +1339,22 @@ export default function Admin() {
                     className="btn btn--ghost btn--wide"
                     disabled={busy}
                     onClick={() =>
-                      void run(async () => {
-                        if (!window.confirm('Effacer la partie ?')) return
-                        const res = await fetch(`/api/admin/rooms/${code}`, { method: 'DELETE' })
-                        if (!res.ok) {
-                          const data = await res.json().catch(() => ({}))
-                          throw new ApiError(
-                            res.status,
-                            (data as { error?: string }).error ?? `HTTP ${res.status}`,
-                          )
-                        }
-                        abandon()
-                      }, lostSession)
+                      ask({
+                        title: 'Effacer la partie ?',
+                        body: <p>La partie, ses joueurs et toutes leurs notes sont supprimés du serveur. Impossible de revenir en arrière.</p>,
+                        choices: [
+                          choice('Effacer la partie', () =>
+                            run(async () => {
+                              const res = await fetch(`/api/admin/rooms/${code}`, { method: 'DELETE' })
+                              if (!res.ok) {
+                                const data = await res.json().catch(() => ({}))
+                                throw new ApiError(res.status, (data as { error?: string }).error ?? `HTTP ${res.status}`)
+                              }
+                              abandon()
+                            }, lostSession),
+                          ),
+                        ],
+                      })
                     }
                   >
                     Effacer la partie
@@ -1261,14 +1363,30 @@ export default function Admin() {
               ) : (
                 phase !== 'waiting' &&
                 phase !== 'connecting' && (
-                  <DangerButton
-                    label="Relancer avec les mêmes joueurs"
-                    armedLabel="Confirmer : effacer la partie en cours"
-                    confirming={armedNow}
+                  <div className="guard">
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--wide"
                     disabled={busy}
-                    choices={<RelaunchButtons busy={busy} primary={false} onRestart={restart} />}
-                    onArm={arm}
-                  />
+                    onClick={() =>
+                      ask({
+                        title: 'Relancer la partie ?',
+                        body: (
+                          <p>
+                            La partie en cours est effacée : manches, prompts et notes. Les mêmes joueurs
+                            repartent de zéro. Impossible de revenir en arrière.
+                          </p>
+                        ),
+                        choices: [
+                          choice('Relancer avec le didacticiel', () => restart(true)),
+                          choice('Relancer sans didacticiel', () => restart(false)),
+                        ],
+                      })
+                    }
+                  >
+                    Relancer avec les mêmes joueurs
+                  </button>
+                  </div>
                 )
               )}
 

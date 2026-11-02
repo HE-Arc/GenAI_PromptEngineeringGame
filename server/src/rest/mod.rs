@@ -667,21 +667,6 @@ pub async fn admin_next(
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    // Pendant la notation, le bouton attend la fin du vote : passer au prompt
-    // suivant en pleine notation fausserait le dépouillement. La reprise
-    // manuelle reste possible une fois le résumé affiché.
-    if room.phase == "rating" {
-        return err(StatusCode::CONFLICT, "vote en cours").into_response();
-    }
-    // Rating an unanswered round has no meaning, so the button refuses; the
-    // clock path still closes such a round into a spoken summary.
-    if room.phase == "playing" && !game::round_has_answers(&state.pool, &code).await {
-        return err(
-            StatusCode::CONFLICT,
-            "Notation impossible : aucun prompt envoyé pour cette manche.",
-        )
-        .into_response();
-    }
     tracing::info!(room = %code, phase = %room.phase, "admin pressed next");
     if let Err(e) = game::advance(&state.pool, &code).await {
         return err(StatusCode::CONFLICT, &e).into_response();
@@ -693,6 +678,26 @@ pub async fn admin_next(
         .await
         .unwrap_or_else(|_| "?".into());
     (StatusCode::OK, Json(json!({"ok": true, "phase": phase}))).into_response()
+}
+
+// The admin's skip: past the rest of the didacticiel, or past the rating
+// straight to the round's summary. The console confirms first, since the
+// players lose the step they were on.
+pub async fn admin_skip(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let room = match require_room_admin(&state.pool, &headers, &code).await {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    tracing::info!(room = %code, phase = %room.phase, "admin pressed skip");
+    if let Err(e) = game::skip(&state.pool, &code).await {
+        return err(StatusCode::CONFLICT, &e).into_response();
+    }
+    touch(&state, &code).await;
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
 }
 
 #[derive(Deserialize, Default)]

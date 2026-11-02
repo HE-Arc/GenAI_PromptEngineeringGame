@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { countdown, fr, noun, nounOf } from './format'
 import { buzz, copyText, hueOf, initials, useWindowLength } from './fx'
@@ -594,51 +594,6 @@ export function Board({
   )
 }
 
-// The one destructive control in the console. A rule above it and real space below the primary
-// action, so a thumb reaching for "next round" in a room where someone is shouting cannot land
-// on "erase the game in progress". Quiet until it is armed, then the fault colour and a label
-// that says what pressing it will do — two taps, because none of these can be taken back.
-//
-// The armed state is either one confirm or a set of choices, never both, and the type says so: a
-// component that took both would let a call site pass a confirm that nothing can ever reach, and
-// a destructive control whose fallback is unreachable is a control nobody can audit. A restart is
-// the case that needs the choice — "with the didacticiel" or "without" — and it gets one arming
-// and a second tap rather than two armed buttons a thumb picks between in a noisy room.
-//
-// All the state stays with the caller, which is the only thing that knows what "armed" means
-// here: an arming is only valid for the exact room state it was armed against.
-type DangerProps = {
-  label: string
-  armedLabel: string
-  confirming: boolean
-  disabled?: boolean
-  onArm: () => void
-} & (
-  | { choices: ReactNode; onConfirm?: never }
-  | { choices?: never; onConfirm: () => void }
-)
-
-export function DangerButton(props: DangerProps) {
-  const { label, armedLabel, confirming, disabled, onArm } = props
-  const confirm = props.onConfirm
-  return (
-    <div className="guard">
-      {confirming && props.choices ? (
-        props.choices
-      ) : (
-        <button
-          type="button"
-          className={`btn btn--wide${confirming ? ' btn--danger' : ' btn--ghost'}`}
-          disabled={disabled}
-          onClick={() => (confirming && confirm ? confirm() : onArm())}
-        >
-          {confirming ? armedLabel : label}
-        </button>
-      )}
-    </div>
-  )
-}
-
 // The class's own bar on a discussion: one instruction, one wide button, the count under it. ONE
 // component for the four screens that discuss, and the reason is not tidiness — the rule, the
 // wording and the three disabled states are the same in all four, and four copies are four places
@@ -954,5 +909,59 @@ export function Criteria({ items }: { items: string[] }) {
         ))}
       </ul>
     </section>
+  )
+}
+
+// One way out of a confirm, and the label says what it does ("Passer la notation"), never "OK".
+export type ConfirmChoice = { label: string; onChoose: () => void }
+
+// The confirm for an action the host cannot take back, or one that cuts players off mid-step.
+// A native <dialog> opened modal: the page behind is inert, Escape cancels, and focus starts on
+// « Annuler » so a stray Enter never confirms.
+export function ConfirmModal({
+  title,
+  body,
+  choices,
+  onCancel,
+}: {
+  title: string
+  body: ReactNode
+  choices: ConfirmChoice[]
+  onCancel: () => void
+}) {
+  const ref = useRef<HTMLDialogElement>(null)
+  const titleId = useId()
+  useEffect(() => {
+    const d = ref.current
+    if (d && !d.open) d.showModal()
+    return () => d?.close()
+  }, [])
+  return (
+    <dialog
+      ref={ref}
+      className="modal confirm"
+      aria-labelledby={titleId}
+      onCancel={(e) => {
+        e.preventDefault()
+        onCancel()
+      }}
+      // A click on the backdrop lands on the dialog itself, never on its content.
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel()
+      }}
+    >
+      <h2 id={titleId} className="confirm__title">{title}</h2>
+      <div className="prose confirm__body">{body}</div>
+      <div className="confirm__actions">
+        <button type="button" className="btn btn--ghost" autoFocus onClick={onCancel}>
+          Annuler
+        </button>
+        {choices.map((c) => (
+          <button key={c.label} type="button" className="btn btn--danger" onClick={c.onChoose}>
+            {c.label}
+          </button>
+        ))}
+      </div>
+    </dialog>
   )
 }
