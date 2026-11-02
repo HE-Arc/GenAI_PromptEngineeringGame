@@ -287,6 +287,51 @@ async fn insert_answer_row(
     Ok(())
 }
 
+// Streams the play model's text to the room as it arrives.
+async fn text_answer(state: &AppState, job: &AnswerJob) -> (String, crate::llm::StreamResult) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let llm = state.llm.clone();
+    let prompt = job.enriched.clone();
+    let stream_done = tokio::spawn(async move { llm.stream_into(prompt, tx).await });
+    let mut full = String::new();
+    while let Some(delta) = rx.recv().await {
+        full.push_str(&delta);
+        job.hub.publish_event(WsOut::AnswerChunk {
+            player: job.player_name.clone(),
+            delta,
+        });
+    }
+    let streamed = stream_done
+        .await
+        .unwrap_or_else(|e| Err(format!("play task panicked: {e}")));
+    (full, streamed)
+}
+
+// One picture, stored and linked: the answer text is markdown pointing at
+// /api/images/<id>, so every screen that renders an answer shows it as is.
+// Sent as one chunk, there is nothing to stream.
+async fn image_answer(state: &AppState, job: &AnswerJob) -> (String, crate::llm::StreamResult) {
+    let image = match state.llm.generate_image(&job.prompt).await {
+        Ok(image) => image,
+        Err(e) => return (String::new(), Err(e)),
+    };
+    let id = match crate::db::images::insert(&state.pool, job.round_id, &image.mime, &image.data).await {
+        Ok(id) => id,
+        Err(e) => return (String::new(), Err(format!("image write failed: {e}"))),
+    };
+    tracing::info!(room = %job.code, player_id = job.player_id, bytes = image.data.len(), mime = %image.mime, "image generated");
+    let mut full = format!("![Image générée](/api/images/{id})");
+    if !image.text.is_empty() {
+        full.push_str("\n\n");
+        full.push_str(&image.text);
+    }
+    job.hub.publish_event(WsOut::AnswerChunk {
+        player: job.player_name.clone(),
+        delta: full.clone(),
+    });
+    (full, Ok(false))
+}
+
 // Fire-and-forget by design: the task owns pool/hub/llm clones, so dropping
 // the socket never cancels it and a reconnecting player sees done via seq bump.
 fn spawn_answer(state: AppState, job: AnswerJob) {
@@ -295,21 +340,13 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
         let started = std::time::Instant::now();
         // Length only: prompts are student work and may hold personal data.
         tracing::info!(room = %job.code, player_id = job.player_id, round_id = job.round_id, prompt_chars = job.prompt.chars().count(), "answer started");
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        let llm = state.llm.clone();
-        let prompt = job.enriched.clone();
-        let stream_done = tokio::spawn(async move { llm.stream_into(prompt, tx).await });
-        let mut full = String::new();
-        while let Some(delta) = rx.recv().await {
-            full.push_str(&delta);
-            job.hub.publish_event(WsOut::AnswerChunk {
-                player: player.clone(),
-                delta,
-            });
-        }
-        let streamed = stream_done
-            .await
-            .unwrap_or_else(|e| Err(format!("play task panicked: {e}")));
+        // A round whose exercise is a picture is answered by the image model.
+        let image_round = game::image_for(&job.target).is_some();
+        let (full, streamed) = if image_round {
+            image_answer(&state, &job).await
+        } else {
+            text_answer(&state, &job).await
+        };
         let mut full = full.trim().to_string();
         let stream_ms = started.elapsed().as_millis() as u64;
         let outcome = match streamed {
@@ -330,11 +367,19 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 // the inflight claim (and the round) twice as long.
                 let criteria = game::criteria_for(&job.target);
                 let verdict_start = std::time::Instant::now();
+                // No judge on an image round: the judge model reads text and
+                // cannot see the picture, so the critic's note stands for both
+                // (ai_score of (c, c) is c).
                 let scored = tokio::time::timeout(VERDICTS_TIMEOUT, async {
-                    tokio::join!(
-                        state.llm.score(&job.prompt, &full, &job.target, &criteria),
-                        state.llm.grade_prompt(&job.prompt, &job.target, &criteria),
-                    )
+                    if image_round {
+                        let critique = state.llm.grade_prompt(&job.prompt, &job.target, &criteria).await;
+                        (critique.clone(), critique)
+                    } else {
+                        tokio::join!(
+                            state.llm.score(&job.prompt, &full, &job.target, &criteria),
+                            state.llm.grade_prompt(&job.prompt, &job.target, &criteria),
+                        )
+                    }
                 })
                 .await;
                 let (verdict, critique) = match scored {
@@ -820,5 +865,49 @@ mod tests {
                 .unwrap();
         assert_eq!((score, comment.as_str()), (0, CRASH_NOTICE));
         assert_eq!(hub.cached().await.1["error"], CRASH_NOTICE);
+    }
+
+    // An image round goes to the image model: the answer is a link to the
+    // stored picture, and the note is the critic's alone.
+    #[tokio::test]
+    async fn image_round_stores_picture_and_scores_by_critic() {
+        let pool = test_pool().await;
+        let state = AppState::new(pool.clone());
+        rooms::create_room(&pool, "IM01").await.unwrap();
+        let ana = rooms::add_player(&pool, "IM01", "ana").await.unwrap();
+        let image_target = game::targets_with_image().next().expect("an image exercise").to_string();
+        sqlx::query("UPDATE round SET target = ? WHERE room_code = 'IM01'")
+            .bind(&image_target)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'IM01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let hub = get_hub(&state.hubs, "IM01").await;
+        let mut erx = hub.subscribe_events().await;
+        let job = begin_answer(&state, "IM01", &ana.token, "un trapeze, format schema").await.unwrap();
+        spawn_answer(state.clone(), job);
+        loop {
+            if let WsOut::AnswerDone { .. } = erx.recv().await.unwrap() {
+                break;
+            }
+        }
+        let (output, score, critic): (String, i64, i64) =
+            sqlx::query_as("SELECT output, score, quality_llm FROM answer WHERE player_id = ?")
+                .bind(ana.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let id = output
+            .strip_prefix("![Image générée](/api/images/")
+            .and_then(|r| r.split_once(')'))
+            .map(|(id, _)| id.to_string())
+            .expect("answer links the picture");
+        let (mime, data) = crate::db::images::get(&pool, &id).await.unwrap().expect("picture stored");
+        assert_eq!(mime, "image/svg+xml");
+        assert!(!data.is_empty());
+        assert_eq!(score, critic, "no judge on an image round");
     }
 }

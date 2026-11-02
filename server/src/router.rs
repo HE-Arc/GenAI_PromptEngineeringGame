@@ -118,6 +118,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/rooms/:code/join", get(rest::join_get).post(rest::join))
         .route("/api/rooms/:code/rate", post(rest::rate))
         .route("/api/rooms/:code/ready", post(rest::ready))
+        .route("/api/images/:id", get(rest::image_get))
         .route(
             "/api/rooms/:code/quiz",
             get(rest::quiz_get).post(rest::quiz_post),

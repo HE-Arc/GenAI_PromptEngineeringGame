@@ -115,7 +115,23 @@ impl super::LlmSource for StubSource {
         let verdict = stub_grade(prompt);
         Box::pin(async move { verdict })
     }
+
+    // A fixed placeholder so image rounds play end to end without a key.
+    fn generate_image(
+        &self,
+        _prompt: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = super::ImageResult> + Send + '_>> {
+        Box::pin(async {
+            Ok(super::GeneratedImage {
+                mime: "image/svg+xml".into(),
+                data: STUB_IMAGE.as_bytes().to_vec(),
+                text: "(image locale)".into(),
+            })
+        })
+    }
 }
+
+const STUB_IMAGE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200"><rect width="320" height="200" fill="#1d2433"/><text x="160" y="105" fill="#ffc83d" font-family="sans-serif" font-size="18" text-anchor="middle">Image locale (pas de clé)</text></svg>"##;
 
 #[cfg(test)]
 mod tests {

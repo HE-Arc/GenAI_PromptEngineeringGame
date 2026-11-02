@@ -12,6 +12,7 @@ pub struct OpenAiSource {
     client: async_openai::Client<async_openai::config::OpenAIConfig>,
     play_model: String,
     judge_model: String,
+    image: Option<super::openrouter::ImageGen>,
 }
 
 // OpenCode Go rejects header-less requests with 400 MissingSessionID: the
@@ -99,10 +100,15 @@ impl OpenAiSource {
             %judge_model,
             "LLM backend configured"
         );
+        let image = super::openrouter::ImageGen::from_env();
+        if image.is_none() {
+            tracing::warn!("no OPENROUTER_API_KEY: image rounds will fail");
+        }
         Self {
             client: async_openai::Client::with_config(config).with_http_client(http_client()),
             play_model,
             judge_model,
+            image,
         }
     }
 }
@@ -355,6 +361,19 @@ impl super::LlmSource for OpenAiSource {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
         let payload = serde_json::json!({"exercice": target, "prompt": prompt, "criteres": criteria});
         self.verdict_call(CRITIC_SYS, payload, CRITIC_MAX_TOKENS)
+    }
+
+    fn generate_image(
+        &self,
+        prompt: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = super::ImageResult> + Send + '_>> {
+        let prompt = prompt.to_owned();
+        Box::pin(async move {
+            match &self.image {
+                Some(image) => image.generate(&prompt).await,
+                None => Err("image generation not configured: set OPENROUTER_API_KEY".into()),
+            }
+        })
     }
 }
 

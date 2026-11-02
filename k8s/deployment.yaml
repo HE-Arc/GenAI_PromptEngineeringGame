@@ -57,6 +57,19 @@ spec:
                 secretKeyRef:
                   name: genai-secrets
                   key: JUDGE_MODEL
+            # Optional: without them image rounds fail, the rest of the game runs.
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: OPENROUTER_API_KEY
+                  optional: true
+            - name: IMAGE_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: IMAGE_MODEL
+                  optional: true
             - name: ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:

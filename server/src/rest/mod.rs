@@ -772,3 +772,27 @@ pub async fn admin_delete(
     tracing::info!(room = %code, "room deleted by admin");
     (StatusCode::OK, Json(json!({"ok": true}))).into_response()
 }
+
+// A generated picture by its random id. Immutable once written, so browsers
+// may keep it; nosniff keeps the declared type the only one a browser uses.
+pub async fn image_get(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match crate::db::images::get(&state.pool, &id).await {
+        Ok(Some((mime, data))) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            data,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "image read failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}

@@ -250,6 +250,8 @@ h2.label {
   overflow-wrap: anywhere;
 }
 .md > *:first-child { margin-top: 0; }
+/* A generated picture (image rounds) fits the answer frame. */
+.md img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
 .md > *:last-child { margin-bottom: 0; }
 .md p { margin: 0.6rem 0; }
 .md h1, .md h2, .md h3, .md h4 { margin: 0.9rem 0 0.4rem; line-height: 1.2; }

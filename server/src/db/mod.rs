@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 pub mod answers;
+pub mod images;
 pub mod rooms;
 
 // WAL + NORMAL + 5s busy timeout: concurrent answer bursts wait instead of

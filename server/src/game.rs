@@ -87,6 +87,11 @@ pub fn image_for(target: &str) -> Option<String> {
         .and_then(|t| t.image.clone())
 }
 
+#[cfg(test)]
+pub fn targets_with_image() -> impl Iterator<Item = &'static str> {
+    targets().iter().filter(|t| t.image.is_some()).map(|t| t.text.as_str())
+}
+
 pub fn tip_for(target: &str) -> Option<String> {
     targets()
         .iter()
@@ -931,6 +936,7 @@ pub async fn delete_rooms(state: &AppState, codes: &[String]) {
         for sql in [
             "DELETE FROM rating WHERE answer_id IN (SELECT answer.id FROM answer JOIN round ON round.id = answer.round_id WHERE round.room_code = ?)",
             "DELETE FROM answer WHERE round_id IN (SELECT id FROM round WHERE room_code = ?)",
+            "DELETE FROM generated_image WHERE round_id IN (SELECT id FROM round WHERE room_code = ?)",
             "DELETE FROM quiz_attempt WHERE question_id IN (SELECT id FROM quiz_question WHERE room_code = ?)",
             "DELETE FROM ready WHERE room_code = ?",
             "DELETE FROM round WHERE room_code = ?",

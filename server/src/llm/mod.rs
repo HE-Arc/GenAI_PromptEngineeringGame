@@ -1,4 +1,5 @@
 pub mod openai;
+pub mod openrouter;
 pub mod stub;
 
 use std::future::Future;
@@ -55,6 +56,15 @@ pub struct Verdict {
 // Err: no answer could be produced at all; the caller records a failure.
 pub type StreamResult = Result<bool, String>;
 
+// One picture from the image model, plus any words it sent alongside.
+#[derive(Debug, Clone)]
+pub struct GeneratedImage {
+    pub mime: String,
+    pub data: Vec<u8>,
+    pub text: String,
+}
+pub type ImageResult = Result<GeneratedImage, String>;
+
 pub trait LlmSource: Send + Sync + 'static {
     fn stream_into(
         &self,
@@ -80,6 +90,14 @@ pub trait LlmSource: Send + Sync + 'static {
         target: &str,
         criteria: &[String],
     ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
+
+    // Image rounds: the player's prompt alone goes to the image model. It must
+    // not see the reference picture or the exercise, or a vague prompt would
+    // still get the right drawing. Default: unavailable, so a backend without
+    // an image model fails the answer visibly.
+    fn generate_image(&self, _prompt: &str) -> Pin<Box<dyn Future<Output = ImageResult> + Send + '_>> {
+        Box::pin(async { Err("image generation not available".into()) })
+    }
 }
 
 // A key from either contract (plain OPENAI_API_KEY or the endpoint pair

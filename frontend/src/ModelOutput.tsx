@@ -41,8 +41,12 @@ const BLOCKS: Components = {
   table: ({ node: _node, ...props }) => <table {...props} />,
 }
 
+// An image round's answer arrives whole, as a link to the stored picture: there is no
+// half-written markdown to protect, so it renders at once instead of as raw text.
+const GENERATED_IMAGE = /^!\[[^\]]*\]\(\/api\/images\/[0-9a-f]{32}\)/
+
 export default function ModelOutput({ text, streaming = false }: { text: string; streaming?: boolean }) {
-  if (streaming) return <pre className="slot md md--raw">{text}</pre>
+  if (streaming && !GENERATED_IMAGE.test(text)) return <pre className="slot md md--raw">{text}</pre>
   return (
     <div className="md">
       {/* No `skipHtml`: the default escapes a raw tag into visible text, and a player who asked

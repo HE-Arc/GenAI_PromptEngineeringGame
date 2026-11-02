@@ -1970,6 +1970,7 @@ dependencies = [
  "async-openai",
  "axum",
  "axum-test",
+ "base64 0.22.1",
  "dotenvy",
  "futures-util",
  "getrandom 0.4.3",
