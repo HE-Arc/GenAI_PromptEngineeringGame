@@ -1,6 +1,7 @@
 // Image generation for the rounds whose exercise is a picture (data/targets.json
-// entries with an `image`). OpenRouter speaks the chat-completions protocol and
-// returns generated pictures as base64 data URLs under `message.images`.
+// entries with an `image`). Sent to OpenRouter's dedicated /images endpoint:
+// image-only models (muse-image) refuse chat/completions with a 404. The
+// pictures come back as base64 under `data[].b64_json`.
 use base64::Engine;
 use serde_json::Value;
 
@@ -45,7 +46,7 @@ impl ImageGen {
             .unwrap_or_else(|_| reqwest::Client::new());
         Some(Self {
             http,
-            url: format!("{}/chat/completions", base.trim_end_matches('/')),
+            url: format!("{}/images", base.trim_end_matches('/')),
             key: key.trim().to_string(),
             model,
         })
@@ -54,11 +55,10 @@ impl ImageGen {
     pub async fn generate(&self, prompt: &str) -> ImageResult {
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            // Image only: an image-only model (muse-image) refuses a request
-            // that also asks for text, and a model that can do both still
-            // returns the picture.
-            "modalities": ["image"],
+            "prompt": prompt,
+            "n": 1,
+            // Raster asked for explicitly: an SVG would be refused below.
+            "output_format": "png",
         });
         let response = self
             .http
@@ -82,21 +82,39 @@ impl ImageGen {
 }
 
 fn parse_image_response(value: &Value) -> ImageResult {
-    let message = value
-        .pointer("/choices/0/message")
-        .ok_or_else(|| "image call returned no message".to_string())?;
-    let text = match message.get("content") {
-        Some(Value::String(s)) => s.trim().to_string(),
-        _ => String::new(),
-    };
-    let url = message
-        .get("images")
-        .and_then(Value::as_array)
-        .and_then(|images| images.iter().find_map(|i| i.pointer("/image_url/url").and_then(Value::as_str)))
-        // The model sometimes answers in words only (refusal, a question back).
-        .ok_or_else(|| format!("image call returned no image{}", if text.is_empty() { String::new() } else { format!(": {}", text.chars().take(200).collect::<String>()) }))?;
-    let (mime, data) = decode_data_url(url)?;
-    Ok(GeneratedImage { mime, data, text })
+    let entry = value
+        .pointer("/data/0")
+        .ok_or_else(|| format!("image call returned no image: {}", value.to_string().chars().take(200).collect::<String>()))?;
+    // Some providers answer with a data URL instead of bare base64.
+    if let Some(url) = entry.get("url").and_then(Value::as_str).filter(|u| u.starts_with("data:")) {
+        let (mime, data) = decode_data_url(url)?;
+        return Ok(GeneratedImage { mime, data, text: String::new() });
+    }
+    let payload = entry
+        .get("b64_json")
+        .and_then(Value::as_str)
+        .ok_or("image call returned no b64_json")?;
+    // `media_type` is omitted when the provider cannot tell: png was requested.
+    let mime = entry
+        .get("media_type")
+        .and_then(Value::as_str)
+        .unwrap_or("image/png")
+        .to_ascii_lowercase();
+    let data = decode_base64(&mime, payload)?;
+    Ok(GeneratedImage { mime, data, text: String::new() })
+}
+
+fn decode_base64(mime: &str, payload: &str) -> Result<Vec<u8>, String> {
+    if !ALLOWED_MIME.contains(&mime) {
+        return Err(format!("unsupported image type {mime}"));
+    }
+    // 4 base64 chars per 3 bytes: refuse before decoding an oversized payload.
+    if payload.len() / 4 * 3 > MAX_IMAGE_BYTES {
+        return Err("image too large".into());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("image base64 invalid: {e}"))
 }
 
 // `data:image/png;base64,<payload>` into its type and bytes.
@@ -104,16 +122,7 @@ fn decode_data_url(url: &str) -> Result<(String, Vec<u8>), String> {
     let rest = url.strip_prefix("data:").ok_or("image is not a data URL")?;
     let (meta, payload) = rest.split_once(',').ok_or("malformed data URL")?;
     let mime = meta.strip_suffix(";base64").ok_or("data URL is not base64")?.to_ascii_lowercase();
-    if !ALLOWED_MIME.contains(&mime.as_str()) {
-        return Err(format!("unsupported image type {mime}"));
-    }
-    // 4 base64 chars per 3 bytes: refuse before decoding an oversized payload.
-    if payload.len() / 4 * 3 > MAX_IMAGE_BYTES {
-        return Err("image too large".into());
-    }
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(payload.trim())
-        .map_err(|e| format!("image base64 invalid: {e}"))?;
+    let data = decode_base64(&mime, payload)?;
     Ok((mime, data))
 }
 
@@ -122,21 +131,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_image_and_text_from_openrouter_shape() {
-        let v = serde_json::json!({"choices": [{"message": {
-            "content": "Voici le trapèze.",
-            "images": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]
-        }}]});
+    fn reads_image_from_images_endpoint_shape() {
+        let v = serde_json::json!({"created": 1, "data": [{"b64_json": "iVBORw0KGgo=", "media_type": "image/png"}]});
         let img = parse_image_response(&v).unwrap();
         assert_eq!(img.mime, "image/png");
         assert_eq!(&img.data[..4], b"\x89PNG");
-        assert_eq!(img.text, "Voici le trapèze.");
+        // No media_type: png, as requested.
+        let v = serde_json::json!({"data": [{"b64_json": "iVBORw0KGgo="}]});
+        assert_eq!(parse_image_response(&v).unwrap().mime, "image/png");
     }
 
     #[test]
-    fn text_only_reply_is_an_error_naming_the_text() {
-        let v = serde_json::json!({"choices": [{"message": {"content": "Je ne peux pas."}}]});
-        assert!(parse_image_response(&v).unwrap_err().contains("Je ne peux pas."));
+    fn empty_data_or_svg_is_an_error() {
+        assert!(parse_image_response(&serde_json::json!({"data": []})).is_err());
+        let svg = serde_json::json!({"data": [{"b64_json": "PHN2Zy8+", "media_type": "image/svg+xml"}]});
+        assert!(parse_image_response(&svg).unwrap_err().contains("unsupported"));
     }
 
     #[test]
