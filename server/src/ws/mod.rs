@@ -393,6 +393,10 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                         (fallback.clone(), fallback)
                     }
                 };
+                // Floored after every source (model, stub, unreadable or
+                // late verdict), so no path stores an AI note under the floor.
+                let verdict = crate::llm::Verdict { score: game::floor_ai(verdict.score), ..verdict };
+                let critique = crate::llm::Verdict { score: game::floor_ai(critique.score), ..critique };
                 let verdict_ms = verdict_start.elapsed().as_millis() as u64;
                 tracing::debug!(room = %job.code, player_id = job.player_id, proximity = verdict.score, critic = critique.score, verdict_ms, "verdicts received");
                 let ai = game::ai_score(verdict.score, critique.score);
@@ -909,5 +913,6 @@ mod tests {
         assert_eq!(mime, "image/svg+xml");
         assert!(!data.is_empty());
         assert_eq!(score, critic, "no judge on an image round");
+        assert!(critic >= game::MIN_AI_SCORE, "AI notes are floored");
     }
 }

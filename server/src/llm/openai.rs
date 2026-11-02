@@ -169,7 +169,7 @@ const JUDGE_SYS: &str = "Tu es le jury d'un jeu de prompt engineering. On te don
 const CRITIC_SYS: &str = "Tu es le critique de prompt d'un jeu de prompt engineering. On te donne l'exercice de la manche, le prompt ecrit par un joueur, et la liste des criteres de notation de cet exercice. Tu notes la METHODE de ce prompt, pas son resultat : tu ne vois pas la reponse du modele, et un resultat chanceux ne te fait pas monter la note. Note de 0 a 10 uniquement selon les criteres fournis, chacun comptant a parts egales : 10 = tous les criteres sont pleinement satisfaits ; retire des points en proportion de chaque critere absent ou mal satisfait ; 0 a 2 = une consigne nue qui n'en satisfait aucun. Un critere absent ne se recompense pas par un autre. Aucun texte hors du JSON : ni justification, ni conseil, ni prose. Reponds uniquement avec un objet JSON {\"score\": entier}.";
 // The model answered but its verdict was unreadable: says the METHOD failed,
 // so a player never reads the default 0 as "your prompt was bad".
-pub const VERDICT_FALLBACK_COMMENT: &str = "Le modele n'a pas rendu de verdict lisible : 0 accorde par defaut, la partie continue.";
+pub const VERDICT_FALLBACK_COMMENT: &str = "Le modele n'a pas rendu de verdict lisible : note minimale accordee par defaut, la partie continue.";
 
 // Caps per call (Django PLAY/JUDGE/CRITIC_MAX_TOKENS): the play call must
 // stay the largest, it reproduces long-form targets.

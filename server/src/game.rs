@@ -113,6 +113,14 @@ pub fn half_up(x: f64) -> i64 {
     (x + 0.5).floor() as i64
 }
 
+// The lowest note the AI ever gives, judge and critic alike: a low note
+// discourages more than it teaches, and the class rating can still go lower.
+pub const MIN_AI_SCORE: i64 = 4;
+
+pub fn floor_ai(score: i64) -> i64 {
+    score.clamp(MIN_AI_SCORE, 10)
+}
+
 // The AI's own note: what round_score would be with no peer rating. Shown
 // right after a send and again in the summary, so both screens agree.
 pub fn ai_score(proximity: i64, critic: i64) -> f64 {
