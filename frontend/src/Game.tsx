@@ -213,6 +213,10 @@ export default function Game({
   // screen stops offering a send.
   const attemptsLeft = Math.max(0, state.max_attempts - state.my_attempts)
   const outOfAttempts = attemptsLeft === 0
+  // A conversation round: sends add to the chain instead of replacing the last prompt.
+  const conv = state.conversation
+  // Older servers send no turns; an absent list is an empty conversation.
+  const turns = state.my_turns ?? []
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
   // button telling the player the model is still working when it stopped two seconds ago.
@@ -223,11 +227,15 @@ export default function Game({
       : 'Le modèle réfléchit…'
     : stale
       ? 'En attente de la reconnexion…'
-      : outOfAttempts
-        ? 'Plus d’essai pour cette manche'
-        : alreadyDone
-          ? `Envoyer un nouvel essai (${state.my_attempts + 1}/${state.max_attempts})`
-          : 'Envoyer au modèle'
+      : conv
+        ? outOfAttempts
+          ? 'Conversation terminée'
+          : `Envoyer le prompt ${state.my_attempts + 1}/${state.max_attempts}`
+        : outOfAttempts
+          ? 'Plus d’essai pour cette manche'
+          : alreadyDone
+            ? `Envoyer un nouvel essai (${state.my_attempts + 1}/${state.max_attempts})`
+            : 'Envoyer au modèle'
 
   function submitOnChord(e: KeyboardEvent<HTMLFormElement>) {
     if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
@@ -272,6 +280,8 @@ export default function Game({
       // player out of a round the server has not yet accepted — and lock them out of retrying
       // if the jury then falls over.
       // The prompt stays in the field: the next attempt is usually a correction of this one.
+      // Not in a conversation: the next prompt is the next step, and it now sits in the thread.
+      if (conv) setPrompt('')
       setSent(true)
     } catch (e) {
       // A refusal off the socket lands here through the waiter: nothing was
@@ -447,12 +457,17 @@ export default function Game({
               <ScoreScale score={result.score} />
               {!scored && result.round === state.current && (
                 <p className="prose prose--sm prose--dim">
-                  {outOfAttempts
-                    ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ce dernier prompt qui sera noté.`
-                    : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}
+                  {conv
+                    ? outOfAttempts
+                      ? `Tu as envoyé tes ${state.max_attempts} prompts : c’est toute la conversation qui sera notée.`
+                      : `Continue la conversation (${noun(attemptsLeft, 'prompt restant', 'prompts restants')}) : le modèle se souvient des échanges précédents, et c’est toute la conversation qui est notée.`
+                    : outOfAttempts
+                      ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ce dernier prompt qui sera noté.`
+                      : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}
                 </p>
               )}
-              <div>
+              {/* A conversation's answers are read in the thread, in order, not here. */}
+              {!conv && <div>
                 <p className="label">Le modèle a répondu</p>
                 <ModelOutput text={result.output} />
                 {/* Said here because the truncation is a fact about the answer, not about the
@@ -464,7 +479,7 @@ export default function Game({
                     texte, coupé à cet endroit, que le jury a noté.
                   </p>
                 )}
-              </div>
+              </div>}
             </div>
           )}
 
@@ -574,6 +589,29 @@ export default function Game({
               </button>
             )}
 
+            {/* The conversation so far, oldest first, above the field that continues it: the
+                player writes the next step while reading what the model already said. */}
+            {!scored && conv && (
+              <section className="thread" aria-label="Ta conversation avec le modèle">
+                {turns.length === 0 ? (
+                  <p className="prose prose--sm prose--dim">
+                    Cet exercice se fait en plusieurs prompts ({state.max_attempts} au maximum) :
+                    chaque envoi continue la même conversation avec le modèle, qui se souvient des
+                    échanges précédents. C’est toute la conversation qui est notée.
+                  </p>
+                ) : (
+                  turns.map((t, i) => (
+                    <div className="thread__turn" key={i}>
+                      <p className="label">Ton prompt {i + 1}</p>
+                      <pre className="slot">{t.prompt}</pre>
+                      <p className="label">Le modèle a répondu</p>
+                      <ModelOutput text={t.output} />
+                    </div>
+                  ))
+                )}
+              </section>
+            )}
+
             {!scored && (
               <>
                 {/* Two taps are not a keyboard, and on a desktop a textarea you can only leave by
@@ -584,7 +622,7 @@ export default function Game({
                 <form className="form" onSubmit={send} onKeyDown={submitOnChord}>
                   <div className="field">
                     <label className="label" htmlFor="prompt">
-                      Ton prompt
+                      {conv ? `Ton prompt ${Math.min(state.my_attempts + 1, state.max_attempts)} sur ${state.max_attempts}` : 'Ton prompt'}
                     </label>
                     <textarea
                       id="prompt"
@@ -592,7 +630,13 @@ export default function Game({
                       className="area"
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
-                      placeholder="Décris la scène, le ton, la longueur…"
+                      placeholder={
+                        conv
+                          ? turns.length === 0
+                            ? 'Commence par donner le contexte et les informations utiles…'
+                            : 'Ton prompt suivant, dans la même conversation…'
+                          : 'Décris la scène, le ton, la longueur…'
+                      }
                       maxLength={MAX_PROMPT_CHARS}
                       // The prompt is a piece of instruction, not prose. Autocorrect and the
                       // spellchecker are both actively hostile to it: they "fix" the deliberate

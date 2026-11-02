@@ -972,6 +972,8 @@
   line-height: 1.3;
   letter-spacing: 0.01em;
   text-wrap: pretty;
+  /* A conversation round rates a chain "Prompt 1 : … Prompt 2 : …": its breaks are its structure. */
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
   box-shadow: 0 5px 0 #b9acef, var(--shadow);
 }
@@ -1582,3 +1584,19 @@
   margin-top: 1rem;
 }
 .confirm__actions .btn { flex: 1 1 auto; }
+
+/* ---- a conversation round: the exchanges so far, above the composer ----------------------- */
+.thread {
+  display: grid;
+  gap: 1rem;
+}
+.thread__turn {
+  display: grid;
+  gap: 0.4rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--rail);
+}
+.thread__turn:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}

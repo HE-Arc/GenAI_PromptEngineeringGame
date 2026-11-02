@@ -27,6 +27,9 @@ pub const ROUNDS_PER_GAME: usize = 10;
 pub const MAX_ATTEMPTS: i64 = 3;
 // Image rounds allow fewer: each attempt is a billed picture.
 pub const MAX_IMAGE_ATTEMPTS: i64 = 2;
+// Conversation rounds chain their prompts instead of replacing them: the
+// three steps the exercise names (context, synthesis, test) plus one follow-up.
+pub const MAX_CONVERSATION_PROMPTS: i64 = 4;
 pub const ROUND_SECONDS: i64 = 180;
 pub const RATE_SECONDS: i64 = 30;
 // En mode automatique, le résumé reste affiché 30 s pour relire les réponses
@@ -65,6 +68,10 @@ pub struct Target {
     // note: the note explains itself through these, not through prose.
     #[serde(default)]
     pub criteria: Vec<String>,
+    // Each send continues the same conversation with the model instead of
+    // replacing the previous prompt; the whole chain is graded and rated.
+    #[serde(default)]
+    pub conversation: bool,
 }
 
 fn quiz_bank() -> &'static [QuizItem] {
@@ -90,13 +97,24 @@ pub fn image_for(target: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+pub fn conversation_target() -> Option<&'static str> {
+    targets().iter().find(|t| t.conversation).map(|t| t.text.as_str())
+}
+
+#[cfg(test)]
 pub fn targets_with_image() -> impl Iterator<Item = &'static str> {
     targets().iter().filter(|t| t.image.is_some()).map(|t| t.text.as_str())
+}
+
+pub fn is_conversation(target: &str) -> bool {
+    targets().iter().any(|t| t.text == target && t.conversation)
 }
 
 pub fn max_attempts_for(target: &str) -> i64 {
     if image_for(target).is_some() {
         MAX_IMAGE_ATTEMPTS
+    } else if is_conversation(target) {
+        MAX_CONVERSATION_PROMPTS
     } else {
         MAX_ATTEMPTS
     }
@@ -237,12 +255,13 @@ struct AnswerRow {
     quality: Option<i64>,
     round_score: Option<f64>,
     attempts: i64,
+    turns: Option<String>,
 }
 
 async fn round_answers(pool: &SqlitePool, round_id: i64) -> Vec<AnswerRow> {
     sqlx::query_as::<_, AnswerRow>(
         "SELECT id, player_id, prompt, output, score, quality_llm, quality_comment,
-                quality_peers, quality, round_score, attempts
+                quality_peers, quality, round_score, attempts, turns
          FROM answer WHERE round_id = ? ORDER BY id",
     )
     .bind(round_id)
@@ -1211,6 +1230,11 @@ pub async fn room_snapshot(
             .iter()
             .map(|a| (a.player_id.to_string(), json!(a.attempts)))
             .collect::<serde_json::Map<_, _>>(),
+        // Per-viewer too: a player's own conversation, so a reload redraws it.
+        "turns": answers
+            .iter()
+            .map(|a| (a.player_id.to_string(), json!(crate::llm::parse_turns(a.turns.as_deref()))))
+            .collect::<serde_json::Map<_, _>>(),
     });
     let reveal = match (&round, room.phase.as_str()) {
         (Some((_, revealed)), "rating") => match answers.get(*revealed as usize) {
@@ -1314,6 +1338,8 @@ pub async fn room_snapshot(
         "rate_seconds": room.rate_seconds,
         "max_attempts": target.as_deref().map(max_attempts_for).unwrap_or(MAX_ATTEMPTS),
         "my_attempts": 0,
+        "conversation": target.as_deref().is_some_and(is_conversation),
+        "my_turns": [],
         "players": rows.into_iter().map(|r| r.2).collect::<Vec<_>>(),
         "online_count": online_count,
         "quiz": quiz,
@@ -1335,6 +1361,9 @@ pub fn personalize(state: &Value, viewer: Option<i64>) -> Value {
         .unwrap_or(Value::Null);
     if let Some(me) = viewer {
         out["my_attempts"] = json!(private["attempts"][me.to_string()].as_i64().unwrap_or(0));
+        if let Some(turns) = private["turns"].get(me.to_string()) {
+            out["my_turns"] = turns.clone();
+        }
         if out["reveal"].is_object() {
             out["reveal"]["mine"] = json!(private["author_id"].as_i64() == Some(me));
             out["reveal"]["my_score"] = private["ratings"][me.to_string()].clone();

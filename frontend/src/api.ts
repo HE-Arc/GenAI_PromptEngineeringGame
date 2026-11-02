@@ -177,6 +177,8 @@ export type Player = {
   // always there.
 }
 
+export type Turn = { prompt: string; output: string }
+
 export type State = {
   code: string
   phase: Phase
@@ -207,6 +209,11 @@ export type State = {
   quiz_seconds: number
   max_attempts: number
   my_attempts: number
+  // A conversation round chains its prompts instead of replacing them: each send continues
+  // the same exchange with the model, and the whole chain is graded and rated.
+  conversation: boolean
+  // Per-viewer: this player's exchanges so far on a conversation round (empty otherwise).
+  my_turns: Turn[]
   players: Player[]
   // How many of `players` are connected. Never use it in place of `players.length`: the two
   // answer different questions and the game depends on the difference.

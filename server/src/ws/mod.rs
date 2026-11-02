@@ -82,6 +82,8 @@ pub struct AnswerJob {
     // Enriched play input (exercice + prompt eleve): the model never sees
     // the raw prompt alone. The raw prompt is what the DB stores.
     enriched: String,
+    // Conversation rounds only: the earlier exchanges this prompt continues.
+    history: Option<Vec<crate::llm::Turn>>,
     // Held until the answer task finishes: the semaphore count is the live
     // LLM load, so dropping the job (or the task) always frees the slot.
     _slot: tokio::sync::OwnedSemaphorePermit,
@@ -170,7 +172,9 @@ pub async fn begin_answer(
     if used >= max {
         return Err(AnswerReject {
             code: "too_many_attempts",
-            message: if max == game::MAX_IMAGE_ATTEMPTS {
+            message: if game::is_conversation(&round.target) {
+                "Tu as envoyé tes 4 prompts pour cette manche."
+            } else if max == game::MAX_IMAGE_ATTEMPTS {
                 "Tu as utilisé tes 2 essais pour cette manche."
             } else {
                 "Tu as utilisé tes 3 essais pour cette manche."
@@ -234,7 +238,25 @@ pub async fn begin_answer(
             message: crate::llm::MISSING_EXERCISE_NOTICE,
         });
     }
-    let enriched = crate::llm::enriched_input(round.order, &round.target, prompt);
+    // Read after the claim: no other send of this player can write the row
+    // until this one finishes, so the history cannot change under it.
+    let history = if game::is_conversation(&round.target) {
+        let raw: Option<String> = sqlx::query_scalar("SELECT turns FROM answer WHERE round_id = ? AND player_id = ?")
+            .bind(round.id)
+            .bind(player.id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+        Some(crate::llm::parse_turns(raw.as_deref()))
+    } else {
+        None
+    };
+    let enriched = match &history {
+        Some(h) => crate::llm::conversation_input(round.order, &round.target, h, prompt),
+        None => crate::llm::enriched_input(round.order, &round.target, prompt),
+    };
     Ok(AnswerJob {
         hub,
         code: code.to_string(),
@@ -244,14 +266,18 @@ pub async fn begin_answer(
         target: round.target,
         prompt: prompt.to_string(),
         enriched,
+        history,
         _slot: slot,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn insert_answer_row(
     pool: &sqlx::SqlitePool,
     job: &AnswerJob,
+    prompt: &str,
     output: &str,
+    turns: Option<&str>,
     verdict: &crate::llm::Verdict,
     critique: &crate::llm::Verdict,
     replace: bool,
@@ -268,7 +294,8 @@ async fn insert_answer_row(
         "ON CONFLICT (round_id, player_id) DO UPDATE SET
             prompt = excluded.prompt, output = excluded.output, score = excluded.score,
             comment = excluded.comment, quality_llm = excluded.quality_llm,
-            quality_comment = excluded.quality_comment, attempts = attempts + 1
+            quality_comment = excluded.quality_comment, turns = excluded.turns,
+            attempts = attempts + 1
          WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code
                 WHERE round.id = excluded.round_id) = 'playing'"
     } else {
@@ -278,20 +305,21 @@ async fn insert_answer_row(
     // has moved on (rating or summary), a late answer would join a round
     // already rated or settled, so it is dropped.
     sqlx::query(&format!(
-        "INSERT INTO answer (round_id, player_id, prompt, output, score, comment, quality_llm, quality_comment, attempts)
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+        "INSERT INTO answer (round_id, player_id, prompt, output, score, comment, quality_llm, quality_comment, attempts, turns)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code WHERE round.id = ?) = 'playing'
          {on_conflict}"
     ))
     .bind(job.round_id)
     .bind(job.player_id)
-    .bind(&job.prompt)
+    .bind(prompt)
     .bind(output)
     .bind(verdict.score)
     .bind(&verdict.feedback)
     .bind(critique.score)
     .bind(&critique.feedback)
     .bind(if replace { 1 } else { 0 })
+    .bind(turns)
     .bind(job.round_id)
     .execute(pool)
     .await?;
@@ -374,6 +402,20 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 job.hub.publish_event(WsOut::AnswerScoring {
                     player: player.clone(),
                 });
+                // A conversation is graded and stored as the whole chain; a
+                // plain round as its one prompt and answer.
+                let (graded_prompt, graded_output, turns) = match &job.history {
+                    Some(history) => {
+                        let mut turns = history.clone();
+                        turns.push(crate::llm::Turn { prompt: job.prompt.clone(), output: full.clone() });
+                        (
+                            crate::llm::chain_prompt(&turns),
+                            crate::llm::chain_output(&turns),
+                            Some(serde_json::to_string(&turns).unwrap_or_default()),
+                        )
+                    }
+                    None => (job.prompt.clone(), full.clone(), None),
+                };
                 // Concurrent under one deadline: the old sequential pair held
                 // the inflight claim (and the round) twice as long.
                 let criteria = game::criteria_for(&job.target);
@@ -383,12 +425,12 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 // (ai_score of (c, c) is c).
                 let scored = tokio::time::timeout(VERDICTS_TIMEOUT, async {
                     if image_round {
-                        let critique = state.llm.grade_prompt(&job.prompt, &job.target, &criteria).await;
+                        let critique = state.llm.grade_prompt(&graded_prompt, &job.target, &criteria).await;
                         (critique.clone(), critique)
                     } else {
                         tokio::join!(
-                            state.llm.score(&job.prompt, &full, &job.target, &criteria),
-                            state.llm.grade_prompt(&job.prompt, &job.target, &criteria),
+                            state.llm.score(&graded_prompt, &graded_output, &job.target, &criteria),
+                            state.llm.grade_prompt(&graded_prompt, &job.target, &criteria),
                         )
                     }
                 })
@@ -411,7 +453,7 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                 let verdict_ms = verdict_start.elapsed().as_millis() as u64;
                 tracing::debug!(room = %job.code, player_id = job.player_id, proximity = verdict.score, critic = critique.score, verdict_ms, "verdicts received");
                 let ai = game::ai_score(verdict.score, critique.score);
-                insert_answer_row(&state.pool, &job, &full, &verdict, &critique, true)
+                insert_answer_row(&state.pool, &job, &graded_prompt, &graded_output, turns.as_deref(), &verdict, &critique, true)
                     .await
                     .map(|_| (ai, truncated))
                     .map_err(|e| e.to_string())
@@ -449,7 +491,9 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                     score: 0,
                     feedback: CRASH_NOTICE.into(),
                 };
-                if let Err(e) = insert_answer_row(&state.pool, &job, &full, &marker, &marker, false).await {
+                // No turns on the marker: it only lands when no row exists,
+                // so the next prompt starts the conversation afresh.
+                if let Err(e) = insert_answer_row(&state.pool, &job, &job.prompt, &full, None, &marker, &marker, false).await {
                     tracing::error!(room = %job.code, player_id = job.player_id, error = %e, "fallback answer write failed");
                 }
                 job.hub.release(job.round_id, job.player_id).await;
@@ -783,6 +827,58 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(err.code, "too_many_attempts");
+    }
+
+    #[tokio::test]
+    async fn conversation_round_chains_prompts_instead_of_replacing() {
+        let pool = test_pool().await;
+        let state = AppState::new(pool.clone());
+        rooms::create_room(&pool, "CV01").await.unwrap();
+        let ana = rooms::add_player(&pool, "CV01", "ana").await.unwrap();
+        let target = game::conversation_target().expect("a conversation exercise").to_string();
+        sqlx::query("UPDATE round SET target = ? WHERE room_code = 'CV01'")
+            .bind(&target)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'CV01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let hub = get_hub(&state.hubs, "CV01").await;
+        let mut erx = hub.subscribe_events().await;
+        for (i, p) in ["voici les notions", "fais une synthese", "teste-moi", "corrige-moi"].iter().enumerate() {
+            let job = begin_answer(&state, "CV01", &ana.token, p).await.expect("prompt admitted");
+            // Each prompt reaches the model with the earlier ones.
+            assert!(job.enriched.contains("voici les notions"));
+            assert!(job.enriched.contains(&format!("(prompt {})", i + 1)));
+            spawn_answer(state.clone(), job);
+            loop {
+                if let WsOut::AnswerDone { .. } = erx.recv().await.unwrap() {
+                    break;
+                }
+            }
+        }
+        let err = match begin_answer(&state, "CV01", &ana.token, "et encore").await {
+            Ok(_) => panic!("a fifth prompt must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "too_many_attempts");
+        let (prompt, turns, attempts): (String, String, i64) =
+            sqlx::query_as("SELECT prompt, turns, attempts FROM answer WHERE player_id = ?")
+                .bind(ana.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(attempts, game::MAX_CONVERSATION_PROMPTS);
+        assert_eq!(crate::llm::parse_turns(Some(&turns)).len(), 4, "every prompt kept");
+        assert!(prompt.starts_with("Prompt 1 :\nvoici les notions"));
+        assert!(prompt.contains("Prompt 4 :\ncorrige-moi"));
+        let snap = game::room_snapshot(&pool, "CV01", None).await.unwrap();
+        let mine = game::personalize(&snap, Some(ana.id));
+        assert_eq!(mine["conversation"], true);
+        assert_eq!(mine["my_turns"].as_array().map(|t| t.len()), Some(4));
+        assert!(game::personalize(&snap, None)["my_turns"].as_array().unwrap().is_empty());
     }
 
     struct FailingSource;

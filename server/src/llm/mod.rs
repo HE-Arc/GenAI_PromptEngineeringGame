@@ -30,9 +30,88 @@ pub fn enriched_input(manche: i64, target: &str, prompt: &str) -> String {
     )
 }
 
+// One exchange of a conversation round (answer.turns).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Turn {
+    pub prompt: String,
+    pub output: String,
+}
+
+// NULL, empty or unreadable all mean "no earlier exchange": a broken column
+// must restart the conversation, never block the player.
+pub fn parse_turns(raw: Option<&str>) -> Vec<Turn> {
+    raw.and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+}
+
+// Play input of a conversation round: the exercise, then every earlier
+// exchange, then the new prompt, so the model answers in context.
+pub fn conversation_input(manche: i64, target: &str, history: &[Turn], prompt: &str) -> String {
+    let mut out = format!("Exercice/manche {} : {}\n", manche, target.trim());
+    if !history.is_empty() {
+        out.push_str("\nConversation précédente avec l'élève (réponds en tenant compte de ces échanges) :\n");
+        for (i, t) in history.iter().enumerate() {
+            out.push_str(&format!(
+                "\n--- Prompt {n} de l'élève ---\n{p}\n--- Ta réponse {n} ---\n{o}\n",
+                n = i + 1,
+                p = t.prompt.trim(),
+                o = t.output.trim()
+            ));
+        }
+    }
+    out.push_str(&format!(
+        "\nNouveau prompt élève (prompt {}) : {}",
+        history.len() + 1,
+        prompt.trim()
+    ));
+    out
+}
+
+// The chain as one text, for the critic, the judge and the rating screen:
+// the class rates the whole sequence of prompts, not its last step.
+pub fn chain_prompt(turns: &[Turn]) -> String {
+    turns
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("Prompt {} :\n{}", i + 1, t.prompt.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+// Markdown, since every screen renders answers through ModelOutput.
+pub fn chain_output(turns: &[Turn]) -> String {
+    turns
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("**Réponse au prompt {}**\n\n{}", i + 1, t.output.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_input_carries_history_in_order() {
+        let history = vec![
+            Turn { prompt: "voici les notions".into(), output: "compris".into() },
+            Turn { prompt: "fais une synthèse".into(), output: "synthèse".into() },
+        ];
+        let out = conversation_input(7, "prépare un examen", &history, "teste-moi");
+        let a = out.find("voici les notions").unwrap();
+        let b = out.find("synthèse").unwrap();
+        let c = out.find("Nouveau prompt élève (prompt 3) : teste-moi").unwrap();
+        assert!(a < b && b < c);
+        assert!(out.contains("prépare un examen"));
+        assert_eq!(chain_prompt(&history), "Prompt 1 :\nvoici les notions\n\nPrompt 2 :\nfais une synthèse");
+    }
+
+    #[test]
+    fn unreadable_turns_restart_the_conversation() {
+        assert!(parse_turns(None).is_empty());
+        assert!(parse_turns(Some("not json")).is_empty());
+        assert_eq!(parse_turns(Some(r#"[{"prompt":"p","output":"o"}]"#)).len(), 1);
+    }
 
     #[test]
     fn enriched_input_never_raw_prompt_alone() {
