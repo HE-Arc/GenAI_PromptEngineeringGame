@@ -15,6 +15,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import remarkBreaks from 'remark-breaks'
 import rehypeKatex from 'rehype-katex'
+import { fenceAsciiArt } from './asciiArt'
 // KaTeX's stylesheet, and through it its fonts: Vite bundles both from node_modules, so the
 // formulas render on a LAN with no internet, like the rest of the game's fonts.
 import 'katex/dist/katex.min.css'
@@ -53,8 +54,11 @@ export default function ModelOutput({ text, streaming = false }: { text: string;
           the model for `<img onerror>` should SEE the tag it emitted. Dropping it would hide the
           very thing worth reading. `urlTransform` is left at its default, which strips
           `javascript:` URLs — do not override it. */}
-      <Markdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={REHYPE} components={BLOCKS}>
-        {text}
+      {/* A single newline is a line break, as in an exercise: models answer with one item per
+          line and no blank lines, which plain markdown would fold into one paragraph. A text
+          drawing left unfenced is fenced first, or its spaces and lines would collapse. */}
+      <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
+        {fenceAsciiArt(text)}
       </Markdown>
     </div>
   )
