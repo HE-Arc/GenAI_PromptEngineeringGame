@@ -1012,10 +1012,19 @@ export function ConfirmModal({
 
 function fitHeight(el: HTMLTextAreaElement | null) {
   if (!el) return
+  // Dragging the height of a focused field backfires on Chrome: the browser runs its
+  // bring-the-caret-into-view pass inside the very reflow this resize causes, and when the
+  // caret sits below the fold in a field taller than the viewport, that pass aims at the
+  // field's start rather than the caret — the page visibly yanks back to the input's top
+  // mid-typing. Welding the page's own scroll back on, or leaving it as it is when the
+  // browser did not move it, undoes that adjustment the same frame it happens.
+  const page = document.scrollingElement
+  const top = page?.scrollTop ?? 0
   // Shrink first, or scrollHeight never reports less than the current height.
   el.style.height = 'auto'
   // border-box: the borders sit outside scrollHeight and must be added back.
   el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`
+  if (page && page.scrollTop !== top) page.scrollTop = top
 }
 
 // A textarea as tall as its text, so a long prompt is read by scrolling the page rather than a
