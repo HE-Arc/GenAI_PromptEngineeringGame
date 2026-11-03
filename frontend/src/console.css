@@ -277,6 +277,19 @@
 .mdt__lead p { margin: 0; }
 .mdt__body > :first-child { margin-top: 0; }
 .mdt__body > :last-child { margin-bottom: 0; }
+/* The copy control rides on the context block it copies: floated so the first lines wrap
+   around it instead of leaving a hole, and cleared so it never escapes the block. */
+.mdt__body::after {
+  content: '';
+  display: block;
+  clear: both;
+}
+.mdt__bodytools {
+  float: right;
+  margin: 0 0 0.4rem 0.6rem;
+}
+/* The tools are now the first child, so the text's first block takes over the top flush. */
+.mdt__bodytools + * { margin-top: 0; }
 .mdt code { font-family: ui-monospace, monospace; font-size: 0.85em; }
 .mdt pre {
   margin: 0 0 0.65em;

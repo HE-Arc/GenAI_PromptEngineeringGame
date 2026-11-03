@@ -388,7 +388,7 @@ export function Readout({
   consigne?: boolean
   // A hint, hidden until the player taps the bulb, so reading it is a choice.
   tip?: string | null
-  // The exercise's data part, copied from the head like the tip is opened from it.
+  // The exercise's data part, copied from a button on the context block it copies (the tip stays in the head).
   copy?: string | null
 }) {
   const [tipOpen, setTipOpen] = useState(false)
@@ -422,36 +422,19 @@ export function Readout({
         <>
           <div className="readout__head">
             <span className="readout__label">{label}</span>
-            {/* Both tools sit in the head so they stay in reach however long the exercise runs. */}
-            {(copy || tip) && (
+            {tip && (
               <div className="readout__tools">
-                {copy && (
-                  <button
-                    type="button"
-                    className="readout__tipbtn"
-                    aria-label={copyStatus || 'Copier le contenu de l’exercice'}
-                    title={copyStatus || 'Copier le contenu de l’exercice'}
-                    onClick={() => void copyContent()}
-                  >
-                    {copied === 'yes' ? '✓' : copied === 'failed' ? '⚠' : '📋'}
-                  </button>
-                )}
-                {tip && (
-                  <button
-                    type="button"
-                    className={`readout__tipbtn${tipOpen ? ' is-open' : ''}`}
-                    aria-expanded={tipOpen}
-                    aria-controls={tipId}
-                    aria-label={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
-                    title={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
-                    onClick={() => setTipOpen((o) => !o)}
-                  >
-                    💡
-                  </button>
-                )}
-                <span className="visually-hidden" aria-live="polite">
-                  {copyStatus}
-                </span>
+                <button
+                  type="button"
+                  className={`readout__tipbtn${tipOpen ? ' is-open' : ''}`}
+                  aria-expanded={tipOpen}
+                  aria-controls={tipId}
+                  aria-label={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
+                  title={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
+                  onClick={() => setTipOpen((o) => !o)}
+                >
+                  💡
+                </button>
               </div>
             )}
           </div>
@@ -461,7 +444,29 @@ export function Readout({
             </p>
           )}
           {/* Markdown, so an exercise's lists, emphasis and formulas render as they were written. */}
-          <TargetText className="readout__value" text={value} consigne={consigne} />
+          <TargetText
+            className="readout__value"
+            text={value}
+            consigne={consigne}
+            tools={
+              copy ? (
+                <>
+                  <button
+                    type="button"
+                    className="readout__tipbtn"
+                    aria-label={copyStatus || 'Copier le contenu de l’exercice'}
+                    title={copyStatus || 'Copier le contenu de l’exercice'}
+                    onClick={() => void copyContent()}
+                  >
+                    {copied === 'yes' ? '✓' : copied === 'failed' ? '⚠' : '📋'}
+                  </button>
+                  <span className="visually-hidden" aria-live="polite">
+                    {copyStatus}
+                  </span>
+                </>
+              ) : undefined
+            }
+          />
         </>
       )}
       {image && <img className="readout__image" src={image} alt="Image de l’exercice" />}

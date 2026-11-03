@@ -10,6 +10,7 @@
 // No raw HTML is rendered: `react-markdown` escapes what comes from the source, so a player
 // whose prompt asks for `<img onerror>` gets the text of the tag, not a tag. That is the whole
 // reason for this library rather than an innerHTML assignment over a plain `<div>`.
+import type { ReactNode } from 'react'
 import Markdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -79,10 +80,13 @@ export function TargetText({
   text,
   className,
   consigne,
+  tools,
 }: {
   text: string
   className?: string
   consigne?: boolean
+  // Controls for the body (a copy button), floated at its top-right. A text with no body has no slot.
+  tools?: ReactNode
 }) {
   const split = text.search(/\n\s*\n/)
   const cut = split < 0 && consigne ? text.length : split
@@ -106,6 +110,7 @@ export function TargetText({
       </div>
       {rest && (
         <div className="mdt__body">
+          {tools && <div className="mdt__bodytools">{tools}</div>}
           <Markdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={REHYPE} components={BLOCKS}>
             {rest}
           </Markdown>
