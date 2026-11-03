@@ -102,10 +102,12 @@
   "tip": "Le but est d'évaluer à quel point vous êtes précis en donnant du contexte. Pensez à préciser la grille, que les mesures sont en cm, qu'il y a une légende, etc. Si quelque chose est oublié, l'IA ne pourra pas le deviner.",
   "image": "/exercices/trapeze.png",
   "criteria": [
-   "Le sujet est décrit précisément (trapèze ABCD, sommets, mesures en cm)",
-   "La grille et la légende sont demandées",
-   "Le style visuel est précisé (schéma, couleurs, fond)",
-   "Les éléments à éviter sont indiqués (texte parasite, décor inutile)"
+   "La forme et les sommets sont nommés : trapèze ABCD avec les points A, B, C, D",
+   "Les deux bases sont précisées avec leurs mesures (grande base AB = 6 cm, petite base CD = 3 cm)",
+   "La hauteur h est demandée (3 cm), avec l'indication de sa position (perpendiculaire aux bases)",
+   "Le repère 2D est précisé : axe x en abscisse et axe y en ordonnée, gradués en cm",
+   "Une légende est demandée (reprenant les mesures AB, CD, h)",
+   "Le style visuel est précisé (grille, schéma, couleurs, fond) et les éléments parasites sont écartés"
   ]
  },
  {
@@ -114,9 +116,11 @@
   "tip": "Le but est de trouver, grâce à l'IA, un graphique qui permette de visualiser facilement ce genre de données, et donc de donner le bon contexte pour cela.",
   "image": "/exercices/precipitations.png",
   "criteria": [
-   "Toutes les données sont fournies dans le prompt",
-   "Le type de graphique est précisé ou demandé à l'IA (barres, courbe…)",
-   "Le titre, les axes et l'unité (mm) sont demandés",
+   "Toutes les données (12 mois avec leurs valeurs) sont recopiées dans le prompt",
+   "Le type de graphique est précisé : un histogramme en barres avec les 12 mois en abscisse",
+   "Le titre « Précipitations mensuelles d'une station fictive » (ou équivalent) est demandé",
+   "Les axes sont nommés avec leur unité : « Mois » et « Précipitations (mm) »",
+   "Une échelle des ordonnées allant jusqu'à 120 mm est précisée",
    "L'outil ou le format de sortie est précisé"
   ]
  }
