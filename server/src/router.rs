@@ -90,10 +90,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(pool: SqlitePool) -> Self {
+        let llm = llm::from_env(pool.clone());
         Self {
             pool,
             hubs: Arc::new(RwLock::new(HashMap::new())),
-            llm: llm::from_env(),
+            llm,
             boot: std::time::Instant::now(),
         }
     }
@@ -107,6 +108,7 @@ pub fn build_router(state: AppState) -> Router {
     let rest = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/admin/login", post(rest::admin_login))
+        .route("/api/admin/stats", get(rest::admin_stats))
         .route(
             "/api/admin/rooms",
             get(rest::admin_list).post(rest::admin_create),

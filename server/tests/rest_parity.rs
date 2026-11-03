@@ -474,6 +474,51 @@ async fn admin_delete_done_ok_and_gated() {
 }
 
 #[tokio::test]
+async fn admin_stats_gated_and_counts_tokens() {
+    let (server, pool, _) = server_with_pool().await;
+    let gated = server.get("/api/admin/stats").await;
+    gated.assert_status(axum::http::StatusCode::FORBIDDEN);
+    gated.assert_text(r#"{"error":"admin only"}"#);
+
+    for (kind, input, output) in [("play", 120, 30), ("judge", 40, 10)] {
+        sqlx::query("INSERT INTO llm_usage (kind, model, input_tokens, output_tokens) VALUES (?, 'm', ?, ?)")
+            .bind(kind)
+            .bind(input)
+            .bind(output)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let login = server
+        .post("/api/admin/login")
+        .json(&json!({"password": "genai"}))
+        .await;
+    login.assert_status_ok();
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let res = server.get("/api/admin/stats").add_header("cookie", cookie).await;
+    res.assert_status_ok();
+    let v = res.json::<serde_json::Value>();
+    assert_eq!(v["tokens"]["calls"], 2);
+    assert_eq!(v["tokens"]["input"], 160);
+    assert_eq!(v["tokens"]["output"], 40);
+    assert_eq!(v["tokens"]["by_kind"].as_array().unwrap().len(), 2);
+    assert!(v["players"].is_number());
+    assert!(v["answers"]["total"].is_number());
+    assert_eq!(v["rooms"]["total"], 0);
+}
+
+#[tokio::test]
 async fn room_created_bare_then_configured_in_lobby_at_launch() {
     // Creation takes no settings: the room gets today's defaults, and the
     // lobby's choices ride the start call.

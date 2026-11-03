@@ -12,7 +12,7 @@ import {
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
-import { buzz, copyText, reduced, useCountUp } from './fx'
+import { buzz, reduced, useCountUp } from './fx'
 import type { AnswerFeed, Link } from './useRoom'
 
 // Same bound as the server's MAX_PROMPT_CHARS (server/src/ws/mod.rs).
@@ -75,7 +75,6 @@ export default function Game({
   const verdictRef = useRef<HTMLDivElement>(null)
   // True the moment the `done` frame lands, before the next snapshot says so. See `send`.
   const [sent, setSent] = useState(false)
-  const [copied, setCopied] = useState<'no' | 'yes' | 'failed'>('no')
   // The answer as it is being written, and then the verdict. Two pieces of one thing rather
   // than two, because the player's question — « where is my note » — has one answer, and a
   // screen that could show either would have to say which half is on.
@@ -147,7 +146,6 @@ export default function Game({
     setErr('')
     setSent(false)
     setLive(null)
-    setCopied('no')
   }
 
   const myName = getName(code)
@@ -665,26 +663,8 @@ export default function Game({
                 image={state.target_image}
                 consigne={!!state.target}
                 tip={state.target_tip}
+                copy={exerciseContent(state.target) || null}
               />
-            )}
-
-            {!scored && exerciseContent(state.target) && (
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() =>
-                  void copyText(exerciseContent(state.target)).then(
-                    () => setCopied('yes'),
-                    () => setCopied('failed'),
-                  )
-                }
-              >
-                {copied === 'yes'
-                  ? '✓ Contenu copié'
-                  : copied === 'failed'
-                    ? 'Copie impossible, sélectionne le texte à la main'
-                    : 'Copier le contenu de l’exercice'}
-              </button>
             )}
 
             {/* Every slot of a conversation on screen from the start, so the player sees at once

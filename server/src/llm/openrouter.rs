@@ -23,12 +23,13 @@ pub struct ImageGen {
     url: String,
     key: String,
     model: String,
+    usage: super::UsageRecorder,
 }
 
 impl ImageGen {
     // None without OPENROUTER_API_KEY: image rounds then fail loudly per answer
     // instead of the whole server refusing to start.
-    pub fn from_env() -> Option<Self> {
+    pub fn from_env(pool: sqlx::SqlitePool) -> Option<Self> {
         let key = std::env::var("OPENROUTER_API_KEY").ok().filter(|k| !k.trim().is_empty())?;
         let base = std::env::var("OPENROUTER_BASE_URL")
             .ok()
@@ -49,6 +50,7 @@ impl ImageGen {
             url: format!("{}/images", base.trim_end_matches('/')),
             key: key.trim().to_string(),
             model,
+            usage: super::UsageRecorder::new(pool),
         })
     }
 
@@ -77,6 +79,10 @@ impl ImageGen {
             return Err(format!("image call failed: HTTP {status}: {}", detail.chars().take(300).collect::<String>()));
         }
         let value: Value = response.json().await.map_err(|e| format!("image call unreadable: {e}"))?;
+        // Recorded before parsing: a billed response that fails to parse still
+        // counts, and an image call without a usage block still counts as a call.
+        let (input, output) = super::usage_counts(&value).unwrap_or((0, 0));
+        self.usage.record("image", &self.model, input, output);
         parse_image_response(&value)
     }
 }

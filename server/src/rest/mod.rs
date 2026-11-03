@@ -465,6 +465,85 @@ pub async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
     (StatusCode::OK, headers, Json(json!({"ok": true}))).into_response()
 }
 
+// Usage and activity totals for the /stats page. Every read falls back to
+// zero/empty so a fresh or partially migrated database never answers 500.
+pub async fn admin_stats(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !global_admin(&headers) {
+        return err(StatusCode::FORBIDDEN, "admin only").into_response();
+    }
+    let pool = &state.pool;
+    let by_kind: Vec<(String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT kind, COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
+         FROM llm_usage GROUP BY kind ORDER BY kind",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    // Same timestamp format as the column default (T separator), so the string
+    // comparison is valid.
+    let last_24h: (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM llm_usage
+         WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or_default();
+    let phases: Vec<(String, i64)> = sqlx::query_as("SELECT phase, COUNT(*) FROM room GROUP BY phase")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let players: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let answers: (i64, i64, Option<f64>, Option<f64>) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(attempts), 0), AVG(LENGTH(prompt)), AVG(round_score) FROM answer",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or_default();
+    let ratings: (i64, Option<f64>) = sqlx::query_as("SELECT COUNT(*), AVG(score) FROM rating")
+        .fetch_one(pool)
+        .await
+        .unwrap_or_default();
+    let quiz: (i64, i64) =
+        sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(correct), 0) FROM quiz_attempt")
+            .fetch_one(pool)
+            .await
+            .unwrap_or_default();
+    let images: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM generated_image")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+    let calls: i64 = by_kind.iter().map(|k| k.1).sum();
+    let input: i64 = by_kind.iter().map(|k| k.2).sum();
+    let output: i64 = by_kind.iter().map(|k| k.3).sum();
+    let rooms_total: i64 = phases.iter().map(|p| p.1).sum();
+    Json(json!({
+        "uptime_seconds": state.boot.elapsed().as_secs(),
+        "tokens": {
+            "calls": calls,
+            "input": input,
+            "output": output,
+            "last_24h": {"input": last_24h.0, "output": last_24h.1},
+            "by_kind": by_kind.iter().map(|(kind, calls, input, output)| {
+                json!({"kind": kind, "calls": calls, "input": input, "output": output})
+            }).collect::<Vec<_>>(),
+        },
+        "rooms": {
+            "total": rooms_total,
+            "by_phase": phases.iter().map(|(phase, count)| json!({"phase": phase, "count": count})).collect::<Vec<_>>(),
+        },
+        "players": players,
+        "answers": {"total": answers.0, "attempts": answers.1, "avg_prompt_chars": answers.2, "avg_note": answers.3},
+        "ratings": {"total": ratings.0, "avg": ratings.1},
+        "quiz": {"attempts": quiz.0, "correct": quiz.1},
+        "images": images,
+    }))
+    .into_response()
+}
+
 // Mirrors Django admin_list_rooms payload keys; ordered live-first so
 // the console and this list rank rooms the same way.
 pub async fn admin_list(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {

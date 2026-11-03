@@ -363,6 +363,33 @@ export async function listRooms(): Promise<RoomSummary[]> {
   return data.rooms
 }
 
+// Model usage and activity totals for the /stats page. Same admin session as the console.
+export interface KindUsage {
+  kind: string
+  calls: number
+  input: number
+  output: number
+}
+export interface StatsData {
+  uptime_seconds: number
+  tokens: {
+    calls: number
+    input: number
+    output: number
+    last_24h: { input: number; output: number }
+    by_kind: KindUsage[]
+  }
+  rooms: { total: number; by_phase: { phase: Phase; count: number }[] }
+  players: number
+  answers: { total: number; attempts: number; avg_prompt_chars: number | null; avg_note: number | null }
+  ratings: { total: number; avg: number | null }
+  quiz: { attempts: number; correct: number }
+  images: number
+}
+export async function getStats(): Promise<StatsData> {
+  return get<StatsData>('/api/admin/stats')
+}
+
 // « On peut passer. » One player's vote on the step the room is already in.
 //
 // The client never names the step: a payload that could name it is a payload that could vote on a

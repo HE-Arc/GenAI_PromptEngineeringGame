@@ -377,6 +377,7 @@ export function Readout({
   image,
   consigne,
   tip,
+  copy,
 }: {
   label: string
   value: string
@@ -387,9 +388,28 @@ export function Readout({
   consigne?: boolean
   // A hint, hidden until the player taps the bulb, so reading it is a choice.
   tip?: string | null
+  // The exercise's data part, copied from the head like the tip is opened from it.
+  copy?: string | null
 }) {
   const [tipOpen, setTipOpen] = useState(false)
+  const [copied, setCopied] = useState<'no' | 'yes' | 'failed'>('no')
   const tipId = useId()
+  // One pending reset at a time: a second tap replaces it, and unmounting drops it.
+  const resetTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(resetTimer.current), [])
+  const copyStatus =
+    copied === 'yes' ? 'Contenu copié' : copied === 'failed' ? 'Copie impossible, sélectionne le texte à la main' : ''
+  async function copyContent() {
+    buzz()
+    try {
+      await copyText(copy!)
+      setCopied('yes')
+    } catch {
+      setCopied('failed')
+    }
+    window.clearTimeout(resetTimer.current)
+    resetTimer.current = window.setTimeout(() => setCopied('no'), 1800)
+  }
   const size = TIERS.find((t) => value.length <= t.max)!.size
   return (
     // The tier rides on the panel, not on the text, so every rule below can be written as
@@ -402,18 +422,37 @@ export function Readout({
         <>
           <div className="readout__head">
             <span className="readout__label">{label}</span>
-            {tip && (
-              <button
-                type="button"
-                className={`readout__tipbtn${tipOpen ? ' is-open' : ''}`}
-                aria-expanded={tipOpen}
-                aria-controls={tipId}
-                aria-label={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
-                title={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
-                onClick={() => setTipOpen((o) => !o)}
-              >
-                💡
-              </button>
+            {/* Both tools sit in the head so they stay in reach however long the exercise runs. */}
+            {(copy || tip) && (
+              <div className="readout__tools">
+                {copy && (
+                  <button
+                    type="button"
+                    className="readout__tipbtn"
+                    aria-label={copyStatus || 'Copier le contenu de l’exercice'}
+                    title={copyStatus || 'Copier le contenu de l’exercice'}
+                    onClick={() => void copyContent()}
+                  >
+                    {copied === 'yes' ? '✓' : copied === 'failed' ? '⚠' : '📋'}
+                  </button>
+                )}
+                {tip && (
+                  <button
+                    type="button"
+                    className={`readout__tipbtn${tipOpen ? ' is-open' : ''}`}
+                    aria-expanded={tipOpen}
+                    aria-controls={tipId}
+                    aria-label={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
+                    title={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
+                    onClick={() => setTipOpen((o) => !o)}
+                  >
+                    💡
+                  </button>
+                )}
+                <span className="visually-hidden" aria-live="polite">
+                  {copyStatus}
+                </span>
+              </div>
             )}
           </div>
           {tip && tipOpen && (

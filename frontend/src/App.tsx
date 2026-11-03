@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Join from './Join'
 import Lobby from './Lobby'
 import Admin from './Admin'
+import Stats from './Stats'
 import Game from './Game'
 import Quiz from './Quiz'
 import Rating from './Rating'
@@ -18,6 +19,7 @@ function route() {
   const path = location.pathname.replace(/^\/+|\/+$/g, '')
   const [head, tail] = path.split('/')
   if (head === 'admin') return { screen: 'admin' as const, code: null }
+  if (head === 'stats') return { screen: 'stats' as const, code: null }
   if (head === 'room' && tail) return { screen: 'room' as const, code: tail.toUpperCase() }
   return { screen: 'join' as const, code: null }
 }
@@ -101,6 +103,7 @@ function Fault({ code, onRetry, onLeave }: { code: string; onRetry: () => void; 
 // `state` is a snapshot on every case that has one, which is why no case needs an assertion.
 type View =
   | { screen: 'admin' }
+  | { screen: 'stats' }
   | { screen: 'join' }
   | { screen: 'gate'; code: string }
   | { screen: 'fault'; code: string }
@@ -133,7 +136,9 @@ export default function App() {
   const view: View =
     screen === 'admin'
       ? { screen: 'admin' }
-      : !code
+      : screen === 'stats'
+        ? { screen: 'stats' }
+        : !code
         ? { screen: 'join' }
         : !token
           ? { screen: 'gate', code }
@@ -211,6 +216,13 @@ export default function App() {
         <>
           <SkipLink />
           <Admin />
+        </>
+      )
+    case 'stats':
+      return (
+        <>
+          <SkipLink />
+          <Stats />
         </>
       )
     case 'join':

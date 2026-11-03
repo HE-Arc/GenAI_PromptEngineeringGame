@@ -13,6 +13,7 @@ pub struct OpenAiSource {
     play_model: String,
     judge_model: String,
     image: Option<super::openrouter::ImageGen>,
+    usage: super::UsageRecorder,
 }
 
 // OpenCode Go rejects header-less requests with 400 MissingSessionID: the
@@ -71,7 +72,7 @@ fn pooled_http() -> &'static reqwest::Client {
 }
 
 impl OpenAiSource {
-    pub fn from_env() -> Self {
+    pub fn from_env(pool: sqlx::SqlitePool) -> Self {
         let mut config = async_openai::config::OpenAIConfig::default();
         // Any OpenAI-compatible endpoint: LLM_BASE_URL points at it and
         // LLM_API_KEY carries its key, mirroring the Django-era contract.
@@ -100,7 +101,8 @@ impl OpenAiSource {
             %judge_model,
             "LLM backend configured"
         );
-        let image = super::openrouter::ImageGen::from_env();
+        let usage = super::UsageRecorder::new(pool.clone());
+        let image = super::openrouter::ImageGen::from_env(pool);
         if image.is_none() {
             tracing::warn!("no OPENROUTER_API_KEY: image rounds will fail");
         }
@@ -109,6 +111,7 @@ impl OpenAiSource {
             play_model,
             judge_model,
             image,
+            usage,
         }
     }
 }
@@ -182,6 +185,7 @@ impl OpenAiSource {
     // so their tolerance to chatty or broken replies cannot drift apart.
     fn verdict_call(
         &self,
+        kind: &'static str,
         instructions: &'static str,
         payload: Value,
         max_tokens: u32,
@@ -194,15 +198,20 @@ impl OpenAiSource {
             "reasoning": { "effort": "low" },
         });
         let config = self.client.config();
+        let usage = self.usage.clone();
+        let judge_model = self.judge_model.clone();
         Box::pin(async move {
             // Bounded so a hung judge cannot hold the answer's inflight claim
             // past the round: a timeout verdict is 0, scored like any other.
             let text = match tokio::time::timeout(VERDICT_TIMEOUT, post_responses(config, body)).await {
-                Ok(Ok(r)) if r.status().is_success() => r
-                    .json::<Value>()
-                    .await
-                    .map(|v| response_output_text(&v))
-                    .unwrap_or_default(),
+                Ok(Ok(r)) if r.status().is_success() => match r.json::<Value>().await {
+                    Ok(v) => {
+                        let (input, output) = super::usage_counts(&v).unwrap_or((0, 0));
+                        usage.record(kind, &judge_model, input, output);
+                        response_output_text(&v)
+                    }
+                    Err(_) => String::new(),
+                },
                 Ok(Ok(r)) => {
                     crate::log_warn(&format!("verdict call failed: HTTP {}", r.status()));
                     String::new()
@@ -246,6 +255,8 @@ impl super::LlmSource for OpenAiSource {
             "reasoning": { "effort": "low" },
         });
         let config = self.client.config();
+        let usage = self.usage.clone();
+        let play_model = self.play_model.clone();
         Box::pin(async move {
             // The whole stream must finish inside the deadline: without it a
             // stalled body holds the per-answer task and inflight claim until
@@ -315,6 +326,9 @@ impl super::LlmSource for OpenAiSource {
                                     let _ = tx.send(text);
                                 }
                             }
+                            // An incomplete answer is still billed.
+                            let (input, output) = super::usage_counts(&event).unwrap_or((0, 0));
+                            usage.record("play", &play_model, input, output);
                             return Ok(kind == "response.incomplete");
                         }
                         Some("response.failed" | "error") if !saw_delta => {
@@ -331,6 +345,8 @@ impl super::LlmSource for OpenAiSource {
                     let text = response_output_text(&value);
                     if !text.is_empty() {
                         let _ = tx.send(text);
+                        let (input, output) = super::usage_counts(&value).unwrap_or((0, 0));
+                        usage.record("play", &play_model, input, output);
                         return Ok(value.get("status").and_then(Value::as_str) == Some("incomplete"));
                     }
                 }
@@ -348,7 +364,7 @@ impl super::LlmSource for OpenAiSource {
         criteria: &[String],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
         let payload = serde_json::json!({"exercice": target, "prompt": prompt, "reponse_obtenue": output, "criteres": criteria});
-        self.verdict_call(JUDGE_SYS, payload, JUDGE_MAX_TOKENS)
+        self.verdict_call("judge", JUDGE_SYS, payload, JUDGE_MAX_TOKENS)
     }
 
     // The critic: prompt, exercise and criteria only. It must see neither the output nor
@@ -360,7 +376,7 @@ impl super::LlmSource for OpenAiSource {
         criteria: &[String],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
         let payload = serde_json::json!({"exercice": target, "prompt": prompt, "criteres": criteria});
-        self.verdict_call(CRITIC_SYS, payload, CRITIC_MAX_TOKENS)
+        self.verdict_call("critic", CRITIC_SYS, payload, CRITIC_MAX_TOKENS)
     }
 
     fn generate_image(

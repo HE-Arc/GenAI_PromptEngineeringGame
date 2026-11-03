@@ -87,9 +87,77 @@ pub fn chain_output(turns: &[Turn]) -> String {
         .join("\n\n---\n\n")
 }
 
+// Token counts from a /responses or /images payload. The Responses API nests
+// them under `response.usage` on the final streaming event and puts them at the
+// top level on a plain body; the completions-era field names are accepted too.
+pub fn usage_counts(value: &serde_json::Value) -> Option<(i64, i64)> {
+    let usage = value
+        .get("response")
+        .and_then(|r| r.get("usage"))
+        .or_else(|| value.get("usage"))
+        .filter(|u| u.is_object())?;
+    let count = |names: [&str; 2]| {
+        names
+            .iter()
+            .find_map(|n| usage.get(*n).and_then(serde_json::Value::as_i64))
+            .unwrap_or(0)
+    };
+    Some((
+        count(["input_tokens", "prompt_tokens"]),
+        count(["output_tokens", "completion_tokens"]),
+    ))
+}
+
+// Writes one llm_usage row per paid call. The pool is injected, not global, so
+// each test owns its database.
+#[derive(Clone)]
+pub struct UsageRecorder {
+    pool: sqlx::SqlitePool,
+}
+
+impl UsageRecorder {
+    pub fn new(pool: sqlx::SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    // Fire and forget: a usage write must never delay or fail a model call, so
+    // it runs detached and a failure is only logged.
+    pub fn record(&self, kind: &'static str, model: &str, input: i64, output: i64) {
+        let pool = self.pool.clone();
+        let model = model.to_owned();
+        tokio::spawn(async move {
+            let result = sqlx::query(
+                "INSERT INTO llm_usage (kind, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?)",
+            )
+            .bind(kind)
+            .bind(model)
+            .bind(input)
+            .bind(output)
+            .execute(&pool)
+            .await;
+            if let Err(e) = result {
+                tracing::debug!("llm usage not recorded: {e}");
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_counts_reads_every_payload_shape() {
+        let top = serde_json::json!({"usage": {"input_tokens": 12, "output_tokens": 5}});
+        assert_eq!(usage_counts(&top), Some((12, 5)));
+        let nested = serde_json::json!({"type": "response.completed", "response": {"usage": {"input_tokens": 7, "output_tokens": 3}}});
+        assert_eq!(usage_counts(&nested), Some((7, 3)));
+        let aliases = serde_json::json!({"usage": {"prompt_tokens": 9, "completion_tokens": 4}});
+        assert_eq!(usage_counts(&aliases), Some((9, 4)));
+        let partial = serde_json::json!({"usage": {"output_tokens": 4}});
+        assert_eq!(usage_counts(&partial), Some((0, 4)));
+        assert_eq!(usage_counts(&serde_json::json!({"output": []})), None);
+    }
 
     #[test]
     fn conversation_input_carries_history_in_order() {
@@ -182,14 +250,14 @@ pub trait LlmSource: Send + Sync + 'static {
 // A key from either contract (plain OPENAI_API_KEY or the endpoint pair
 // LLM_BASE_URL + LLM_API_KEY) enables the billed streaming client; otherwise
 // the deterministic stub. Tests never set a key, so they always hit the stub.
-pub fn from_env() -> Arc<dyn LlmSource> {
+pub fn from_env(pool: sqlx::SqlitePool) -> Arc<dyn LlmSource> {
     let has_key = |name: &str| {
         std::env::var(name)
             .map(|k| !k.trim().is_empty())
             .unwrap_or(false)
     };
     match has_key("OPENAI_API_KEY") || has_key("LLM_API_KEY") {
-        true => Arc::new(openai::OpenAiSource::from_env()),
+        true => Arc::new(openai::OpenAiSource::from_env(pool)),
         false => {
             tracing::warn!("no LLM API key: using the local stub, scores are not real verdicts");
             Arc::new(StubSource)
