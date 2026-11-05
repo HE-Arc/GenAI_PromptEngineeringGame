@@ -46,6 +46,8 @@ export interface RevealState {
   index: number
   count: number
   prompt: string
+  // The model's answer to the prompt (text, or a markdown image link on image rounds).
+  output: string
   author: string | null
   author_label: string
   rated: number

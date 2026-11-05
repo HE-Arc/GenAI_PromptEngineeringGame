@@ -1255,6 +1255,7 @@ pub async fn room_snapshot(
                     "index": revealed,
                     "count": answers.len(),
                     "prompt": a.prompt,
+                    "output": a.output,
                     "author": if anonymous { Value::Null } else { json!(names.get(&a.player_id)) },
                     "author_label": labels(&players, anonymous).get(&a.player_id),
                     "rated": rated,
@@ -1312,9 +1313,9 @@ pub async fn room_snapshot(
         "total": total_rounds,
         "target_image": target.as_deref().and_then(image_for),
         "target_tip": target.as_deref().and_then(tip_for),
-        // Only on the round summary: a phone writing or rating must not hold
-        // the checklist, not even in devtools, or it would rate by the list.
-        "target_criteria": if room.phase == "summary" {
+        // Hidden while writing: a phone writing must not hold the checklist, not even
+        // in devtools, or it would write to the list. Raters need it to grade.
+        "target_criteria": if room.phase == "summary" || room.phase == "rating" {
             target.as_deref().map(criteria_for).unwrap_or_default()
         } else {
             Vec::new()
@@ -1601,7 +1602,8 @@ mod tests {
 
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "rating");
-        assert!(snap["target_criteria"].as_array().unwrap().is_empty(), "criteria hidden while rating");
+        assert!(!snap["target_criteria"].as_array().unwrap().is_empty(), "criteria shown while rating");
+        assert_eq!(snap["reveal"]["output"], "o1");
         assert!(snap["players"][0]["score"].is_null(), "scores hidden while rating");
         assert_eq!(snap["reveal"]["author_label"], "Joueur 1");
         assert!(snap["reveal"]["author"].is_null());

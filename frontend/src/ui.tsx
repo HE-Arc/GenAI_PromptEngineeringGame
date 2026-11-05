@@ -882,8 +882,8 @@ export function Confetti({ pieces = 70 }: { pieces?: number }) {
   )
 }
 
-// What an exercise is graded on. The server sends the list only on the round summary, so a
-// screen can render this unconditionally: it is empty, and draws nothing, at any other time.
+// What an exercise is graded on. The server sends the list while rating and on the round summary,
+// so a screen can render this unconditionally: it is empty, and draws nothing, while writing.
 export function Criteria({ items }: { items: string[] }) {
   if (items.length === 0) return null
   return (

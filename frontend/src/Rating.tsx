@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from 'react'
-import { AnswerMeter, ConsoleBar, PhaseClock, RoundTrack, ScoreScale } from './ui'
+import { AnswerMeter, ConsoleBar, Criteria, PhaseClock, RoundTrack, ScoreScale } from './ui'
+import ModelOutput from './ModelOutput'
 import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
 import { buzz } from './fx'
@@ -148,11 +149,13 @@ export default function Rating({
           </span>
         </div>
 
-        {/* The prompt, and nothing around it. No model output, no score, no author when the game
-            hides authors, and no other prompt of the round: a player who saw two of them at once
-            could rank them against each other, which is the competition the phase exists to
-            refuse. */}
+        {/* The prompt, the model's answer to it and the criteria to grade on. No score, no author
+            when the game hides authors, and no other prompt of the round: a player who saw two of
+            them at once could rank them against each other, which is the competition the phase
+            exists to refuse. The answer is shown because a prompt cannot be graded blind. */}
         <p className="prompt">{reveal.prompt}</p>
+        <ModelOutput text={reveal.output} />
+        <Criteria items={state.target_criteria} />
 
         {mine ? (
           /* Cool rather than the fault red: a rule of the game is not a malfunction, and this
@@ -165,9 +168,6 @@ export default function Rating({
         ) : (
           <div className="form">
             <div className="raterow">
-              <span className="label" id="rate-label">
-                Conformité aux règles du prompt engineering
-              </span>
               <span className="raterow__value num" aria-hidden="true">
                 {shown ?? '—'}
               </span>
@@ -176,7 +176,7 @@ export default function Rating({
             {/* Ten buttons rather than a slider: a thumb hits one of ten cells far better than it
                 places a mark between two integers. Each tap sends the note; the pressed one is the
                 note the server holds. */}
-            <div className="rates" role="group" aria-labelledby="rate-label">
+            <div className="rates" role="group" aria-label="Note">
               {Array.from({ length: SCALE_MAX - SCALE_MIN + 1 }, (_, i) => i + SCALE_MIN).map((n) => (
                 <button
                   key={n}
