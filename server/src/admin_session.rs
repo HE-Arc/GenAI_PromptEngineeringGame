@@ -5,10 +5,9 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 pub const COOKIE_NAME: &str = "genai_admin";
-// Fixed signed value, not a bearer secret: Django's session holds one
-// boolean (`request.session["admin"]`), so parity needs proof of the
-// password, not an identity. Stealing it equals stealing Django's cookie.
-const SIGNED_BODY: &[u8] = b"genai-admin-v1";
+// Signed expiry, not an identity: Django's session holds one boolean
+// (`request.session["admin"]`), so parity needs proof of the password.
+const SESSION_SECS: u64 = 12 * 60 * 60;
 
 /// Release builds must not fall back to a known default: refuse to start.
 pub fn check_env() -> Result<(), String> {
@@ -66,28 +65,41 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn tag() -> Vec<u8> {
+fn mac(expiry: u64) -> Hmac<Sha256> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret().as_bytes())
         .expect("hmac accepts any key length");
-    mac.update(SIGNED_BODY);
-    mac.finalize().into_bytes().to_vec()
+    mac.update(format!("genai-admin-v1:{expiry}").as_bytes());
+    mac
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+// Cookie value: `<expiry_unix>.<hex hmac>`.
+fn issue_value_with_expiry(expiry: u64) -> String {
+    format!("{expiry}.{}", hex(&mac(expiry).finalize().into_bytes()))
 }
 
 pub fn issue_value() -> String {
-    hex(&tag())
+    issue_value_with_expiry(now_unix() + SESSION_SECS)
+}
+
+fn valid_value_at(v: &str, now: u64) -> bool {
+    let Some((exp, sig)) = v.trim().split_once('.') else {
+        return false;
+    };
+    let (Ok(expiry), Some(sig)) = (exp.parse::<u64>(), unhex(sig)) else {
+        return false;
+    };
+    // verify_slice compares in constant time.
+    mac(expiry).verify_slice(&sig).is_ok() && expiry > now
 }
 
 pub fn valid_value(v: &str) -> bool {
-    // Decoded first so a length probe learns nothing; compared in
-    // constant time so a timing probe learns nothing either.
-    match unhex(v.trim()) {
-        Some(raw) => {
-            let expected = tag();
-            raw.len() == expected.len()
-                && constant_time_eq(&raw, &expected)
-        }
-        None => false,
-    }
+    valid_value_at(v, now_unix())
 }
 
 /// Constant-time equality for secrets; a length mismatch is simply false.
@@ -127,7 +139,7 @@ pub fn set_cookie_header() -> String {
     // Secure in release only: debug runs over plain http on localhost.
     let secure = if cfg!(debug_assertions) { "" } else { "; Secure" };
     format!(
-        "{COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax{secure}",
+        "{COOKIE_NAME}={}; Path=/; Max-Age={SESSION_SECS}; HttpOnly; SameSite=Lax{secure}",
         issue_value()
     )
 }
@@ -144,5 +156,18 @@ mod tests {
         let mut bad = v.clone();
         bad.push('0');
         assert!(!valid_value(&bad));
+    }
+
+    #[test]
+    fn expiry_is_signed() {
+        let v = issue_value_with_expiry(1_000);
+        assert!(valid_value_at(&v, 999));
+        // expired
+        assert!(!valid_value_at(&v, 1_000));
+        assert!(!valid_value_at(&v, 5_000));
+        // tampered expiry keeps the old signature
+        let sig = v.split_once('.').unwrap().1;
+        assert!(!valid_value_at(&format!("9999999999.{sig}"), 999));
+        assert!(!valid_value_at("garbage", 0));
     }
 }
