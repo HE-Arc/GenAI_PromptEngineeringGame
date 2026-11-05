@@ -504,7 +504,7 @@ export default function Game({
               counts down from the phone's own clock. */}
           {!scored && (
             <span data-testid="time-left">
-              <PhaseClock timer={state.timer} what="pour écrire ton prompt" />
+              <PhaseClock timer={state.timer} seconds={state.round_seconds} what="pour écrire ton prompt" />
             </span>
           )}
         </Step>

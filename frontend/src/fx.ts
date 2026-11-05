@@ -1,8 +1,6 @@
 /* Game feel: the small effects that are not components. Its own module for the reason `format.ts`
  * gives — a file exporting both hooks and components breaks Fast Refresh. */
 
-import { useState } from 'react'
-
 export const reduced = () =>
   typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
@@ -14,16 +12,6 @@ export function buzz(pattern: number | number[] = 12) {
   } catch {
     /* a refused vibration is not worth a fault */
   }
-}
-
-// The length of a server window, which the snapshot does not carry: the largest remaining time
-// seen for one deadline is the window's length to within one frame. Adjusted during render, keyed
-// on the deadline, so the next question or round starts its own ring.
-export function useWindowLength(deadline: number | null, left: number): number {
-  const [seen, setSeen] = useState<{ deadline: number | null; max: number }>({ deadline, max: left })
-  if (seen.deadline !== deadline) setSeen({ deadline, max: left })
-  else if (left > seen.max) setSeen({ deadline, max: left })
-  return seen.deadline === deadline ? Math.max(seen.max, left) : left
 }
 
 // Deterministic hue per player name, so a player keeps the same colour on every phone.

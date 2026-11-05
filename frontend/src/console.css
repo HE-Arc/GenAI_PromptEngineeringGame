@@ -439,6 +439,9 @@
   transition: stroke-dashoffset 250ms linear, stroke 200ms linear;
   filter: drop-shadow(0 0 4px var(--glow));
 }
+.ring--still .ring__fill {
+  transition: none;
+}
 .qclock__n {
   color: var(--ink);
   font-size: 1.5rem;

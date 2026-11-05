@@ -133,7 +133,7 @@ export default function Rating({
             this screen is a sequence, and this is the only thing on it that moves. */}
         <RoundTrack current={reveal.gradable_index + (mine ? 0 : 1)} total={reveal.gradable_count} />
 
-        <PhaseClock timer={state.timer} what="pour noter ce prompt" />
+        <PhaseClock timer={state.timer} seconds={state.rate_seconds} what="pour noter ce prompt" />
 
         {/* No exercise here: the prompt is rated on its own, the instructions and their
             material (email, image) are shown only while the prompt is being written. */}

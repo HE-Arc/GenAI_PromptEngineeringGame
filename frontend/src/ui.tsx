@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { countdown, fr, noun, nounOf } from './format'
-import { buzz, copyText, hueOf, initials, useWindowLength } from './fx'
+import { buzz, copyText, hueOf, initials } from './fx'
 import { TargetText } from './ModelOutput'
 import { useQuizWindow, type ServerWindow } from './serverClock'
 import { linkWord, type Link } from './useRoom'
@@ -741,9 +741,9 @@ export function Section({ title, children }: { title: string; children: ReactNod
 // The clock of a timed phase — writing a prompt, rating one — drawn like the didacticiel's.
 // Read off the server's deadline and clock, so a phone that arrives late or runs fast counts the
 // same seconds as the rest of the room. Renders nothing when the phase has no clock.
-export function PhaseClock({ timer, what }: { timer: ServerWindow | null; what: string }) {
+export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | null; what: string; seconds: number }) {
   const { open, left } = useQuizWindow(timer)
-  const length = useWindowLength(timer?.deadline_ms ?? null, open ? left : 0)
+  const length = seconds * 1000
   if (!timer) return null
   const secs = countdown(left)
   return (
@@ -791,16 +791,26 @@ export function PlayerCloud({ players, myName }: { players: Player[]; myName: st
   )
 }
 
-// The countdown as a draining ring with the seconds inside. `length` is the window's measured
-// length; before it is known the ring is simply full.
+// The countdown as a draining ring with the seconds inside. `length` is the window's configured
+// length in ms (the room's own seconds setting), never inferred from what was seen first. The
+// first frame is drawn full with no transition; the fill drains from the next beat.
 // The figure is exposed to assistive tech via aria-label (includes secs) because the number
 // inside is otherwise decorative (aria-hidden svg + visual digits).
 export function Ring({ left, length, secs }: { left: number; length: number; secs: number }) {
   const R = 22
   const C = 2 * Math.PI * R
-  const k = length > 0 ? Math.max(0, Math.min(1, left / length)) : 1
+  const [started, setStarted] = useState(false)
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    setStarted(true)
+  }, [])
+  const k = started && length > 0 ? Math.max(0, Math.min(1, left / length)) : 1
   return (
-    <span className="ring" role="img" aria-label={`${secs} ${secs > 1 ? 'secondes' : 'seconde'}`}>
+    <span
+      className={`ring${started ? '' : ' ring--still'}`}
+      role="img"
+      aria-label={`${secs} ${secs > 1 ? 'secondes' : 'seconde'}`}
+    >
       <svg viewBox="0 0 52 52" className="ring__svg" aria-hidden="true">
         <circle className="ring__track" cx="26" cy="26" r={R} />
         <circle

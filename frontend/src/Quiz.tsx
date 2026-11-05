@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, Confetti, ConsoleBar, PlayerName, Readout, Ring, RoundTrack, Section } from './ui'
 import { countdown, fr, noun } from './format'
 import { useQuizWindow } from './serverClock'
-import { buzz, useWindowLength } from './fx'
+import { buzz } from './fx'
 import {
   ApiError,
   describe,
@@ -78,7 +78,7 @@ export default function Quiz({
   // measured once per frame and frozen, and `open` is a comparison against `deadline_ms` rather
   // than a timer that has been running since mount.
   const { open, left } = useQuizWindow(quiz)
-  const windowLength = useWindowLength(quiz?.deadline_ms ?? null, open ? left : 0)
+  const windowLength = state.quiz_seconds * 1000
 
   // Fetched once. An effect because the bank does not arrive with the snapshot and cannot be
   // derived from it; keyed on the room rather than on anything that moves, so a frame arriving
