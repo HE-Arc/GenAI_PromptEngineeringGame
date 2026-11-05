@@ -868,6 +868,70 @@ pub async fn expire_phase(state: &AppState, code: &str) -> bool {
 // windows close on time. Django rebuilt the snapshot every 0.5 s per stream;
 // here one task wakes every second and republishes only rooms whose clock
 // actually crossed a deadline.
+// One tick of the scheduler, exposed for tests: the playing timer is not
+// armed separately — the sweep re-runs expire_phase every second while the
+// clock is past its deadline, which is what carries a room through the
+// prompt grace and past a round still generating.
+pub async fn ticker_sweep(state: &AppState, announced: &mut HashMap<String, i64>) {
+    let tick_start = std::time::Instant::now();
+    let now = now_ms();
+    // Bounded scan: without LIMIT one stuck room table makes every
+    // tick linear in dead rooms the sweeper has not deleted yet.
+    // Le résumé est inclus : en mode automatique il est minuté.
+    let sql = format!(
+        "SELECT code, phase, {} AS q, {} AS p, COALESCE(auto_mode, 0) AS a FROM room WHERE phase IN ('quiz', 'playing', 'rating', 'summary') LIMIT 1000",
+        ms_of("quiz_deadline"),
+        ms_of("phase_deadline"),
+    );
+    let rows: Vec<(String, String, Option<i64>, Option<i64>, i64)> =
+        match sqlx::query_as(&sql).fetch_all(&state.pool).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                // Every timed room stalls while this fails: worth an ERROR each tick.
+                tracing::error!(error = %e, "ticker: cannot read timed rooms");
+                return;
+            }
+        };
+    let mut seen: HashSet<String> = HashSet::new();
+    for (code, phase, quiz_deadline, phase_deadline, auto_mode) in rows {
+        let mut changed = false;
+        if matches!(phase_deadline, Some(d) if now >= d) {
+            changed |= expire_phase(&state, &code).await;
+        }
+        if phase == "quiz" {
+            if let Some(d) = quiz_deadline {
+                // Auto : la fin de la fenêtre révèle, l'avance n'a lieu qu'après
+                // QUIZ_REVEAL_SECONDS (voir expire_phase). Pendant la fenêtre de
+                // révélation on republie chaque tick pour diffuser le verdict.
+                if auto_mode != 0 && now >= d {
+                    if announced.get(&code) != Some(&d) {
+                        announced.insert(code.clone(), d);
+                    }
+                    changed = true;
+                    changed |= expire_phase(&state, &code).await;
+                } else if now >= d && announced.get(&code) != Some(&d) {
+                    announced.insert(code.clone(), d);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let hub = crate::hub::get_hub(&state.hubs, &code).await;
+            let _ = hub.republish(&state.pool, &code).await;
+        }
+        if phase == "quiz" {
+            seen.insert(code);
+        }
+    }
+    // Purge les salles disparues ou sorties du quiz : `announced` ne
+    // garde qu'un marqueur par salle suivie, sinon fuite lente.
+    announced.retain(|code, _| seen.contains(code));
+    let tick_ms = tick_start.elapsed().as_millis() as u64;
+    if tick_ms > 500 {
+        tracing::warn!(tick_ms, "ticker: slow tick, clocks may lag");
+    }
+}
+
 pub fn spawn_ticker(state: AppState) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -875,63 +939,7 @@ pub fn spawn_ticker(state: AppState) {
         let mut announced: HashMap<String, i64> = HashMap::new();
         loop {
             tick.tick().await;
-            // Bounded scan: without LIMIT one stuck room table makes every
-            // tick linear in dead rooms the sweeper has not deleted yet.
-            // Le résumé est inclus : en mode automatique il est minuté.
-            let sql = format!(
-                "SELECT code, phase, {} AS q, {} AS p, COALESCE(auto_mode, 0) AS a FROM room WHERE phase IN ('quiz', 'playing', 'rating', 'summary') LIMIT 1000",
-                ms_of("quiz_deadline"),
-                ms_of("phase_deadline"),
-            );
-            let rows: Vec<(String, String, Option<i64>, Option<i64>, i64)> =
-                match sqlx::query_as(&sql).fetch_all(&state.pool).await {
-                    Ok(rows) => rows,
-                    Err(e) => {
-                        // Every timed room stalls while this fails: worth an ERROR each tick.
-                        tracing::error!(error = %e, "ticker: cannot read timed rooms");
-                        continue;
-                    }
-                };
-            let tick_start = std::time::Instant::now();
-            let now = now_ms();
-            let mut seen: HashSet<String> = HashSet::new();
-            for (code, phase, quiz_deadline, phase_deadline, auto_mode) in rows {
-                let mut changed = false;
-                if matches!(phase_deadline, Some(d) if now >= d) {
-                    changed |= expire_phase(&state, &code).await;
-                }
-                if phase == "quiz" {
-                    if let Some(d) = quiz_deadline {
-                        // Auto : la fin de la fenêtre révèle, l'avance n'a lieu qu'après
-                        // QUIZ_REVEAL_SECONDS (voir expire_phase). Pendant la fenêtre de
-                        // révélation on republie chaque tick pour diffuser le verdict.
-                        if auto_mode != 0 && now >= d {
-                            if announced.get(&code) != Some(&d) {
-                                announced.insert(code.clone(), d);
-                            }
-                            changed = true;
-                            changed |= expire_phase(&state, &code).await;
-                        } else if now >= d && announced.get(&code) != Some(&d) {
-                            announced.insert(code.clone(), d);
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
-                    let hub = crate::hub::get_hub(&state.hubs, &code).await;
-                    let _ = hub.republish(&state.pool, &code).await;
-                }
-                if phase == "quiz" {
-                    seen.insert(code);
-                }
-            }
-            let tick_ms = tick_start.elapsed().as_millis() as u64;
-            if tick_ms > 500 {
-                tracing::warn!(tick_ms, "ticker: slow tick, clocks may lag");
-            }
-            // Purge les salles disparues ou sorties du quiz : `announced` ne
-            // garde qu'un marqueur par salle suivie, sinon fuite lente.
-            announced.retain(|code, _| seen.contains(code));
+            ticker_sweep(&state, &mut announced).await;
             // An expired failure notice leaves the screen on its own.
             let hubs: Vec<(String, Arc<RoomHub>)> = state
                 .hubs
@@ -1630,6 +1638,39 @@ mod tests {
         assert!(expire_phase(&state, "EX33").await);
         assert!(!expire_phase(&state, "EX33").await, "claimed once");
         let room = load(&pool, "EX33").await.unwrap();
+        assert_eq!(room.phase, "summary");
+        assert!(room.phase_deadline_ms.is_none());
+    }
+
+    // The playing timer is not armed once: the ticker replays expire_phase
+    // while the clock reads past the deadline, which is what carries the room
+    // through PROMPT_GRACE_MS (an in-flight draft must not be cut).
+    #[tokio::test]
+    async fn ticker_keeps_rechecking_playing_until_prompt_window_closed() {
+        std::env::remove_var("OPENAI_API_KEY");
+        let pool = crate::db::test_pool().await;
+        let state = AppState::new(pool.clone());
+        crate::db::rooms::create_room(&pool, "SC77").await.unwrap();
+        sqlx::query("UPDATE room SET tutorial = 0 WHERE code = 'SC77'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(start_game(&pool, "SC77").await.unwrap());
+        assert_eq!(load(&pool, "SC77").await.unwrap().phase, "playing");
+        let mut announced: HashMap<String, i64> = HashMap::new();
+
+        // The sweep runs at the deadline: the prompt window is still open, the
+        // room must not move even once.
+        let sql = format!("UPDATE room SET phase_deadline = {TS_FROM_MS} WHERE code = 'SC77'");
+        sqlx::query(&sql).bind(now_ms() - 1000).execute(&pool).await.unwrap();
+        ticker_sweep(&state, &mut announced).await;
+        assert_eq!(load(&pool, "SC77").await.unwrap().phase, "playing");
+
+        // The same sweep, with the grace now lapsed: it advances the room on
+        // its own — no retry, no extra arming needed.
+        sqlx::query(&sql).bind(now_ms() - PROMPT_GRACE_MS - 1000).execute(&pool).await.unwrap();
+        ticker_sweep(&state, &mut announced).await;
+        let room = load(&pool, "SC77").await.unwrap();
         assert_eq!(room.phase, "summary");
         assert!(room.phase_deadline_ms.is_none());
     }
