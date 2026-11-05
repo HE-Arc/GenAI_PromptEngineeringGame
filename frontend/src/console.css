@@ -637,25 +637,6 @@
   box-shadow: 0 0 10px -2px var(--glow);
 }
 
-/* ---- score scale ------------------------------------------------------------------------ */
-
-.scale {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  gap: 4px;
-  height: 14px;
-}
-.scale__tick {
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 0 0 1px var(--rail-lit);
-}
-.scale__tick--on {
-  background: linear-gradient(180deg, var(--signal-lit), var(--signal));
-  box-shadow: 0 0 8px -2px var(--glow);
-}
-
 /* ---- the verdict card -------------------------------------------------------------------- */
 
 .verdict {
@@ -986,18 +967,6 @@
   color: var(--cool-lit);
   font-size: 0.9375rem;
   line-height: 1.45;
-}
-.raterow {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-}
-.raterow__value {
-  margin-left: auto;
-  color: var(--signal);
-  font-size: 2.25rem;
-  line-height: 1;
-  text-shadow: 0 3px 0 var(--signal-deep);
 }
 .rateends {
   display: flex;
@@ -1337,16 +1306,6 @@
       transform: none;
     }
   }
-  @keyframes tickOn {
-    from {
-      opacity: 0;
-      transform: scaleY(0.3);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
   @keyframes throb {
     from {
       transform: scale(1);
@@ -1451,10 +1410,6 @@
   }
   .presence__dots i:nth-child(3) {
     animation-delay: 300ms;
-  }
-  .scale__tick--on {
-    animation: tickOn 220ms ease-out both;
-    animation-delay: calc(var(--i, 0) * 55ms + 250ms);
   }
   .qclock[data-state='soon'] .ring {
     animation: throb 0.5s ease-in-out infinite alternate;

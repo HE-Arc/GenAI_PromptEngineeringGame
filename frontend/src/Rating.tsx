@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react'
-import { AnswerMeter, ConsoleBar, Criteria, PhaseClock, RoundTrack, ScoreScale } from './ui'
+import { ConsoleBar, Criteria, PhaseClock, RoundTrack } from './ui'
 import ModelOutput from './ModelOutput'
 import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
@@ -84,7 +84,6 @@ export default function Rating({
   // What this player has given the prompt on screen: the tap in flight, else the server's record.
   const shown = picked ?? reveal.my_score
   const sent = shown !== null
-  const lit = Array.from({ length: Math.min(reveal.rated, reveal.count) }, (_, i) => i)
 
   // One tap is the note: no confirm button. Another tap replaces it (the server upserts), as
   // long as the prompt is still on screen.
@@ -167,12 +166,6 @@ export default function Rating({
           </p>
         ) : (
           <div className="form">
-            <div className="raterow">
-              <span className="raterow__value num" aria-hidden="true">
-                {shown ?? '—'}
-              </span>
-            </div>
-
             {/* Ten buttons rather than a slider: a thumb hits one of ten cells far better than it
                 places a mark between two integers. Each tap sends the note; the pressed one is the
                 note the server holds. */}
@@ -197,8 +190,6 @@ export default function Rating({
               <span className="label">excellent</span>
             </div>
 
-            {shown !== null && <ScoreScale score={shown} min={SCALE_MIN} />}
-
             {err && (
               <p className="err err--inline" role="alert">
                 {err}
@@ -206,23 +197,10 @@ export default function Rating({
             )}
 
             <p className="hint" role="status">
-              {sent ? 'Note enregistrée. Touche une autre note pour la changer.' : 'Touche une note pour la donner.'}
+              {sent ? 'Tu as noté, en attente des autres' : 'Touche une note pour la donner.'}
             </p>
           </div>
         )}
-
-        {/* The one instrument on this screen, and the same one the players and the host are
-            looking at: it says how far the room has got on this prompt. Reused rather than
-            redrawn because the room already knows what it looks like, and `AnswerMeter` already
-            carries the live region that says the fraction in words.
-            Unit note: here the meter counts prompts of the manche ("Prompts notés"), while the
-            Game screen counts players ("Réponses envoyées"). Two units, two captions. */}
-        <AnswerMeter
-          lit={lit}
-          total={reveal.count}
-          mine={-1}
-          caption={sent ? 'Tu as noté, en attente des autres' : 'Prompts notés'}
-        />
 
         {/* Rule one, stated to the player rather than left as a hole in the screen. During the
             rating phase every score in the snapshot is null and no prompt is sent but this one,

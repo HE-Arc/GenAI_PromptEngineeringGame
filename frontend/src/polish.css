@@ -286,10 +286,6 @@ body::after {
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
-.scale__tick--on {
-  filter: drop-shadow(0 0 3px currentColor);
-}
-
 /* Readout target tiers get a subtle inner line and halo. */
 .readout__label {
   letter-spacing: 0.11em;
@@ -311,10 +307,6 @@ body::after {
     0 24px 52px -20px rgba(5, 0, 24, 0.85),
     0 0 42px -22px rgba(155, 137, 229, 0.45);
   border: 1px solid rgba(155, 137, 229, 0.42);
-}
-
-.raterow__value {
-  text-shadow: 0 0 20px var(--glow);
 }
 
 .ratehead {

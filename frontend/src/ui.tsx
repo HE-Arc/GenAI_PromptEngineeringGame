@@ -5,7 +5,7 @@ import { buzz, copyText, hueOf, initials, useWindowLength } from './fx'
 import { TargetText } from './ModelOutput'
 import { useQuizWindow, type ServerWindow } from './serverClock'
 import { linkWord, type Link } from './useRoom'
-import { SCALE_MAX, type Player, type ReadyState } from './api'
+import { type Player, type ReadyState } from './api'
 
 /* The instrument panel. Every screen is built from these, which is what makes six screens
  * read as one device: the same lamp, the same track, the same meter, the same board. */
@@ -509,29 +509,6 @@ function CodeTiles({ label, value }: { label: string; value: string }) {
       </button>
       <span className="readout__hint" aria-hidden="true">Touche le code pour le copier</span>
     </>
-  )
-}
-
-// A range, because the console draws two of these. The score scale is 0-10 and has been since
-// the Game screen; the cross-rating scale is 1-10, and a ten-tick bar that started one notch in
-// would say "you have scored nothing" before a single note had been given. Defaults keep every
-// existing call site on the 0-10 reading without touching it, which is the whole argument for
-// extending this component instead of writing a second scale beside it: one instrument, two
-// calibrations, and the two cannot drift apart visually because there is only one set of rules.
-export function ScoreScale({ score, min = 0, max = SCALE_MAX }: { score: number; min?: number; max?: number }) {
-  const lit = Math.max(min, Math.min(max, Math.round(score)))
-  // Hidden for the same reason as the meter: the score is written out in full beside it, and
-  // this exists to show how big that number is, which is a thing words cannot do.
-  return (
-    <div className="scale" aria-hidden="true">
-      {Array.from({ length: max - min }, (_, i) => (
-        <span
-          key={i}
-          className={`scale__tick${min + i < lit ? ' scale__tick--on' : ''}`}
-          style={{ '--i': i } as CSSProperties}
-        />
-      ))}
-    </div>
   )
 }
 
