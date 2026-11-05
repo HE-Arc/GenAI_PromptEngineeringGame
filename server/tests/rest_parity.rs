@@ -81,6 +81,22 @@ async fn join_duplicate_409_parity() {
 }
 
 #[tokio::test]
+async fn join_name_trimmed_and_truncated_by_chars() {
+    let (server, pool, _) = server_with_pool().await;
+    rooms::create_room(&pool, "EF78").await.unwrap();
+    let blank = server.post("/api/rooms/EF78/join").json(&json!({"name": "  \t "})).await;
+    blank.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    // 40 two-byte chars: a byte cut at 32 would split nothing here, a char cut keeps 32 chars.
+    let long = "é".repeat(40);
+    let res = server.post("/api/rooms/EF78/join").json(&json!({"name": long})).await;
+    res.assert_status_ok();
+    assert_eq!(res.json::<serde_json::Value>()["name"], "é".repeat(32));
+    let res = server.post("/api/rooms/EF78/join").json(&json!({"name": "  bob  "})).await;
+    res.assert_status_ok();
+    assert_eq!(res.json::<serde_json::Value>()["name"], "bob");
+}
+
+#[tokio::test]
 async fn join_rate_limited_per_ip() {
     let server = test_server().await;
     let mut limited = 0;
