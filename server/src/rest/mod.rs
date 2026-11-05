@@ -319,9 +319,7 @@ pub async fn quiz_get(
     State(state): State<AppState>,
     Path(code): Path<String>,
     headers: HeaderMap,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let _ = headers;
     if rooms::get_room(&state.pool, &code).await.is_err() {
         return unknown_room(sqlx::Error::RowNotFound).unwrap().into_response();
     }
@@ -334,7 +332,7 @@ pub async fn quiz_get(
             .await
             .unwrap_or_default();
     // Unauthenticated by design: the bank is on screen anyway, only the key stays back.
-    let token = q.get("token").map(|s| s.as_str()).unwrap_or("");
+    let token = bearer(&headers);
     let answered: Vec<i64> = if token.is_empty() {
         vec![]
     } else {

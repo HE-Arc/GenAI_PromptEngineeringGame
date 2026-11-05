@@ -107,8 +107,8 @@ export default function Quiz({
       setBusy(true)
       try {
         const res = await fetch(
-          `/api/rooms/${code}/quiz?token=${encodeURIComponent(getToken(code) ?? '')}`,
-          { headers: { Accept: 'application/json' } },
+          `/api/rooms/${code}/quiz`,
+          { headers: { Accept: 'application/json', Authorization: `Bearer ${getToken(code) ?? ''}` } },
         )
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = (await res.json()) as QuizBank
