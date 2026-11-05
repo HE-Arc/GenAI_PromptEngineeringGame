@@ -10,6 +10,16 @@ pub const COOKIE_NAME: &str = "genai_admin";
 // password, not an identity. Stealing it equals stealing Django's cookie.
 const SIGNED_BODY: &[u8] = b"genai-admin-v1";
 
+/// Release builds must not fall back to a known default: refuse to start.
+pub fn check_env() -> Result<(), String> {
+    if !cfg!(debug_assertions)
+        && std::env::var("ADMIN_PASSWORD").map_or(true, |v| v.is_empty())
+    {
+        return Err("ADMIN_PASSWORD must be set in release builds".into());
+    }
+    Ok(())
+}
+
 fn secret() -> &'static str {
     // Ephemeral per-process key, generated once on first use: a restart
     // signs every admin out, which is what a classroom session wants, and

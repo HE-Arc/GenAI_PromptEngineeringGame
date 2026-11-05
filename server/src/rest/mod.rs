@@ -53,7 +53,11 @@ fn bearer(headers: &HeaderMap) -> &str {
 }
 
 fn admin_password() -> String {
-    std::env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "genai".into())
+    // Debug builds keep the "genai" default for local dev; release builds
+    // refuse to start without it (see admin_session::check_env).
+    std::env::var("ADMIN_PASSWORD").unwrap_or_else(|_| {
+        if cfg!(debug_assertions) { "genai".into() } else { String::new() }
+    })
 }
 
 // Global admin (create/list/login): the session cookie, with the

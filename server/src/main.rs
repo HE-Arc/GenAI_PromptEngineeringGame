@@ -14,6 +14,11 @@ async fn main() {
         tracing::error!(%location, "panic: {info}");
     }));
 
+    if let Err(e) = server::admin_session::check_env() {
+        tracing::error!("{e}, exiting");
+        std::process::exit(1);
+    }
+
     let port = std::env::args()
         .nth(2)
         .filter(|_| std::env::args().nth(1).as_deref() == Some("--port"))
