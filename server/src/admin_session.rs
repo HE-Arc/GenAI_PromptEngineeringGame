@@ -124,8 +124,10 @@ pub fn request_is_admin(headers: &HeaderMap) -> bool {
 // navigation keeps the console signed in without opening CSRF on POSTs
 // (state-changing admin routes still need the password-born session).
 pub fn set_cookie_header() -> String {
+    // Secure in release only: debug runs over plain http on localhost.
+    let secure = if cfg!(debug_assertions) { "" } else { "; Secure" };
     format!(
-        "{COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax",
+        "{COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax{secure}",
         issue_value()
     )
 }
