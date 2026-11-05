@@ -1240,6 +1240,47 @@ pub async fn room_snapshot(
             .map(|a| (a.player_id.to_string(), json!(crate::llm::parse_turns(a.turns.as_deref()))))
             .collect::<serde_json::Map<_, _>>(),
     });
+    // Admin only (kept by `personalize` for viewer None): every grade of the round,
+    // with the author, so the console shows progress live.
+    let all_ratings: Vec<(i64, i64, i64)> = match &round {
+        Some((id, _)) => sqlx::query_as(
+            "SELECT rating.answer_id, rating.rater_id, rating.score FROM rating
+             JOIN answer ON answer.id = rating.answer_id WHERE answer.round_id = ?",
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let shown = match (&round, room.phase.as_str()) {
+        (Some((_, revealed)), "rating") => answers.get(*revealed as usize),
+        _ => None,
+    };
+    let mut admin_results: Vec<Value> = players
+        .iter()
+        .map(|p| {
+            let mine = answers.iter().find(|a| a.player_id == p.id);
+            let grades: Vec<i64> = mine
+                .map(|a| all_ratings.iter().filter(|r| r.0 == a.id).map(|r| r.2).collect())
+                .unwrap_or_default();
+            json!({
+                "name": p.name,
+                "answered": mine.is_some(),
+                "prompt": mine.map(|a| a.prompt.clone()),
+                "grades": grades,
+                "average": quality(&grades),
+                // None for the shown prompt's own author, who grades nothing.
+                "graded_current": shown.and_then(|s| {
+                    (s.player_id != p.id)
+                        .then(|| all_ratings.iter().any(|r| r.0 == s.id && r.1 == p.id))
+                }),
+            })
+        })
+        .collect();
+    admin_results.sort_by_key(|r| std::cmp::Reverse(r["average"].as_i64().unwrap_or(i64::MIN)));
+    viewer["admin_results"] = json!(admin_results);
+
     let reveal = match (&round, room.phase.as_str()) {
         (Some((_, revealed)), "rating") => match answers.get(*revealed as usize) {
             Some(a) => {
@@ -1363,6 +1404,9 @@ pub fn personalize(state: &Value, viewer: Option<i64>) -> Value {
         .as_object_mut()
         .and_then(|o| o.remove(VIEWER_KEY))
         .unwrap_or(Value::Null);
+    if viewer.is_none() {
+        out["admin_results"] = private["admin_results"].clone();
+    }
     if let Some(me) = viewer {
         out["my_attempts"] = json!(private["attempts"][me.to_string()].as_i64().unwrap_or(0));
         if let Some(turns) = private["turns"].get(me.to_string()) {
@@ -1452,6 +1496,8 @@ mod tests {
         assert_eq!(snap["quiz"]["revealed"], false);
         assert!(snap["_viewer"].is_object());
         assert!(personalize(&snap, Some(ana.id)).get("_viewer").is_none());
+        assert!(personalize(&snap, Some(ana.id)).get("admin_results").is_none());
+        assert_eq!(personalize(&snap, None)["admin_results"][0]["name"], "ana");
     }
 
     #[tokio::test]

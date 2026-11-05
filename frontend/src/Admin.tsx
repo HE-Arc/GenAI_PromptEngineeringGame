@@ -1200,6 +1200,22 @@ export default function Admin() {
 
             <Roster players={players} online={state?.online_count ?? 0} myName="" />
 
+            {state?.admin_results && state.admin_results.length > 0 && (phase === 'playing' || phase === 'rating' || phase === 'summary') && (
+              <section className="stack" aria-label="Résultats en direct">
+                <p className="label">Résultats en direct</p>
+                {state.admin_results.map((r) => (
+                  <details key={r.name} className="prose prose--sm">
+                    <summary>
+                      {r.name} — prompt : {r.answered ? 'oui' : 'non'} — moyenne :{' '}
+                      {r.average ?? '—'} ({r.grades.length > 0 ? r.grades.join(', ') : 'aucune note'})
+                      {r.graded_current !== null && ` — a noté : ${r.graded_current ? 'oui' : 'non'}`}
+                    </summary>
+                    {r.prompt ? <pre className="slot">{r.prompt}</pre> : <p>Pas de prompt.</p>}
+                  </details>
+                ))}
+              </section>
+            )}
+
 {/* The quiz phase counts the players who have finished the didacticiel, because
                 that is what is holding the gate; the rating phase counts the players who have
                 scored the prompt on screen, which is the only question the host has to answer

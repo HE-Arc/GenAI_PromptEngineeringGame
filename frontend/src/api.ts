@@ -160,6 +160,16 @@ export type Player = {
 
 export type Turn = { prompt: string; output: string }
 
+export type AdminResult = {
+  name: string
+  answered: boolean
+  prompt: string | null
+  grades: number[]
+  average: number | null
+  // Null for the author of the prompt on screen, or when no prompt is on screen.
+  graded_current: boolean | null
+}
+
 export type State = {
   code: string
   phase: Phase
@@ -201,6 +211,8 @@ export type State = {
   online_count: number
   quiz: QuizState | null
   reveal: RevealState | null
+  // Admin sockets only: absent from player payloads.
+  admin_results?: AdminResult[]
   summary: { round: number; rows: SummaryRow[] } | null
   // The class's own bar on the step the room is discussing, and `null` everywhere else — four of
   // the six phases, plus a phase that has no step behind it. Unconditional, for the reason the
