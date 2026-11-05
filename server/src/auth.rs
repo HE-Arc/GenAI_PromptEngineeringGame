@@ -19,7 +19,7 @@ pub async fn validate(pool: &SqlitePool, code: &str, token: &str) -> Result<Auth
         sqlx::Error::RowNotFound => AuthError::UnknownRoom,
         _ => AuthError::UnknownRoom,
     })?;
-    if token == room.admin_key {
+    if admin_session::constant_time_eq(token.as_bytes(), room.admin_key.as_bytes()) {
         return Ok(Auth::Admin);
     }
     match rooms::player_by_token(pool, token).await {

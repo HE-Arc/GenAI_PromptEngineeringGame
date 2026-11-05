@@ -90,12 +90,10 @@ pub fn valid_value(v: &str) -> bool {
     }
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
+/// Constant-time equality for secrets; a length mismatch is simply false.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
 }
 
 fn cookie_header(headers: &HeaderMap) -> &str {

@@ -63,7 +63,7 @@ fn admin_password() -> String {
 // Global admin (create/list/login): the session cookie, with the
 // password bearer kept so existing integrations keep working.
 fn global_admin(headers: &HeaderMap) -> bool {
-    let ok = admin_session::request_is_admin(headers) || bearer(headers) == admin_password();
+    let ok = admin_session::request_is_admin(headers) || admin_session::constant_time_eq(bearer(headers).as_bytes(), admin_password().as_bytes());
     if !ok {
         tracing::warn!("admin console refused: not authenticated");
     }
@@ -81,7 +81,7 @@ async fn require_room_admin(
     if admin_session::request_is_admin(headers) {
         return Ok(room);
     }
-    if bearer(headers) != room.admin_key {
+    if !admin_session::constant_time_eq(bearer(headers).as_bytes(), room.admin_key.as_bytes()) {
         tracing::warn!(room = %code, "admin action refused: not authenticated");
         return Err(err(StatusCode::FORBIDDEN, "admin only"));
     }
@@ -456,7 +456,7 @@ pub struct LoginBody {
 // The cookie also authorises the WS upgrade (Cookie header), which is
 // how the console subscribes without ever holding a per-room key.
 pub async fn admin_login(Json(body): Json<LoginBody>) -> impl IntoResponse {
-    if body.password != admin_password() {
+    if !admin_session::constant_time_eq(body.password.as_bytes(), admin_password().as_bytes()) {
         // Never the attempted password: a typo of the real one would leak it.
         tracing::warn!("admin login failed: wrong password");
         return err(StatusCode::FORBIDDEN, "bad password").into_response();
