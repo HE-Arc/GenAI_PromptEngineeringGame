@@ -16,18 +16,20 @@ pub fn check_env() -> Result<(), String> {
     {
         return Err("ADMIN_PASSWORD must be set in release builds".into());
     }
+    if !cfg!(debug_assertions) && std::env::var("ADMIN_SECRET").map_or(true, |v| v.is_empty()) {
+        return Err("ADMIN_SECRET must be set in release builds".into());
+    }
     Ok(())
 }
 
 fn secret() -> &'static str {
-    // Ephemeral per-process key, generated once on first use: a restart
-    // signs every admin out, which is what a classroom session wants, and
-    // nothing to misconfigure or leak beats a committed default. ADMIN_SECRET
-    // remains as an explicit override for multi-process deployments, where
-    // every replica must share one key.
+    // Release builds require ADMIN_SECRET (check_env refuses to start
+    // without it) so every replica shares one key. Debug builds fall back to
+    // an ephemeral per-process key: a restart signs every admin out.
     static SECRET: OnceLock<String> = OnceLock::new();
     SECRET.get_or_init(|| {
         std::env::var("ADMIN_SECRET").unwrap_or_else(|_| {
+            assert!(cfg!(debug_assertions), "ADMIN_SECRET missing in release build");
             let mut buf = [0u8; 32];
             getrandom::fill(&mut buf).expect("OS RNG unavailable");
             hex(&buf)
