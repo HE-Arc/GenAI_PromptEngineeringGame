@@ -131,7 +131,7 @@ export default function Rating({
 
         {/* A round's prompts are a sequence, so they get the round's own track. Nothing else on
             this screen is a sequence, and this is the only thing on it that moves. */}
-        <RoundTrack current={reveal.index + 1} total={reveal.count} />
+        <RoundTrack current={reveal.gradable_index + (mine ? 0 : 1)} total={reveal.gradable_count} />
 
         <PhaseClock timer={state.timer} what="pour noter ce prompt" />
 

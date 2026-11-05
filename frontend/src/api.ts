@@ -45,6 +45,10 @@ export interface QuizState {
 export interface RevealState {
   index: number
   count: number
+  // Per-viewer: the prompts this reader can grade (their own excluded), and how many of them
+  // come before the one on screen. Drives the progress bar.
+  gradable_count: number
+  gradable_index: number
   prompt: string
   // The model's answer to the prompt (text, or a markdown image link on image rounds).
   output: string

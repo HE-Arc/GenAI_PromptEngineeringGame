@@ -1246,6 +1246,8 @@ pub async fn room_snapshot(
                         .unwrap_or_default();
                 let rated = ratings.len() as i64;
                 viewer["author_id"] = json!(a.player_id);
+                // Lets `personalize` leave the viewer's own prompt out of the progress bar.
+                viewer["answerers"] = json!(answers.iter().map(|x| x.player_id).collect::<Vec<_>>());
                 // Per-viewer: each rater gets back the note they gave (reconnects included).
                 viewer["ratings"] = json!(ratings
                     .iter()
@@ -1254,6 +1256,9 @@ pub async fn room_snapshot(
                 json!({
                     "index": revealed,
                     "count": answers.len(),
+                    // Per-viewer, resolved in `personalize`; admins and spectators grade nothing.
+                    "gradable_count": answers.len(),
+                    "gradable_index": revealed,
                     "prompt": a.prompt,
                     "output": a.output,
                     "author": if anonymous { Value::Null } else { json!(names.get(&a.player_id)) },
@@ -1359,6 +1364,16 @@ pub fn personalize(state: &Value, viewer: Option<i64>) -> Value {
         if out["reveal"].is_object() {
             out["reveal"]["mine"] = json!(private["author_id"].as_i64() == Some(me));
             out["reveal"]["my_score"] = private["ratings"][me.to_string()].clone();
+            // Own prompt is not gradable: drop it from the count, and from the index when it
+            // comes before the one on screen. On the own prompt the index is the number of
+            // gradable prompts already passed, so the bar stays put.
+            let own = private["answerers"]
+                .as_array()
+                .and_then(|ids| ids.iter().position(|v| v.as_i64() == Some(me)));
+            let index = out["reveal"]["index"].as_i64().unwrap_or(0);
+            out["reveal"]["gradable_count"] =
+                json!(out["reveal"]["count"].as_i64().unwrap_or(0) - own.is_some() as i64);
+            out["reveal"]["gradable_index"] = json!(index - own.is_some_and(|o| (o as i64) < index) as i64);
         }
         if out["ready"].is_object() {
             let mine = private["ready_ids"]
@@ -1640,5 +1655,47 @@ mod tests {
             advance(&pool, "RD22").await.unwrap();
         }
         assert_eq!(load(&pool, "RD22").await.unwrap().phase, "done");
+    }
+
+    #[tokio::test]
+    async fn progress_bar_leaves_out_the_viewers_own_prompt() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "GR44").await.unwrap();
+        sqlx::query("UPDATE room SET tutorial = 0 WHERE code = 'GR44'").execute(&pool).await.unwrap();
+        let mut players = Vec::new();
+        for name in ["ana", "bob", "cy", "di"] {
+            players.push(crate::db::rooms::add_player(&pool, "GR44", name).await.unwrap());
+        }
+        let online: HashSet<i64> = players.iter().map(|p| p.id).collect();
+        assert!(start_game(&pool, "GR44").await.unwrap());
+        let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'GR44' AND \"order\" = 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        for p in &players {
+            crate::db::answers::insert_answer(&pool, round, p.id, "p", "o").await.unwrap();
+        }
+        advance(&pool, "GR44").await.unwrap();
+
+        // Answers are listed in submission order, so prompt i belongs to players[i].
+        for (v, viewer) in players.iter().enumerate() {
+            let mut seen = Vec::new();
+            for i in 0..4i64 {
+                sqlx::query("UPDATE round SET revealed = ? WHERE id = ?")
+                    .bind(i)
+                    .bind(round)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                let snap = room_snapshot(&pool, "GR44", Some(&online)).await.unwrap();
+                let reveal = &personalize(&snap, Some(viewer.id))["reveal"];
+                assert_eq!(reveal["count"], 4);
+                assert_eq!(reveal["gradable_count"], 3);
+                if i as usize != v {
+                    seen.push(reveal["gradable_index"].as_i64().unwrap());
+                }
+            }
+            assert_eq!(seen, [0, 1, 2], "viewer {v}");
+        }
     }
 }
