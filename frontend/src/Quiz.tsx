@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Avatar, Confetti, ConsoleBar, PlayerName, Readout, Ring, RoundTrack, Section } from './ui'
+import { Avatar, ConsoleBar, PlayerName, Readout, Ring, RoundTrack, Section } from './ui'
 import { countdown, fr, noun } from './format'
 import { useQuizWindow } from './serverClock'
 import { buzz } from './fx'
@@ -457,7 +457,6 @@ export default function Quiz({
                     `✗` anywhere (no row is `isYours` when `picked` is null) and the absence of the
                     cross is stated here in words instead. The third takes no colour at all, because
                     nothing about it is right or wrong. */}
-                {right && <Confetti key={order} />}
                 <div
                   className={`revealnote${
                     right ? ' revealnote--good' : picked === null ? '' : ' revealnote--miss'

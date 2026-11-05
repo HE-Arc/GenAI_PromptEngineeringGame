@@ -514,7 +514,7 @@ export default function Game({
     <div className="deck">
       <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
-      <main className={`screen screen--split${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
+      <main className={`screen screen--split screen--calm${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
         <Step current={state.current} total={state.total}>
           {/* The seconds are the server's, read through useQuizWindow: this screen never
               counts down from the phone's own clock. */}

@@ -1399,19 +1399,19 @@
 
   /* Each screen's content rises in when the screen appears. */
   .screen > * {
-    animation: riseIn 380ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation: riseIn 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
-  .screen > :nth-child(2) { animation-delay: 40ms; }
-  .screen > :nth-child(3) { animation-delay: 80ms; }
-  .screen > :nth-child(4) { animation-delay: 120ms; }
-  .screen > :nth-child(n + 5) { animation-delay: 160ms; }
+  .screen > :nth-child(2) { animation-delay: 20ms; }
+  .screen > :nth-child(3) { animation-delay: 40ms; }
+  .screen > :nth-child(4) { animation-delay: 60ms; }
+  .screen > :nth-child(n + 5) { animation-delay: 80ms; }
 
   .codechar {
-    animation: popIn 500ms cubic-bezier(0.2, 0.8, 0.2, 1.2) both;
-    animation-delay: calc(var(--i, 0) * 90ms + 120ms);
+    animation: popIn 200ms cubic-bezier(0.2, 0.8, 0.2, 1.2) both;
+    animation-delay: calc(var(--i, 0) * 20ms);
   }
   .cloud__p {
-    animation: popIn 420ms cubic-bezier(0.2, 0.8, 0.2, 1.2) both;
+    animation: popIn 200ms cubic-bezier(0.2, 0.8, 0.2, 1.2) both;
   }
   .meter__seg--on,
   .meter__seg--me {
@@ -1421,7 +1421,7 @@
     animation: lampOn 240ms ease-out both, lampPop 180ms ease-out both;
   }
   .tally__row--in {
-    animation: riseIn 420ms ease-out both;
+    animation: riseIn 200ms ease-out both;
     animation-delay: var(--d, 0ms);
   }
   .presence__dots i {
@@ -1440,29 +1440,29 @@
     animation: spin 0.8s linear infinite;
   }
   .verdict--done {
-    animation: popIn 480ms cubic-bezier(0.2, 0.8, 0.2, 1.15) both;
+    animation: popIn 200ms cubic-bezier(0.2, 0.8, 0.2, 1.15) both;
   }
   .revealnote {
-    animation: popIn 460ms cubic-bezier(0.2, 0.8, 0.2, 1.25) both;
+    animation: popIn 200ms cubic-bezier(0.2, 0.8, 0.2, 1.25) both;
   }
   .revealnote--miss {
-    animation: popIn 300ms ease-out both, shake 420ms ease-in-out 300ms;
+    animation: popIn 200ms ease-out both, shake 420ms ease-in-out 200ms;
   }
   .btn.choice--right:disabled {
     animation: glowPulse 0.9s ease-in-out infinite alternate;
   }
   .board__row {
-    animation: riseIn 360ms ease-out both;
-    animation-delay: calc(var(--i, 0) * 50ms);
+    animation: riseIn 200ms ease-out both;
+    animation-delay: calc(var(--i, 0) * 20ms);
   }
   .podium__slot {
-    animation: riseIn 600ms cubic-bezier(0.2, 0.8, 0.2, 1.1) both;
+    animation: riseIn 200ms cubic-bezier(0.2, 0.8, 0.2, 1.1) both;
   }
-  .podium__slot[data-place='3'] { animation-delay: 200ms; }
-  .podium__slot[data-place='2'] { animation-delay: 500ms; }
-  .podium__slot[data-place='1'] { animation-delay: 850ms; }
+  .podium__slot[data-place='3'] { animation-delay: 0ms; }
+  .podium__slot[data-place='2'] { animation-delay: 60ms; }
+  .podium__slot[data-place='1'] { animation-delay: 120ms; }
   .podium__crown {
-    animation: popIn 500ms cubic-bezier(0.2, 0.8, 0.2, 1.4) 1300ms both;
+    animation: popIn 200ms cubic-bezier(0.2, 0.8, 0.2, 1.4) 200ms both;
   }
   /* A slow shine across the primary button, so the next action always draws the eye. */
   .btn--signal:not(:disabled)::after {
