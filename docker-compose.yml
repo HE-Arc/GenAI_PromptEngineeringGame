@@ -17,10 +17,11 @@ services:
         required: false
     # Shared cookie-signing key: every replica must see the same value or
     # admin sessions created on one are rejected on the others. Generate once
-    # (openssl rand -hex 32) and put it in secrets.env as ADMIN_SECRET.
+    # (openssl rand -hex 32) and put it in secrets.env as ADMIN_SECRET, which
+    # env_file passes through — do not pin it in environment: (an empty
+    # ${ADMIN_SECRET:-} there would beat env_file and break release builds).
     # RUST_LOG defaults to info; set e.g. debug for per-request tracing.
     environment:
-      ADMIN_SECRET: ${ADMIN_SECRET:-}
       RUST_LOG: ${RUST_LOG:-info}
       # Pinned here (beats env_file) so a stale relative DATABASE_URL in a
       # local secrets.env cannot pull the db back onto the overlay.
