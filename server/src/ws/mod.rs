@@ -451,6 +451,11 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
     });
 }
 
+// A chunk belongs to its author's sockets; `viewer` None is an admin socket.
+fn chunk_visible(viewer: Option<&str>, author: &str) -> bool {
+    viewer.map_or(true, |me| me == author)
+}
+
 // Owns the hub-side presence slot for one connected player socket. Drop
 // only hands the socket back to the hub, which keeps the player online for
 // the grace period: every return path of the recv loop releases it.
@@ -528,6 +533,9 @@ async fn handle_socket(
             let frame = tokio::select! {
                 msg = rx_out.recv() => match msg {
                     Some(WsOut::Error { player: Some(p), .. }) if player_name.as_deref() != Some(p.as_str()) => continue,
+                    // Model output is the author's until the rating phase reveals it; admins
+                    // (no player name) watch every stream.
+                    Some(WsOut::AnswerChunk { player: p, .. }) if !chunk_visible(player_name.as_deref(), &p) => continue,
                     Some(WsOut::Snapshot { seq, state }) => Message::Text(
                         serde_json::to_string(&WsOut::Snapshot {
                             seq,
@@ -731,6 +739,13 @@ mod tests {
         set_deadline(3000).await;
         let late = begin_answer(&state, "GR01", &player.token, "too late").await;
         assert_eq!(late.err().map(|e| e.code), Some("bad_phase"), "3 s after is closed");
+    }
+
+    #[test]
+    fn chunks_reach_only_author_and_admin() {
+        assert!(chunk_visible(Some("ana"), "ana"));
+        assert!(!chunk_visible(Some("bob"), "ana"));
+        assert!(chunk_visible(None, "ana"));
     }
 
     // No OPENAI_API_KEY in tests by rule: AppState::new picks the stub.

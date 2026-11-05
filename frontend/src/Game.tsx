@@ -306,7 +306,8 @@ export default function Game({
   // The socket's answer frames, dealt to the waiting send. Chunks accumulate here rather
   // than read back off `live`: a state value captured by the send closure is the value it
   // had when the send started. Frames for other players are the room's business, not this
-  // screen's — every phone in the room sees every chunk, but only the author waits on one.
+  // screen's — the server sends chunks only to the author's sockets and admins; the player check
+  // below stays as a guard.
   // A refusal is always this screen's own: the server answers it on the sender's connection,
   // never on the broadcast, so it needs no player check.
   //
