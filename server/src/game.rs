@@ -1686,6 +1686,17 @@ mod tests {
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(personalize(&snap, Some(bob.id))["reveal"]["my_score"], 8);
         assert!(personalize(&snap, Some(ana.id))["reveal"]["my_score"].is_null());
+        // The per-rater list never leaves the private block: no viewer, admin included, gets rater ids.
+        for viewer in [Some(ana.id), Some(bob.id), None] {
+            let out = personalize(&snap, viewer);
+            assert!(out["reveal"].get("ratings").is_none());
+            assert!(out.get(VIEWER_KEY).is_none());
+            assert!(out.get("ratings").is_none());
+        }
+        // Admin sees the grades per author (no rater ids); a player never gets them.
+        let admin_grades = &personalize(&snap, None)["admin_results"];
+        assert!(admin_grades.as_array().unwrap().iter().any(|r| r["grades"] == json!([8])));
+        assert!(personalize(&snap, Some(ana.id)).get("admin_results").is_none());
         maybe_advance_phase(&pool, "RD22", &online).await;
         crate::db::answers::insert_rating(&pool, b.id, ana.id, 4).await.unwrap();
         maybe_advance_phase(&pool, "RD22", &online).await;
