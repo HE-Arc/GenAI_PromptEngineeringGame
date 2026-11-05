@@ -320,8 +320,10 @@ impl RoomHub {
                 tracing::info!(room = %code, player_id, grace_s = grace.as_secs(), "player offline");
                 hub.mark_seen();
                 // One fewer present player lowers the majority: the votes
-                // already cast may now be enough to move the room.
+                // already cast may now be enough to move the room, and the
+                // ratings already given may now cover every rater left.
                 crate::game::maybe_advance_by_votes(&pool, &code, &hub.online()).await;
+                crate::game::maybe_advance_phase(&pool, &code, &hub.online()).await;
                 let _ = hub.republish(&pool, &code).await;
             }
         });
@@ -405,5 +407,38 @@ mod tests {
         assert!(seq2 > seq1);
         assert_eq!(snap2["online_count"], 0);
         assert_eq!(snap2["players"][0]["online"], false);
+    }
+
+    #[tokio::test]
+    async fn eviction_of_the_last_missing_rater_advances_the_reveal() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "EV11").await.unwrap();
+        sqlx::query("UPDATE room SET tutorial = 0 WHERE code = 'EV11'").execute(&pool).await.unwrap();
+        let ana = crate::db::rooms::add_player(&pool, "EV11", "ana").await.unwrap();
+        let bob = crate::db::rooms::add_player(&pool, "EV11", "bob").await.unwrap();
+        let cy = crate::db::rooms::add_player(&pool, "EV11", "cy").await.unwrap();
+        let hub = Arc::new(RoomHub::new());
+        for p in [&ana, &bob, &cy] {
+            hub.player_connected(&pool, "EV11", p.id).await;
+        }
+        crate::game::start_game(&pool, "EV11").await.unwrap();
+        let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'EV11' AND \"order\" = 0")
+            .fetch_one(&pool).await.unwrap();
+        let a = crate::db::answers::insert_answer(&pool, round, ana.id, "p", "o").await.unwrap();
+        crate::db::answers::insert_answer(&pool, round, bob.id, "p", "o").await.unwrap();
+        crate::game::advance(&pool, "EV11").await.unwrap();
+        // bob rates; cy (online, silent) still blocks the advance.
+        crate::db::answers::insert_rating(&pool, a.id, bob.id, 7).await.unwrap();
+        crate::game::maybe_advance_phase(&pool, "EV11", &hub.online()).await;
+        let revealed = |p: &SqlitePool| {
+            let p = p.clone();
+            async move { sqlx::query_scalar::<_, i64>("SELECT revealed FROM round WHERE id = ?").bind(round).fetch_one(&p).await.unwrap() }
+        };
+        assert_eq!(revealed(&pool).await, 0);
+        // cy drops for good: everyone still present has rated, so the room moves on.
+        let grace = Duration::from_millis(50);
+        hub.player_disconnected_after(pool.clone(), "EV11".into(), cy.id, grace);
+        tokio::time::sleep(grace * 4).await;
+        assert_eq!(revealed(&pool).await, 1);
     }
 }
