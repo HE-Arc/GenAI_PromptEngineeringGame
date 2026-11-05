@@ -9,6 +9,13 @@ use axum::{
 use serde_json::json;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
+use tower_governor::{
+    errors::GovernorError,
+    governor::GovernorConfigBuilder,
+    key_extractor::{KeyExtractor, SmartIpKeyExtractor},
+    GovernorLayer,
+};
 use tower_http::services::{ServeDir, ServeFile};
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,10 +111,42 @@ async fn healthz() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
+// Per-IP key: X-Forwarded-For / X-Real-IP first (k8s ingress), then the peer
+// address. With neither (in-process tests) all callers share one bucket instead
+// of failing the request.
+#[derive(Clone)]
+struct ClientIp;
+
+impl KeyExtractor for ClientIp {
+    type Key = IpAddr;
+
+    fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
+        Ok(SmartIpKeyExtractor
+            .extract(req)
+            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+    }
+}
+
+// Generous: 10 req/s sustained, bursts of 20 per client IP.
+fn ip_limit() -> GovernorLayer<ClientIp, governor::middleware::NoOpMiddleware> {
+    let config = GovernorConfigBuilder::default()
+        .per_second(10)
+        .burst_size(20)
+        .key_extractor(ClientIp)
+        .finish()
+        .expect("rate limit config");
+    GovernorLayer { config: Arc::new(config) }
+}
+
 pub fn build_router(state: AppState) -> Router {
+    // Brute-forceable or spammable endpoints: join, admin login, rate.
+    let limited = Router::new()
+        .route("/api/admin/login", post(rest::admin_login))
+        .route("/api/rooms/:code/join", get(rest::join_get).post(rest::join))
+        .route("/api/rooms/:code/rate", post(rest::rate))
+        .route_layer(ip_limit());
     let rest = Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/admin/login", post(rest::admin_login))
         .route("/api/admin/stats", get(rest::admin_stats))
         .route(
             "/api/admin/rooms",
@@ -118,14 +157,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/admin/rooms/:code/skip", post(rest::admin_skip))
         .route("/api/admin/rooms/:code", delete(rest::admin_delete))
         .route("/api/admin/rooms/:code/restart", post(rest::admin_restart))
-        .route("/api/rooms/:code/join", get(rest::join_get).post(rest::join))
-        .route("/api/rooms/:code/rate", post(rest::rate))
         .route("/api/rooms/:code/ready", post(rest::ready))
         .route("/api/images/:id", get(rest::image_get))
         .route(
             "/api/rooms/:code/quiz",
             get(rest::quiz_get).post(rest::quiz_post),
         )
+        .merge(limited)
         .route_layer(middleware::from_fn_with_state(rest_slots(), limit_concurrency))
         .route_layer(middleware::from_fn(rest_timeout))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))

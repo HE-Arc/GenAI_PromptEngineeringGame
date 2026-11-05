@@ -81,6 +81,30 @@ async fn join_duplicate_409_parity() {
 }
 
 #[tokio::test]
+async fn join_rate_limited_per_ip() {
+    let server = test_server().await;
+    let mut limited = 0;
+    for _ in 0..40 {
+        let res = server
+            .post("/api/rooms/ZZ99/join")
+            .add_header("x-forwarded-for", "203.0.113.7")
+            .json(&json!({"name": "ana"}))
+            .await;
+        if res.status_code() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+            limited += 1;
+        }
+    }
+    assert!(limited > 0, "burst of 40 joins from one IP must hit 429");
+    // Another client IP has its own bucket.
+    let other = server
+        .post("/api/rooms/ZZ99/join")
+        .add_header("x-forwarded-for", "198.51.100.1")
+        .json(&json!({"name": "ana"}))
+        .await;
+    other.assert_status(axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn bad_token_403_parity() {
     // Every player endpoint scopes the token to the room: 403 {"error":"bad token"}.
     let (server, pool, _) = server_with_pool().await;
