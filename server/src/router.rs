@@ -111,40 +111,94 @@ async fn healthz() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-// Per-IP key: X-Forwarded-For / X-Real-IP first (k8s ingress), then the peer
-// address. With neither (in-process tests) all callers share one bucket instead
-// of failing the request.
+// The TCP peer address is the key: it cannot be forged per-request, so one
+// host always owns one bucket. Forwarded headers (X-Forwarded-For, X-Real-IP,
+// Forwarded) are client-controlled — trusting them behind no reverse proxy
+// lets anyone rotate buckets around this limit. They are consulted only when
+// there is no TCP peer at all (in-process tests): there a header is the only
+// way to address two buckets from one process. Production always has a peer
+// (into_make_service_with_connect_info in main.rs).
 #[derive(Clone)]
-struct ClientIp;
+struct PeerIp;
 
-impl KeyExtractor for ClientIp {
+impl KeyExtractor for PeerIp {
     type Key = IpAddr;
 
     fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
+        if let Some(info) = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        {
+            return Ok(info.0.ip());
+        }
         Ok(SmartIpKeyExtractor
             .extract(req)
             .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)))
     }
 }
 
-// Generous: 10 req/s sustained, bursts of 20 per client IP.
-fn ip_limit() -> GovernorLayer<ClientIp, governor::middleware::NoOpMiddleware> {
-    let config = GovernorConfigBuilder::default()
-        .per_second(10)
-        .burst_size(20)
-        .key_extractor(ClientIp)
-        .finish()
-        .expect("rate limit config");
-    GovernorLayer { config: Arc::new(config) }
+// The retained sweepers: each built limiter registers one retain_recent()
+// closure; spawn_rate_limit_retention sweeps them all every 60 s. The governor
+// key map otherwise grows with every new client IP for the process's life.
+static LIMITERS: std::sync::OnceLock<std::sync::Mutex<Vec<Box<dyn Fn() + Send>>>> =
+    std::sync::OnceLock::new();
+
+fn remembered_limit<F: Fn() + Send + 'static>(retain: F) {
+    let list = LIMITERS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    list.lock().expect("rate limiter registry").push(Box::new(retain));
+}
+
+// Spawns the periodic garbage collection of the governor key map. Call once
+// at startup, after build_router has built the limiters.
+pub fn spawn_rate_limit_retention() {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Some(list) = LIMITERS.get() {
+                for retain in list.lock().expect("rate limiter registry").iter() {
+                    retain();
+                }
+            }
+        }
+    });
+}
+
+fn keyed_limit(per_second: u64, burst: u32) -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
+    let config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(per_second)
+            .burst_size(burst)
+            .key_extractor(PeerIp)
+            .finish()
+            .expect("rate limit config"),
+    );
+    let limiter = config.limiter().clone();
+    remembered_limit(move || limiter.retain_recent());
+    GovernorLayer { config }
+}
+
+// One classroom of 30 players behind one NAT shares one IP: 30 req/s sustained,
+// bursts of 100 for the /join and /rate bursts at game start.
+fn classroom_limit() -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
+    keyed_limit(30, 100)
+}
+
+// Admin login is brute-forced by one agent, not a roomful: strict.
+fn login_limit() -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
+    keyed_limit(10, 20)
 }
 
 pub fn build_router(state: AppState) -> Router {
-    // Brute-forceable or spammable endpoints: join, admin login, rate.
-    let limited = Router::new()
+    // Brute-forceable or spammable endpoints: login, join, rate. The classroom
+    // burst is bigger than the login one (see the limit functions).
+    let login_limited = Router::new()
         .route("/api/admin/login", post(rest::admin_login))
+        .route_layer(login_limit());
+    let classroom_limited = Router::new()
         .route("/api/rooms/:code/join", get(rest::join_get).post(rest::join))
         .route("/api/rooms/:code/rate", post(rest::rate))
-        .route_layer(ip_limit());
+        .route_layer(classroom_limit());
     let rest = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/admin/stats", get(rest::admin_stats))
@@ -163,7 +217,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/rooms/:code/quiz",
             get(rest::quiz_get).post(rest::quiz_post),
         )
-        .merge(limited)
+        .merge(login_limited)
+        .merge(classroom_limited)
         .route_layer(middleware::from_fn_with_state(rest_slots(), limit_concurrency))
         .route_layer(middleware::from_fn(rest_timeout))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))

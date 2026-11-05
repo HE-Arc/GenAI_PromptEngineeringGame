@@ -98,9 +98,11 @@ async fn join_name_trimmed_and_truncated_by_chars() {
 
 #[tokio::test]
 async fn join_rate_limited_per_ip() {
+    // Classroom-sized burst: one IP may spend 100 joins at once (30/s after),
+    // so 150 joins in a row must exhaust the bucket and hit 429.
     let server = test_server().await;
     let mut limited = 0;
-    for _ in 0..40 {
+    for _ in 0..150 {
         let res = server
             .post("/api/rooms/ZZ99/join")
             .add_header("x-forwarded-for", "203.0.113.7")
@@ -110,7 +112,7 @@ async fn join_rate_limited_per_ip() {
             limited += 1;
         }
     }
-    assert!(limited > 0, "burst of 40 joins from one IP must hit 429");
+    assert!(limited >= 50, "150 joins must burn the burst of 100 and hit 429");
     // Another client IP has its own bucket.
     let other = server
         .post("/api/rooms/ZZ99/join")

@@ -44,6 +44,8 @@ async fn main() {
     tracing::info!("background ticker and room sweeper started");
 
     let app = build_router(state);
+    server::router::spawn_rate_limit_retention();
+    tracing::info!("rate limiter retention sweep started");
     let addr = format!("0.0.0.0:{port}");
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
