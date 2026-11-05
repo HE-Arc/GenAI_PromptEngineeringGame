@@ -55,7 +55,7 @@
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.07);
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--ink-dim);
   white-space: nowrap;
 }
@@ -134,7 +134,7 @@
   background: rgba(0, 0, 0, 0.25);
   color: var(--signal-lit);
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -713,7 +713,7 @@
   padding-bottom: 0.15rem;
   color: var(--ink-dim);
   font-size: 1rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 .verdict__round {
   margin-left: auto;
@@ -722,7 +722,7 @@
   background: rgba(255, 255, 255, 0.08);
   color: var(--ink-dim);
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -767,7 +767,7 @@
 }
 .runshow__timer {
   color: var(--signal);
-  font-weight: 700;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -794,7 +794,7 @@
 }
 .explain .label {
   color: var(--signal-lit);
-  font-weight: 800;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -904,7 +904,7 @@
 .tally__fig b {
   color: var(--ink);
   font-size: 1.375rem;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1;
 }
 .tally__fig span {
@@ -930,7 +930,7 @@
   min-height: 3rem;
   color: var(--cool-lit);
   font-size: 0.875rem;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -972,7 +972,7 @@
   margin-left: auto;
   color: var(--ink-dim);
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1055,7 +1055,7 @@
   padding: 0 0.7rem 0.2rem;
   color: var(--ink-dim);
   font-size: 0.6875rem;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1125,7 +1125,7 @@
 }
 .board__name--me {
   color: var(--ink);
-  font-weight: 700;
+  font-weight: 600;
 }
 .board__tag {
   margin-left: 0.4rem;
@@ -1134,7 +1134,7 @@
   background: var(--signal);
   color: var(--signal-ink);
   font-size: 0.6875rem;
-  font-weight: 800;
+  font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   vertical-align: 0.1em;
@@ -1218,7 +1218,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 0.9375rem;
 }
 .podium__pts {

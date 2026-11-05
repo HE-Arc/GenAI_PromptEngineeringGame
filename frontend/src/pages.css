@@ -125,7 +125,7 @@
   background: rgba(255, 255, 255, 0.1);
   color: var(--ink);
   font-size: 0.8125rem;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
