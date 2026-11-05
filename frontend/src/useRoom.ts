@@ -14,7 +14,7 @@ export type Link = 'idle' | 'connecting' | 'live' | 'down' | 'failed'
 const LINK_WORDS: Record<Link, string> = {
   idle: '',
   connecting: 'Connexion…',
-  live: 'En direct',
+  live: '',
   down: 'Reconnexion…',
   failed: 'La partie ne répond pas',
 }
