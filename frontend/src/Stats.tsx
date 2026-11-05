@@ -21,8 +21,7 @@ const KIND_NAME: Record<string, string> = {
 }
 
 const int = (n: number) => n.toLocaleString('fr-FR')
-const one = (n: number | null) =>
-  n === null ? '—' : n.toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+const whole = (n: number | null) => (n === null ? '—' : Math.round(n).toLocaleString('fr-FR'))
 
 function uptime(seconds: number): string {
   const min = Math.floor(seconds / 60)
@@ -216,7 +215,7 @@ export default function Stats() {
                 label="Longueur moyenne du prompt"
                 value={answers.avg_prompt_chars === null ? '—' : `${int(Math.round(answers.avg_prompt_chars))} car.`}
               />
-              <Row label="Note finale moyenne" value={one(answers.avg_note)} />
+              <Row label="Note finale moyenne" value={whole(answers.avg_note)} />
             </ul>
           </section>
 
@@ -224,7 +223,7 @@ export default function Stats() {
             <h2 className="label">Notation croisée</h2>
             <ul className="stats__rows">
               <Row label="Notes données" value={int(ratings.total)} />
-              <Row label="Moyenne" value={one(ratings.avg)} />
+              <Row label="Moyenne" value={whole(ratings.avg)} />
             </ul>
           </section>
 
