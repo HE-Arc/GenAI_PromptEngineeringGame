@@ -22,6 +22,7 @@ pub const QUIZ_SECONDS: i64 = 60;
 pub const QUIZ_SECONDS_DEFAULT: i64 = 60;
 pub const QUIZ_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const QUIZ_REVEAL_SECONDS: i64 = 8;
+pub const PROMPT_GRACE_MS: i64 = 2000;
 pub const ROUNDS_PER_GAME: usize = 10;
 // Prompts a player may send for one round; the best-scored one is kept.
 pub const MAX_ATTEMPTS: i64 = 3;
@@ -210,6 +211,11 @@ impl GameRoom {
     }
     pub fn phase_expired(&self) -> bool {
         matches!(self.phase_deadline_ms, Some(d) if now_ms() >= d)
+    }
+    // Writing closes PROMPT_GRACE_MS after the clock: the draft the client
+    // auto-sends in the last second must land, be generated and be rated.
+    pub fn prompt_window_closed(&self) -> bool {
+        matches!(self.phase_deadline_ms, Some(d) if now_ms() >= d + PROMPT_GRACE_MS)
     }
     pub fn is_auto(&self) -> bool {
         self.auto_mode != 0
@@ -816,7 +822,8 @@ pub async fn expire_phase(state: &AppState, code: &str) -> bool {
         let _ = advance(pool, code).await;
         return true;
     }
-    if !room.phase_expired() || !matches!(room.phase.as_str(), "playing" | "rating") {
+    let expired = if room.phase == "playing" { room.prompt_window_closed() } else { room.phase_expired() };
+    if !expired || !matches!(room.phase.as_str(), "playing" | "rating") {
         return false;
     }
     let Some((round_id, revealed)) = current_round(pool, &room).await else {
@@ -1572,6 +1579,8 @@ mod tests {
         // Nobody wrote before the clock ran out: straight to the summary.
         let sql = format!("UPDATE room SET phase_deadline = {TS_FROM_MS} WHERE code = 'EX33'");
         sqlx::query(&sql).bind(now_ms() - 1000).execute(&pool).await.unwrap();
+        assert!(!expire_phase(&state, "EX33").await, "late prompts are still taken during the grace");
+        sqlx::query(&sql).bind(now_ms() - PROMPT_GRACE_MS - 1000).execute(&pool).await.unwrap();
         assert!(expire_phase(&state, "EX33").await);
         assert!(!expire_phase(&state, "EX33").await, "claimed once");
         let room = load(&pool, "EX33").await.unwrap();

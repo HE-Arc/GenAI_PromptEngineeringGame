@@ -187,7 +187,7 @@ pub async fn begin_answer(
                 message: "La manche se termine : plus de nouveau prompt.",
             })
         }
-        Ok(g) if g.phase == "playing" && !g.phase_expired() => {}
+        Ok(g) if g.phase == "playing" && !g.prompt_window_closed() => {}
         Ok(g) if g.phase == "playing" => {
             return Err(AnswerReject {
                 code: "bad_phase",
@@ -696,6 +696,42 @@ async fn send_direct(ws: &mut WebSocket, msg: &WsOut) {
 mod tests {
     use super::*;
     use crate::db::test_pool;
+
+    #[tokio::test]
+    async fn late_prompt_accepted_within_grace_only() {
+        std::env::remove_var("OPENAI_API_KEY");
+        let pool = test_pool().await;
+        let state = AppState::new(pool.clone());
+        rooms::create_room(&pool, "GR01").await.unwrap();
+        let player = rooms::add_player(&pool, "GR01", "ana").await.unwrap();
+        sqlx::query("UPDATE round SET target = 'resume ce mail' WHERE room_code = 'GR01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'GR01'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let set_deadline = |ago_ms: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("UPDATE room SET phase_deadline = strftime('%Y-%m-%d %H:%M:%f', ? / 1000.0, 'unixepoch') WHERE code = 'GR01'")
+                    .bind(game::now_ms() - ago_ms)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        set_deadline(1000).await;
+        let empty = begin_answer(&state, "GR01", &player.token, "  ").await;
+        assert_eq!(empty.err().map(|e| e.code), Some("bad_request"), "empty is refused");
+        begin_answer(&state, "GR01", &player.token, "late prompt")
+            .await
+            .expect("1 s after the deadline is inside the grace");
+        set_deadline(3000).await;
+        let late = begin_answer(&state, "GR01", &player.token, "too late").await;
+        assert_eq!(late.err().map(|e| e.code), Some("bad_phase"), "3 s after is closed");
+    }
 
     // No OPENAI_API_KEY in tests by rule: AppState::new picks the stub.
     #[tokio::test]

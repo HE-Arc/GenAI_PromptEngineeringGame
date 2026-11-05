@@ -12,6 +12,7 @@ import {
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
+import { useQuizWindow } from './serverClock'
 import { buzz, reduced } from './fx'
 import type { AnswerFeed, Link } from './useRoom'
 
@@ -250,8 +251,8 @@ export default function Game({
     e.currentTarget.requestSubmit()
   }
 
-  async function send(e: FormEvent) {
-    e.preventDefault()
+  async function send(e?: FormEvent) {
+    e?.preventDefault()
     // Re-checked here, not only on the button: the bound is also enforced by `maxLength`,
     // but a value set past it must fail closed rather than ride a send the server rejects.
     if (tooLong) {
@@ -351,6 +352,20 @@ export default function Game({
     },
     [],
   )
+
+  // Time is nearly up: the draft goes out by itself, once per round, on the same skew-corrected
+  // clock as the countdown. The server takes it up to a short grace after the deadline.
+  const clock = useQuizWindow(state.timer)
+  const autoRound = useRef(-1)
+  const nearEnd = clock.open && clock.left <= 1000
+  useEffect(() => {
+    if (!nearEnd || scored || state.phase !== 'playing' || autoRound.current === state.current) return
+    autoRound.current = state.current
+    if (alreadyDone || busy || stale || ending || outOfAttempts || tooLong || !text.trim()) return
+    void send()
+    // Fires on the edge into the last second only; `send` reads the render's own values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nearEnd])
 
   // The score lands where the eye already is, which takes three things that all used to be
   // missing. The verdict now sits above the composer in the document rather than under it; the
