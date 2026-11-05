@@ -741,13 +741,71 @@ export function Section({ title, children }: { title: string; children: ReactNod
 // The clock of a timed phase — writing a prompt, rating one — drawn like the didacticiel's.
 // Read off the server's deadline and clock, so a phone that arrives late or runs fast counts the
 // same seconds as the rest of the room. Renders nothing when the phase has no clock.
+// It floats above the page and can be dragged anywhere; the spot is kept in localStorage.
+const CLOCK_POS_KEY = 'clockPos'
+
+function readClockPos(): { x: number; y: number } | null {
+  try {
+    const p = JSON.parse(localStorage.getItem(CLOCK_POS_KEY) ?? 'null')
+    return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : null
+  } catch {
+    return null
+  }
+}
+
 export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | null; what: string; seconds: number }) {
   const { open, left } = useQuizWindow(timer)
+  const ref = useRef<HTMLParagraphElement>(null)
+  const drag = useRef<{ dx: number; dy: number } | null>(null)
+  const [pos, setPos] = useState(readClockPos)
+  const shown = !!timer
+
+  const clamp = (x: number, y: number) => {
+    const el = ref.current
+    const w = el?.offsetWidth ?? 0
+    const h = el?.offsetHeight ?? 0
+    return {
+      x: Math.min(Math.max(0, x), Math.max(0, window.innerWidth - w)),
+      y: Math.min(Math.max(0, y), Math.max(0, window.innerHeight - h)),
+    }
+  }
+
+  useEffect(() => {
+    if (!shown) return
+    const fit = () => setPos((p) => (p ? clamp(p.x, p.y) : p))
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [shown])
+
   const length = seconds * 1000
   if (!timer) return null
   const secs = countdown(left)
   return (
-    <p className="qclock" data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
+    <p
+      ref={ref}
+      className="qclock qclock--float"
+      style={pos ? { left: pos.x, top: pos.y, right: 'auto' } : undefined}
+      onPointerDown={(e) => {
+        const r = e.currentTarget.getBoundingClientRect()
+        drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top }
+        e.currentTarget.setPointerCapture(e.pointerId)
+      }}
+      onPointerMove={(e) => {
+        if (drag.current) setPos(clamp(e.clientX - drag.current.dx, e.clientY - drag.current.dy))
+      }}
+      onPointerUp={() => {
+        drag.current = null
+        try {
+          if (pos) localStorage.setItem(CLOCK_POS_KEY, JSON.stringify(pos))
+        } catch {
+          /* storage unavailable: the spot just isn't kept */
+        }
+      }}
+      onPointerCancel={() => {
+        drag.current = null
+      }}
+      data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
       {open ? (
         <>
           <Ring left={left} length={length} secs={secs} />
