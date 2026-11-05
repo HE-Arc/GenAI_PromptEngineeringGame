@@ -223,9 +223,9 @@ export default function Game({
   // screen stops offering a send.
   const attemptsLeft = Math.max(0, state.max_attempts - state.my_attempts)
   const outOfAttempts = attemptsLeft === 0
-  // What the button is waiting for. Two waits and two words: the pause after the text is two
-  // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
-  // button telling the player the model is still working when it stopped two seconds ago.
+  // What the button is waiting for. The pause after the text is only the
+  // model's answer stream closing; grading is peer grading, so « le modèle
+  // réfléchit » clears as soon as the answer landed — no further model call.
   // Sending again is allowed while the round is open: the last attempt is the one kept.
   const submitLabel = busy
     ? 'Le modèle réfléchit…'

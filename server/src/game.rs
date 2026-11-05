@@ -24,7 +24,8 @@ pub const QUIZ_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const PROMPT_GRACE_MS: i64 = 2000;
 pub const ROUNDS_PER_GAME: usize = 10;
-// Prompts a player may send for one round; the best-scored one is kept.
+// Prompts a player may send for one round; the latest replaces earlier ones
+// (conversation rounds chain instead — see below) and is graded by the peers.
 pub const MAX_ATTEMPTS: i64 = 3;
 // Image rounds allow fewer: each attempt is a billed picture.
 pub const MAX_IMAGE_ATTEMPTS: i64 = 2;
@@ -1147,9 +1148,10 @@ pub async fn room_snapshot(
     .into_iter()
     .map(|(id, correct, n): (i64, i64, i64)| (id, (correct, n)))
     .collect();
-    // Unrated answers have a NULL round_score: SUM skips them.
+    // Unrated answers have a NULL round_score: SUM skips them. Old rows may
+    // hold a fractional score, so the total rounds half up instead of truncating.
     let totals: HashMap<i64, i64> = sqlx::query_as::<_, (i64, Option<i64>)>(
-        "SELECT answer.player_id, CAST(SUM(answer.round_score) AS INTEGER)
+        "SELECT answer.player_id, CAST(SUM(answer.round_score) + 0.5 AS INTEGER)
          FROM answer JOIN player ON player.id = answer.player_id
          WHERE player.room_code = ? GROUP BY answer.player_id",
     )
@@ -1176,7 +1178,7 @@ pub async fn room_snapshot(
                 "name": p.name,
                 "score": if hiding { Value::Null } else { json!(total) },
                 "answered": mine.is_some(),
-                "round_score": if hiding { Value::Null } else { json!(mine.and_then(|a| a.round_score).map(|s| s as i64)) },
+                "round_score": if hiding { Value::Null } else { json!(mine.and_then(|a| a.round_score).map(half_up)) },
                 "quiz_score": quiz_score,
                 "quiz_done": bank > 0 && attempts == bank,
                 "online": online_ids.contains(&p.id),
@@ -1338,7 +1340,7 @@ pub async fn room_snapshot(
                     "author": names.get(&a.player_id),
                     "prompt": a.prompt,
                     "output": a.output,
-                    "round_score": a.round_score.map(|s| s as i64),
+                    "round_score": a.round_score.map(half_up),
                 })).collect::<Vec<_>>(),
             })
         }

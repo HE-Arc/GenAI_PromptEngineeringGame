@@ -758,6 +758,9 @@ export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | nul
   const ref = useRef<HTMLParagraphElement>(null)
   const drag = useRef<{ dx: number; dy: number } | null>(null)
   const [pos, setPos] = useState(readClockPos)
+  // The spot to persist on pointer-up: the render-closure `pos` can be stale
+  // behind the last onPointerMove, so the drag keeps it in a ref.
+  const latestPos = useRef(pos)
   const shown = !!timer
 
   const clamp = (x: number, y: number) => {
@@ -792,12 +795,16 @@ export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | nul
         e.currentTarget.setPointerCapture(e.pointerId)
       }}
       onPointerMove={(e) => {
-        if (drag.current) setPos(clamp(e.clientX - drag.current.dx, e.clientY - drag.current.dy))
+        if (drag.current) {
+          const p = clamp(e.clientX - drag.current.dx, e.clientY - drag.current.dy)
+          latestPos.current = p
+          setPos(p)
+        }
       }}
       onPointerUp={() => {
         drag.current = null
         try {
-          if (pos) localStorage.setItem(CLOCK_POS_KEY, JSON.stringify(pos))
+          if (latestPos.current) localStorage.setItem(CLOCK_POS_KEY, JSON.stringify(latestPos.current))
         } catch {
           /* storage unavailable: the spot just isn't kept */
         }
