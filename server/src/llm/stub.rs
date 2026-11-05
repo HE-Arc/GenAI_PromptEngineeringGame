@@ -1,10 +1,5 @@
 use tokio::sync::mpsc;
 
-use super::Verdict;
-
-// Quoted player-facing string, so French is correct here (comments stay English).
-const STUB_COMMENT: &str = "Local, pas de cle API : regle locale, pas un vrai jury. Avec une cible longue, les scores sont bas par construction : c'est la methode, pas ton prompt.";
-
 pub struct StubSource;
 
 fn stub_answer(prompt: &str) -> String {
@@ -29,53 +24,6 @@ pub fn stub_chunks(prompt: &str) -> Vec<String> {
         .collect()
 }
 
-fn word_set(text: &str) -> std::collections::HashSet<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
-        .collect()
-}
-
-// Target-denominator overlap, same ceiling semantics as _stub_score: only
-// reproducing every target word reaches 10.
-fn stub_score(output: &str, target: &str) -> Verdict {
-    let want = word_set(target);
-    if want.is_empty() {
-        return Verdict {
-            score: 0,
-            feedback: STUB_COMMENT.into(),
-        };
-    }
-    let got = word_set(output);
-    let score = (10 * want.intersection(&got).count() / want.len()) as i64;
-    Verdict {
-        score,
-        feedback: STUB_COMMENT.into(),
-    }
-}
-
-const STUB_ROLE: &[&str] = &["tu es", "role", "incarne", "agis comme", "parle en tant que"];
-const STUB_PUBLIC: &[&str] = &["public", "destinataire", "lecteur", "adresse", "pour un", "pour une", "niveau"];
-const STUB_CONTEXT: &[&str] = &["contexte", "situation", "cadre", "materiel", "donnees", "enonce", "ingredients"];
-const STUB_FORMAT: &[&str] = &["format", "liste", "tableau", "json", "markdown", "puces", "sous forme", "en 3", "en 2", "en 5"];
-const STUB_LENGTH: &[&str] = &["maximum", "moins de", "au plus", "mots", "lignes", "phrase", "court", "bref", "concis"];
-
-// Keyword-marker heuristic standing in for the critic without a key: 1 base,
-// +2 per structural criterion present, +1 for a length bound.
-pub fn stub_grade(prompt: &str) -> Verdict {
-    let text = prompt.to_lowercase();
-    if text.trim().is_empty() {
-        return Verdict { score: 0, feedback: STUB_COMMENT.into() };
-    }
-    let has = |markers: &[&str]| markers.iter().any(|m| text.contains(m));
-    let mut points = 1;
-    for markers in [STUB_ROLE, STUB_PUBLIC, STUB_CONTEXT, STUB_FORMAT] {
-        points += 2 * has(markers) as i64;
-    }
-    points += has(STUB_LENGTH) as i64;
-    Verdict { score: points, feedback: STUB_COMMENT.into() }
-}
-
 impl super::LlmSource for StubSource {
     // One 20ms beat per chunk: slow enough for the WS fan-out path to show
     // progressive frames, fast enough to keep the suite under a second.
@@ -93,27 +41,6 @@ impl super::LlmSource for StubSource {
             }
             Ok(false)
         })
-    }
-
-    fn score(
-        &self,
-        _prompt: &str,
-        output: &str,
-        target: &str,
-        _criteria: &[String],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
-        let verdict = stub_score(output, target);
-        Box::pin(async move { verdict })
-    }
-
-    fn grade_prompt(
-        &self,
-        prompt: &str,
-        _target: &str,
-        _criteria: &[String],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verdict> + Send + '_>> {
-        let verdict = stub_grade(prompt);
-        Box::pin(async move { verdict })
     }
 
     // A fixed placeholder so image rounds play end to end without a key.
@@ -146,16 +73,11 @@ mod tests {
     }
 
     // Same enrichment as the live path (ws builds it before the llm call):
-    // the stub echoes exercice + prompt eleve, and grading the enriched
-    // text scores the same method as grading the raw prompt.
+    // the stub echoes exercice + prompt eleve.
     #[test]
     fn stub_mirrors_enriched_input() {
         let enriched = super::super::enriched_input(2, "resume ce mail", "fais un resume concis, format liste");
         assert!(stub_chunks(&enriched).concat().contains("resume ce mail"));
         assert!(stub_chunks(&enriched).concat().contains("Prompt élève"));
-        assert_eq!(
-            stub_grade(&enriched).score,
-            stub_grade("fais un resume concis, format liste").score
-        );
     }
 }

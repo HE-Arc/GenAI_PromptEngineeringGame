@@ -5,8 +5,7 @@ import type { State } from './api'
 // others are the stream the POST used to carry as SSE frames.
 export type AnswerEvent =
   | { kind: 'chunk'; player: string; delta: string }
-  | { kind: 'scoring'; player: string }
-  | { kind: 'done'; player: string; score: number; best: number; feedback: string; truncated: boolean }
+  | { kind: 'done'; player: string; truncated: boolean }
   | { kind: 'error'; code: string; message: string }
 
 export interface RoomWsHandlers {
@@ -135,18 +134,11 @@ export function connectRoomWs(code: string, token: string, handlers: RoomWsHandl
         case 'answer.chunk':
           handlers.onAnswer({ kind: 'chunk', player: msg.player as string, delta: msg.delta as string })
           break
-        case 'answer.scoring':
-          handlers.onAnswer({ kind: 'scoring', player: msg.player as string })
-          break
         case 'answer.done':
           handlers.onAnswer({
             kind: 'done',
             player: msg.player as string,
-            score: msg.score as number,
-            // The note the round keeps (best attempt so far); older servers send none.
-            best: typeof msg.best === 'number' ? msg.best : (msg.score as number),
-            feedback: msg.feedback as string,
-            // The token cap cut the answer short: the verdict screen says so.
+            // The token cap cut the answer short: the result screen says so.
             truncated: msg.truncated === true,
           })
           break

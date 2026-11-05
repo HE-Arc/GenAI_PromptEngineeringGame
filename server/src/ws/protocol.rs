@@ -23,18 +23,9 @@ pub enum WsOut {
     Patch { seq: u64, changed: Vec<String> },
     #[serde(rename = "answer.chunk")]
     AnswerChunk { player: String, delta: String },
-    #[serde(rename = "answer.scoring")]
-    AnswerScoring { player: String },
     #[serde(rename = "answer.done")]
     AnswerDone {
         player: String,
-        // The AI's note (game::ai_score): a real division, hence a float.
-        score: f64,
-        // The note the round keeps for this player: the best attempt so far,
-        // which is `score` unless an earlier attempt did better.
-        #[serde(default)]
-        best: f64,
-        feedback: String,
         // The token cap cut the answer short; the player is told so.
         #[serde(default)]
         truncated: bool,

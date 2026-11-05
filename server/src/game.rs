@@ -38,10 +38,6 @@ pub const SUMMARY_AUTO_SECONDS: i64 = 30;
 pub const ROUND_SECONDS_RANGE: (i64, i64) = (10, 600);
 pub const RATE_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const LOBBY_STEP: &str = "lobby";
-// The critic anchors the peers: the retained quality is the peer mean held
-// within ±QUALITY_BAND of the critic's own mark.
-const QUALITY_BAND: f64 = 3.0;
-
 // Private block the snapshot carries for per-viewer fields. The cached
 // snapshot is shared by every socket, so `mine` cannot be computed at build
 // time; `personalize` resolves it per socket and strips this key.
@@ -141,32 +137,10 @@ pub fn half_up(x: f64) -> i64 {
     (x + 0.5).floor() as i64
 }
 
-// The lowest note the AI ever gives, judge and critic alike: a low note
-// discourages more than it teaches, and the class rating can still go lower.
-pub const MIN_AI_SCORE: i64 = 4;
-
-pub fn floor_ai(score: i64) -> i64 {
-    score.clamp(MIN_AI_SCORE, 10)
-}
-
-// The AI's own note: what round_score would be with no peer rating. Shown
-// right after a send and again in the summary, so both screens agree.
-pub fn ai_score(proximity: i64, critic: i64) -> f64 {
-    (proximity as f64 + 2.0 * critic as f64) / 3.0
-}
-
-pub fn quality(llm: Option<i64>, peers: &[i64]) -> i64 {
-    if peers.is_empty() {
-        return llm.unwrap_or(0);
-    }
-    let mean = peers.iter().sum::<i64>() as f64 / peers.len() as f64;
-    match llm {
-        None => half_up(mean),
-        Some(l) => {
-            let l = l as f64;
-            half_up(mean.clamp(l - QUALITY_BAND, l + QUALITY_BAND))
-        }
-    }
+// The round score is the class's average grade, rounded half up. No grade,
+// no score: the prompt stays unrated instead of counting as a zero.
+pub fn quality(peers: &[i64]) -> Option<i64> {
+    (!peers.is_empty()).then(|| half_up(peers.iter().sum::<i64>() as f64 / peers.len() as f64))
 }
 
 // A majority of the players present, for every vote. The lobby used to ask
@@ -248,11 +222,6 @@ struct AnswerRow {
     player_id: i64,
     prompt: String,
     output: String,
-    score: i64,
-    quality_llm: Option<i64>,
-    quality_comment: String,
-    quality_peers: Option<i64>,
-    quality: Option<i64>,
     round_score: Option<f64>,
     attempts: i64,
     turns: Option<String>,
@@ -260,8 +229,7 @@ struct AnswerRow {
 
 async fn round_answers(pool: &SqlitePool, round_id: i64) -> Vec<AnswerRow> {
     sqlx::query_as::<_, AnswerRow>(
-        "SELECT id, player_id, prompt, output, score, quality_llm, quality_comment,
-                quality_peers, quality, round_score, attempts, turns
+        "SELECT id, player_id, prompt, output, round_score, attempts, turns
          FROM answer WHERE round_id = ? ORDER BY id",
     )
     .bind(round_id)
@@ -541,16 +509,8 @@ async fn settle_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Er
     let mut tx = pool.begin().await?;
     for a in &answers {
         let scores: &[i64] = by_answer.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
-        let peers =
-            (!scores.is_empty()).then(|| half_up(scores.iter().sum::<i64>() as f64 / scores.len() as f64));
-        let q = quality(a.quality_llm, scores);
-        // Weighted 1/3 proximity, 2/3 quality: the game teaches prompting,
-        // so a lucky output must not outweigh a well-built prompt.
-        let round_score = (a.score as f64 + 2.0 * q as f64) / 3.0;
-        sqlx::query("UPDATE answer SET quality_peers = ?, quality = ?, round_score = ? WHERE id = ?")
-            .bind(peers)
-            .bind(q)
-            .bind(round_score)
+        sqlx::query("UPDATE answer SET round_score = ? WHERE id = ?")
+            .bind(quality(scores))
             .bind(a.id)
             .execute(&mut *tx)
             .await?;
@@ -1172,20 +1132,9 @@ pub async fn room_snapshot(
     .into_iter()
     .map(|(id, correct, n): (i64, i64, i64)| (id, (correct, n)))
     .collect();
-    #[derive(sqlx::FromRow)]
-    struct Totals {
-        player_id: i64,
-        settled: Option<f64>,
-        open_round: Option<i64>,
-        proximity: Option<i64>,
-        quality: Option<i64>,
-    }
-    let totals: HashMap<i64, Totals> = sqlx::query_as::<_, Totals>(
-        "SELECT answer.player_id,
-                SUM(answer.round_score) AS settled,
-                SUM(CASE WHEN answer.round_score IS NULL THEN answer.score END) AS open_round,
-                SUM(CASE WHEN answer.round_score IS NOT NULL THEN answer.score END) AS proximity,
-                SUM(CASE WHEN answer.round_score IS NOT NULL THEN answer.quality END) AS quality
+    // Unrated answers have a NULL round_score: SUM skips them.
+    let totals: HashMap<i64, i64> = sqlx::query_as::<_, (i64, Option<i64>)>(
+        "SELECT answer.player_id, CAST(SUM(answer.round_score) AS INTEGER)
          FROM answer JOIN player ON player.id = answer.player_id
          WHERE player.room_code = ? GROUP BY answer.player_id",
     )
@@ -1194,38 +1143,33 @@ pub async fn room_snapshot(
     .await
     .unwrap_or_default()
     .into_iter()
-    .map(|t| (t.player_id, t))
+    .map(|(id, sum)| (id, sum.unwrap_or(0)))
     .collect();
 
     // The rating phase blanks every score: a player who sees their own total
     // could cross-reference which anonymous prompt is theirs.
     let hiding = room.phase == "rating";
     let quiz_of = |id: i64| quiz_scores.get(&id).copied().unwrap_or((0, 0));
-    let mut rows: Vec<(f64, usize, Value)> = players
+    let mut rows: Vec<(i64, usize, Value)> = players
         .iter()
         .enumerate()
         .map(|(joined, p)| {
             let (quiz_score, attempts) = quiz_of(p.id);
-            let t = totals.get(&p.id);
-            let total = quiz_score as f64
-                + t.and_then(|t| t.settled).unwrap_or(0.0)
-                + t.and_then(|t| t.open_round).unwrap_or(0) as f64;
+            let total = quiz_score + totals.get(&p.id).copied().unwrap_or(0);
             let mine = answers.iter().find(|a| a.player_id == p.id);
             let row = json!({
                 "name": p.name,
                 "score": if hiding { Value::Null } else { json!(total) },
                 "answered": mine.is_some(),
-                "round_score": if hiding { Value::Null } else { json!(mine.map(|a| a.score)) },
-                "proximity_total": if hiding { Value::Null } else { json!(t.and_then(|t| t.proximity)) },
-                "quality_total": if hiding { Value::Null } else { json!(t.and_then(|t| t.quality)) },
+                "round_score": if hiding { Value::Null } else { json!(mine.and_then(|a| a.round_score).map(|s| s as i64)) },
                 "quiz_score": quiz_score,
                 "quiz_done": bank > 0 && attempts == bank,
                 "online": online_ids.contains(&p.id),
             });
-            (if hiding { 0.0 } else { total }, joined, row)
+            (if hiding { 0 } else { total }, joined, row)
         })
         .collect();
-    rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
 
     let quiz = if room.phase == "quiz" {
         let revealed = matches!(room.quiz_deadline_ms, Some(d) if now >= d);
@@ -1332,13 +1276,7 @@ pub async fn room_snapshot(
                     "author": names.get(&a.player_id),
                     "prompt": a.prompt,
                     "output": a.output,
-                    "proximity": a.score,
-                    "quality_llm": a.quality_llm,
-                    "quality_comment": a.quality_comment,
-                    "quality_peers": a.quality_peers,
-                    "quality": a.quality,
-                    "ai_score": a.quality_llm.map(|c| ai_score(a.score, c)),
-                    "round_score": a.round_score,
+                    "round_score": a.round_score.map(|s| s as i64),
                 })).collect::<Vec<_>>(),
             })
         }
@@ -1443,10 +1381,12 @@ mod tests {
     }
 
     #[test]
-    fn quality_band_and_rounding() {
-        assert_eq!(quality(Some(5), &[]), 5);
-        assert_eq!(quality(None, &[6, 7]), 7); // 6.5 rounds half up
-        assert_eq!(quality(Some(2), &[10, 10]), 5); // held within +3 of the critic
+    fn round_score_is_peer_average() {
+        assert_eq!(quality(&[]), None);
+        assert_eq!(quality(&[7]), Some(7));
+        assert_eq!(quality(&[6, 7]), Some(7)); // 6.5 rounds half up
+        assert_eq!(quality(&[10, 10, 10]), Some(10));
+        assert_eq!(quality(&[1, 1]), Some(1));
         assert_eq!(threshold(3), 2);
         assert_eq!(threshold(4), 3);
         assert_eq!(threshold(0), 0);
@@ -1533,7 +1473,7 @@ mod tests {
             .fetch_one(&pool).await.unwrap();
         let mut answers = Vec::new();
         for &id in &ids {
-            answers.push(crate::db::answers::insert_answer(&pool, round, id, "p", "o", 5).await.unwrap().id);
+            answers.push(crate::db::answers::insert_answer(&pool, round, id, "p", "o").await.unwrap().id);
         }
         // Writing never closes early (players may retry): the clock or the admin opens the rating.
         maybe_advance_phase(&pool, "CC44", &online).await;
@@ -1651,10 +1591,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        let a = crate::db::answers::insert_answer(&pool, round, ana.id, "p1", "o1", 6).await.unwrap();
+        let a = crate::db::answers::insert_answer(&pool, round, ana.id, "p1", "o1").await.unwrap();
         maybe_advance_phase(&pool, "RD22", &online).await;
         assert_eq!(load(&pool, "RD22").await.unwrap().phase, "playing", "bob has not written");
-        let b = crate::db::answers::insert_answer(&pool, round, bob.id, "p2", "o2", 9).await.unwrap();
+        let b = crate::db::answers::insert_answer(&pool, round, bob.id, "p2", "o2").await.unwrap();
         maybe_advance_phase(&pool, "RD22", &online).await;
         assert_eq!(load(&pool, "RD22").await.unwrap().phase, "playing", "everyone wrote, retries stay open");
         advance(&pool, "RD22").await.unwrap();
@@ -1683,8 +1623,8 @@ mod tests {
         assert!(!snap["target_criteria"].as_array().unwrap().is_empty(), "criteria shown on the round summary");
         let rows = snap["summary"]["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["quality_peers"], 8);
-        assert!(rows[0]["round_score"].is_f64());
+        assert_eq!(rows[0]["round_score"], 8);
+        assert_eq!(rows[1]["round_score"], 4);
 
         for _ in 0..ROUNDS_PER_GAME {
             let phase = load(&pool, "RD22").await.unwrap().phase;

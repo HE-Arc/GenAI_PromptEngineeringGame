@@ -7,7 +7,6 @@ pub struct Answer {
     pub player_id: i64,
     pub prompt: String,
     pub output: String,
-    pub score: i64,
 }
 
 // Single INSERT at stream end: no per-chunk UPDATE, so concurrent streams
@@ -18,20 +17,16 @@ pub async fn insert_answer(
     player_id: i64,
     prompt: &str,
     output: &str,
-    score: i64,
 ) -> Result<Answer, sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO answer (round_id, player_id, prompt, output, score) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(round_id)
-    .bind(player_id)
-    .bind(prompt)
-    .bind(output)
-    .bind(score)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO answer (round_id, player_id, prompt, output) VALUES (?, ?, ?, ?)")
+        .bind(round_id)
+        .bind(player_id)
+        .bind(prompt)
+        .bind(output)
+        .execute(pool)
+        .await?;
     sqlx::query_as::<_, Answer>(
-        "SELECT id, round_id, player_id, prompt, output, score FROM answer WHERE round_id = ? AND player_id = ?",
+        "SELECT id, round_id, player_id, prompt, output FROM answer WHERE round_id = ? AND player_id = ?",
     )
     .bind(round_id)
     .bind(player_id)
@@ -143,7 +138,7 @@ mod tests {
             .expect("order-0 round");
         let author = rooms::add_player(&pool, &room.code, "ana").await.unwrap();
         let rater = rooms::add_player(&pool, &room.code, "bob").await.unwrap();
-        let answer = insert_answer(&pool, round.id, author.id, "p", "out", 7)
+        let answer = insert_answer(&pool, round.id, author.id, "p", "out")
             .await
             .unwrap();
         insert_rating(&pool, answer.id, rater.id, 8).await.unwrap();

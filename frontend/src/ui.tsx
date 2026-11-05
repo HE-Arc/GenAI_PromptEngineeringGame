@@ -535,12 +535,6 @@ export function ScoreScale({ score, min = 0, max = SCALE_MAX }: { score: number;
   )
 }
 
-// The measured columns the final standings are specified as — proximity and quality alongside
-// the total — carried as functions of the player rather than as a fixed list, so a caller that
-// has one number does not have to invent the other, and a caller with neither keeps the two
-// column board every other screen in the console already draws.
-export type BoardColumn = { label: string; value: (p: Player) => number | null }
-
 // A null score is not a zero and it must never render as a blank. The server blanks every score
 // during the rating phase on purpose, and a cell that draws nothing in a column of numbers reads
 // as a missing value, which is the inference the phase exists to prevent — so the cell says "—".
@@ -552,49 +546,10 @@ function Dash({ value }: { value: number | null }) {
 // Rank alone tells you nothing when you are fifth of seven. The bar is drawn against the
 // leader, so the row answers "how far off the top am I" and the leading row is the only one
 // at full sodium.
-//
-// The bar goes away when there are measured columns, and that is not a loss of information: it
-// was a single comparison against the leader drawn as a length, and three columns of digits are
-// that same comparison stated exactly, for each dimension separately. One bar across a row of
-// three numbers would only ever be about the total, and would invite reading it as if it were
-// about all three.
-export function Board({
-  players,
-  myName,
-  columns = [],
-  badges = {},
-}: {
-  players: Player[]
-  myName: string
-  columns?: BoardColumn[]
-  // Presentational nicknames keyed by player name. Computed by callers from data already on
-  // screen, never a score.
-  badges?: Record<string, string>
-}) {
+export function Board({ players, myName }: { players: Player[]; myName: string }) {
   const top = Math.max(...players.map((p) => p.score ?? 0), 0)
   return (
-    <div
-      className={`board${columns.length ? ' board--cols' : ''}`}
-      style={
-        columns.length
-          ? { gridTemplateColumns: `2rem minmax(0, 1fr) repeat(${columns.length + 1}, auto)` }
-          : undefined
-      }
-    >
-      {/* A header row, and only when there is more than one number to name. With a single
-          column there is nothing to disambiguate: the only number in a row has been the total
-          since the Game screen, and a heading over it would say nothing a reader did not
-          already know. */}
-      {columns.length > 0 && (
-        <div className="board__head">
-          <span />
-          <span className="board__headname">Joueur</span>
-          {columns.map((c) => (
-            <span key={c.label}>{c.label}</span>
-          ))}
-          <span title="Total = (proximité + 2 × qualité) / 3 : la proximité compte pour un tiers, la qualité pour deux tiers.">Total</span>
-        </div>
-      )}
+    <div className="board">
       {players.map((p, i) => (
         <div
           className={`board__row${p.name === myName ? ' board__row--me' : ''}`}
@@ -604,8 +559,6 @@ export function Board({
           <span className="board__rank" data-medal={i < 3 ? i + 1 : undefined}>
             {i + 1}
           </span>
-          {/* Avatar, name and fun badge are ONE cell: the badge used to be a grid item of its own,
-              which shifted every following cell one column right and scrambled the final board. */}
           <span className="board__who">
             <Avatar name={p.name} />
             <PlayerName
@@ -613,25 +566,14 @@ export function Board({
               isMe={p.name === myName}
               className={p.name === myName ? 'board__name board__name--me' : 'board__name'}
             />
-            {badges[p.name] && <span className="board__tag board__tag--fun">{badges[p.name]}</span>}
           </span>
-          {/* The dimension columns, through the same formatter as the total. `proximity_total`
-              and `quality_total` are sums over settled rounds, and a round is a mean of two
-              out-of-ten numbers, so both are as fractional as the rounds that made them. */}
-          {columns.map((c) => (
-            <span className="board__cell" key={c.label}>
-              {fr(c.value(p))}
-            </span>
-          ))}
           <Dash value={p.score} />
-          {!columns.length && (
-            <span className="board__bar" aria-hidden="true">
-              <span
-                className={`board__fill${i === 0 ? ' board__fill--top' : ''}`}
-                style={{ width: `${top > 0 ? ((p.score ?? 0) / top) * 100 : 100}%` }}
-              />
-            </span>
-          )}
+          <span className="board__bar" aria-hidden="true">
+            <span
+              className={`board__fill${i === 0 ? ' board__fill--top' : ''}`}
+              style={{ width: `${top > 0 ? ((p.score ?? 0) / top) * 100 : 100}%` }}
+            />
+          </span>
         </div>
       ))}
     </div>

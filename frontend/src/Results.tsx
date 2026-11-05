@@ -1,24 +1,8 @@
 import type { CSSProperties } from 'react'
-import { Avatar, Board, Confetti, ConsoleBar, Section, type BoardColumn } from './ui'
+import { Avatar, Board, Confetti, ConsoleBar, Section } from './ui'
 import { fr, nounOf } from './format'
 import { getName, type State } from './api'
 import type { Link } from './useRoom'
-
-/* The final standings. Four columns — player, proximity, quality, total — because the game now
- * scores two things and a single total cannot say which of them a player was good at.
- *
- * The two dimension columns print "—" until the server sends `proximity_total` and
- * `quality_total`, which it now does. A zero would be a score nobody earned; a blank cell in a
- * column of numbers reads as a missing value and invites the inference the columns exist to
- * stop, so "absent" and "nobody scored" must not look the same.
- */
-
-// Final columns carry their weights: proximity counts 1/3, quality 2/3.
-// Total = (proximité + 2 × qualité) / 3, shown as title tooltip on the board.
-const COLUMNS: BoardColumn[] = [
-  { label: 'Proximité (1/3)', value: (p) => p.proximity_total ?? null },
-  { label: 'Qualité (2/3)', value: (p) => p.quality_total ?? null },
-]
 
 export default function Results({
   state,
@@ -47,33 +31,7 @@ export default function Results({
   // sodium, so nothing extra has to be invented to announce it.
   //
   // The count is printed by `fr` and the noun asked of `nounOf`, because these are the two
-  // sentences that already own the count in another shape: it is a real division and reads
-  // with a comma, and `noun` would print the raw number beside it.
-  // Fun badges, presentational only. Heuristics over totals already on screen, never a
-  // score: highest quality reads as most original, best quality-minus-proximity gap as most
-  // improved, smallest gap between the two dimensions as fairest rater proxy. Hidden when
-  // the totals are absent. French labels, one player per badge.
-  const badges: Record<string, string> = {}
-  const withTotals = state.players.filter((p) => p.proximity_total !== null && p.quality_total !== null)
-  if (withTotals.length > 1) {
-    const by = (f: (p: (typeof withTotals)[number]) => number) =>
-      withTotals.reduce((a, b) => (f(b) > f(a) ? b : a)).name
-    const original = by((p) => p.quality_total ?? 0)
-    const progressed = by((p) => (p.quality_total ?? 0) - (p.proximity_total ?? 0))
-    const fair = withTotals.reduce((a, b) =>
-      Math.abs((b.quality_total ?? 0) - (b.proximity_total ?? 0)) <
-      Math.abs((a.quality_total ?? 0) - (a.proximity_total ?? 0))
-        ? b
-        : a,
-    ).name
-    badges[original] = 'plus original'
-    if (progressed !== original) badges[progressed] = 'plus progressé'
-    if (fair !== original && fair !== progressed) badges[fair] = 'évaluateur le plus juste'
-  }
-  const badgeLine = Object.entries(badges)
-    .map(([name, label]) => `${name}, ${label}`)
-    .join(' · ')
-
+  // sentences that already own the count in another shape.
   const point = nounOf(points, 'point', 'points')
   const verdict =
     points === 0
@@ -127,15 +85,8 @@ export default function Results({
             they sit side by side with the board given a column of its own to stretch into. */}
         <div className="railcol">
           <Section title="Classement final">
-            <Board players={state.players} myName={getName(state.code)} columns={COLUMNS} badges={badges} />
+            <Board players={state.players} myName={getName(state.code)} />
           </Section>
-          <p
-            className="prose prose--sm prose--dim"
-            title="Total = (proximité + 2 × qualité) / 3 : la proximité compte pour un tiers, la qualité pour deux tiers."
-          >
-            Total = (proximité + 2 × qualité) / 3.
-          </p>
-          {badgeLine && <p className="prose prose--sm prose--cool">{badgeLine}</p>}
         </div>
 
         <div className="foot">

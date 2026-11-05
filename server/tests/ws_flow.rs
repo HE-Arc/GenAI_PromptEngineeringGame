@@ -69,19 +69,16 @@ async fn ws_answer_start_streams_chunks_then_done_and_accepts_retry() {
     ws.send(Message::Text(r#"{"type":"answer.start","prompt":"first prompt"}"#.into()))
         .await
         .unwrap();
-    // scoring + at least one chunk, then exactly one done. Snapshots
+    // at least one chunk, then exactly one done. Snapshots
     // interleave (presence on hello, persist before done) since they now
     // fan into the events channel like every other frame.
     let mut chunks = 0;
-    let mut saw_scoring = false;
     loop {
         match tokio::time::timeout(std::time::Duration::from_secs(10), recv_json(&mut ws)).await {
             Ok(WsOut::AnswerChunk { .. }) => chunks += 1,
-            Ok(WsOut::AnswerScoring { .. }) => saw_scoring = true,
             Ok(WsOut::Snapshot { .. }) => {}
-            Ok(WsOut::AnswerDone { score, .. }) => {
-                assert!(saw_scoring && chunks >= 1, "need scoring + chunks before done");
-                assert!(score >= 0.0);
+            Ok(WsOut::AnswerDone { .. }) => {
+                assert!(chunks >= 1, "need chunks before done");
                 break;
             }
             Ok(other) => panic!("unexpected frame while streaming: {other:?}"),

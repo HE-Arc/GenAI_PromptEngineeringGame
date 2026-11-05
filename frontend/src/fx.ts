@@ -1,7 +1,7 @@
 /* Game feel: the small effects that are not components. Its own module for the reason `format.ts`
  * gives — a file exporting both hooks and components breaks Fast Refresh. */
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 export const reduced = () =>
   typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -14,27 +14,6 @@ export function buzz(pattern: number | number[] = 12) {
   } catch {
     /* a refused vibration is not worth a fault */
   }
-}
-
-// A score that ticks up to its value instead of appearing, so the reveal is a moment. Snaps
-// straight to the value under reduced motion.
-export function useCountUp(target: number, ms = 700): number {
-  const [shown, setShown] = useState(() => (reduced() ? target : 0))
-  useEffect(() => {
-    if (reduced()) return
-    let raf = 0
-    const t0 = performance.now()
-    const step = (t: number) => {
-      const k = Math.min(1, (t - t0) / ms)
-      // ease-out cubic: fast start, gentle landing on the number
-      setShown(Math.round(target * (1 - (1 - k) ** 3)))
-      if (k < 1) raf = requestAnimationFrame(step)
-    }
-    raf = requestAnimationFrame(step)
-    return () => cancelAnimationFrame(raf)
-  }, [target, ms])
-  // Reduced motion never animates, so the value is the target itself rather than a state copy.
-  return reduced() ? target : shown
 }
 
 // The length of a server window, which the snapshot does not carry: the largest remaining time

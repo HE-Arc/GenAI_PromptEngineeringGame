@@ -59,30 +59,14 @@ export interface RevealState {
   my_score: number | null
 }
 
-// One line of the round synthesis, shown once anonymity is lifted. `quality_llm`,
-// `quality_peers` and `quality` are all here so the screen can show the bound at work rather
-// than an unexplained verdict.
-//
-// The three numbers are meant to be CHECKABLE against each other: `quality` is `quality_peers`
-// held within ±3 of `quality_llm`, and the screen says so under the table. If the server rounds
-// the two by different rules, that sentence becomes false in front of the class, so the server
-// rounds them the same way. `quality_comment` is the critic's own reason for `quality_llm`, and
-// it is the surface that admits when there is no real model behind the number.
+// One line of the round synthesis, shown once anonymity is lifted.
 export interface SummaryRow {
   author: string
   prompt: string
   output: string
-  proximity: number
-  quality_llm: number
-  // Null on the round nobody rated — a one-player room, or the class asleep through the rating.
-  // The server leaves it NULL rather than a mean of nothing, and the summary says so in words.
-  quality_peers: number | null
-  quality: number
-  quality_comment: string
-  // The AI's own note, (proximity + 2 × quality_llm) / 3: what `round_score` would be with no
-  // peer rating, and the same number the player saw right after sending.
-  ai_score: number | null
-  round_score: number
+  // The average of the peer grades, rounded. Null on the round nobody rated — a one-player
+  // room, or the class asleep through the rating: shown "Non noté".
+  round_score: number | null
 }
 
 // The class's own bar on the current step. `needed` rather than `quorum` because the server
@@ -163,15 +147,6 @@ export type Player = {
   // and kept as a separate field so screens can show the two halves apart.
   quiz_score: number | null
   quiz_done: boolean
-  // The two dimensions behind `score`, summed over the rounds that have been settled. Null
-  // before the player's first settled round, or during the rating phase alongside `score`.
-  //
-  // They are in the payload for a teaching reason, not a decorative one: "proximité 42,
-  // qualité 58, total 50" tells a player their prompts WORK and are badly BUILT, which is the
-  // whole lesson. Collapse it to one number and that distinction disappears behind a score out
-  // of 100 that reads like a grade.
-  proximity_total: number | null
-  quality_total: number | null
   // No `prompt`, `output` or `comment`: the server stops sending them during the rating phase,
   // and keeping them in the type would tell whoever writes the next screen that they are
   // always there.

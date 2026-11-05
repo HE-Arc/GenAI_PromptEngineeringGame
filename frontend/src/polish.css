@@ -119,29 +119,6 @@ body::after {
     0 26px 62px -28px rgba(5, 0, 24, 0.9);
 }
 
-.verdict--done[data-tier='high'] {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 0 88px -20px rgba(62, 227, 154, 0.46),
-    0 26px 62px -28px rgba(5, 0, 24, 0.9);
-  border-color: rgba(62, 227, 154, 0.4);
-}
-
-.verdict--done[data-tier='mid'] {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 0 72px -20px rgba(255, 200, 61, 0.4),
-    0 26px 62px -28px rgba(5, 0, 24, 0.9);
-}
-
-.verdict--done[data-tier='low'] {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 0 66px -20px rgba(255, 107, 132, 0.36),
-    0 26px 62px -28px rgba(5, 0, 24, 0.9);
-  border-color: rgba(255, 107, 132, 0.32);
-}
-
 /* Inputs: deeper inset and clearer gold focus halo. */
 .input,
 .area {
@@ -288,17 +265,7 @@ body::after {
     0 6px 0 var(--signal-deep);
 }
 
-/* Verdict/score reveal and meter polish. */
-.verdict__cheer {
-  text-shadow:
-    0 4px 0 rgba(0, 0, 0, 0.35),
-    0 0 24px rgba(255, 200, 61, 0.3);
-}
-
-.verdict__score {
-  text-shadow: 0 0 26px var(--glow);
-}
-
+/* Meter polish. */
 .meter__seg {
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.09);

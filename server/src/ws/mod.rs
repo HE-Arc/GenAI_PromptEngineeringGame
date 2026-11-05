@@ -34,7 +34,7 @@ const MAX_PROMPT_CHARS: usize = 4096;
 // Player-facing, so French: shown to the author and as the room notice.
 const CRASH_NOTICE: &str = "La partie a planté côté serveur. Préviens l'animateur.";
 // Stored and shown in place of a silent answer: a blank output box reads as
-// a display bug, and the judge would score "" without saying why.
+// a display bug.
 const EMPTY_ANSWER_NOTICE: &str = "(le modèle n'a rien répondu)";
 // Protocol-level pings are answered by the browser's network stack, not by
 // page JS, so a backgrounded tab with throttled timers still answers them.
@@ -51,9 +51,6 @@ const OUTBOX_CAP: usize = 128;
 // task pair and an inflight claim; past this, new starts are refused with
 // `busy` instead of queueing behind a stalled provider.
 const MAX_LIVE_ANSWERS: usize = 32;
-// Score and grade run together under one deadline: sequential verdicts held
-// the inflight claim twice as long for no reason.
-const VERDICTS_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn answer_slots() -> Arc<tokio::sync::Semaphore> {
     static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
@@ -284,49 +281,31 @@ async fn insert_answer_row(
     prompt: &str,
     output: &str,
     turns: Option<&str>,
-    verdict: &crate::llm::Verdict,
-    critique: &crate::llm::Verdict,
     replace: bool,
 ) -> Result<(), sqlx::Error> {
     // One write per answer: concurrent streams never contend on a shared
     // row, and busy_timeout absorbs the burst instead of locking. A retry
-    // may replace the earlier attempt (see `better`), but only while the round is still being
+    // replaces the earlier attempt, but only while the round is still being
     // written: a stream that lands after the rating opened must not swap the
     // prompt the class is rating. A failed retry (`replace` false) never
     // overwrites a good earlier attempt with the crash marker.
     // A crash marker counts as no attempt (0): a provider failure must not
     // eat one of the player's tries.
-    // The best attempt is kept, not the latest: a retry that scores lower
-    // only counts as a try. "Best" is the AI note (game::ai_score, scaled
-    // by 3), ties go to the newer attempt, and a crash marker (attempts 0)
-    // always gives way. A conversation is one growing chain: always replaced.
-    let better = if job.history.is_some() {
-        "1".to_string()
-    } else {
-        "(answer.attempts = 0 OR excluded.score + 2 * excluded.quality_llm
-             >= answer.score + 2 * COALESCE(answer.quality_llm, 0))"
-            .to_string()
-    };
     let on_conflict = if replace {
-        let keep = |col: &str| format!("{col} = CASE WHEN {better} THEN excluded.{col} ELSE answer.{col} END");
-        format!(
-            "ON CONFLICT (round_id, player_id) DO UPDATE SET
-            {}, attempts = attempts + 1
+        "ON CONFLICT (round_id, player_id) DO UPDATE SET
+            prompt = excluded.prompt, output = excluded.output, turns = excluded.turns,
+            attempts = attempts + 1
          WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code
-                WHERE round.id = excluded.round_id) = 'playing'",
-            ["prompt", "output", "score", "comment", "quality_llm", "quality_comment", "turns"]
-                .map(keep)
-                .join(",\n            ")
-        )
+                WHERE round.id = excluded.round_id) = 'playing'"
     } else {
-        "ON CONFLICT (round_id, player_id) DO NOTHING".to_string()
+        "ON CONFLICT (round_id, player_id) DO NOTHING"
     };
     // The row lands only while the round is being written: once the admin
     // has moved on (rating or summary), a late answer would join a round
     // already rated or settled, so it is dropped.
     sqlx::query(&format!(
-        "INSERT INTO answer (round_id, player_id, prompt, output, score, comment, quality_llm, quality_comment, attempts, turns)
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        "INSERT INTO answer (round_id, player_id, prompt, output, attempts, turns)
+         SELECT ?, ?, ?, ?, ?, ?
          WHERE (SELECT room.phase FROM room JOIN round ON round.room_code = room.code WHERE round.id = ?) = 'playing'
          {on_conflict}"
     ))
@@ -334,10 +313,6 @@ async fn insert_answer_row(
     .bind(job.player_id)
     .bind(prompt)
     .bind(output)
-    .bind(verdict.score)
-    .bind(&verdict.feedback)
-    .bind(critique.score)
-    .bind(&critique.feedback)
     .bind(if replace { 1 } else { 0 })
     .bind(turns)
     .bind(job.round_id)
@@ -419,12 +394,9 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                         delta: full.clone(),
                     });
                 }
-                job.hub.publish_event(WsOut::AnswerScoring {
-                    player: player.clone(),
-                });
-                // A conversation is graded and stored as the whole chain; a
-                // plain round as its one prompt and answer.
-                let (graded_prompt, graded_output, turns) = match &job.history {
+                // A conversation is stored as the whole chain; a plain round
+                // as its one prompt and answer.
+                let (stored_prompt, stored_output, turns) = match &job.history {
                     Some(history) => {
                         let mut turns = history.clone();
                         turns.push(crate::llm::Turn { prompt: job.prompt.clone(), output: full.clone() });
@@ -436,101 +408,34 @@ fn spawn_answer(state: AppState, job: AnswerJob) {
                     }
                     None => (job.prompt.clone(), full.clone(), None),
                 };
-                // Concurrent under one deadline: the old sequential pair held
-                // the inflight claim (and the round) twice as long.
-                let criteria = game::criteria_for(&job.target);
-                let verdict_start = std::time::Instant::now();
-                // No judge on an image round: the judge model reads text and
-                // cannot see the picture, so the critic's note stands for both
-                // (ai_score of (c, c) is c).
-                let scored = tokio::time::timeout(VERDICTS_TIMEOUT, async {
-                    if image_round {
-                        let critique = state.llm.grade_prompt(&graded_prompt, &job.target, &criteria).await;
-                        (critique.clone(), critique)
-                    } else {
-                        tokio::join!(
-                            state.llm.score(&graded_prompt, &graded_output, &job.target, &criteria),
-                            state.llm.grade_prompt(&graded_prompt, &job.target, &criteria),
-                        )
-                    }
-                })
-                .await;
-                let (verdict, critique) = match scored {
-                    Ok(pair) => pair,
-                    Err(_) => {
-                        tracing::warn!(room = %job.code, player_id = job.player_id, timeout_s = VERDICTS_TIMEOUT.as_secs(), "verdicts timed out, scored 0");
-                        let fallback = crate::llm::Verdict {
-                            score: 0,
-                            feedback: crate::llm::openai::VERDICT_FALLBACK_COMMENT.into(),
-                        };
-                        (fallback.clone(), fallback)
-                    }
-                };
-                // Floored after every source (model, stub, unreadable or
-                // late verdict), so no path stores an AI note under the floor.
-                let verdict = crate::llm::Verdict { score: game::floor_ai(verdict.score), ..verdict };
-                let critique = crate::llm::Verdict { score: game::floor_ai(critique.score), ..critique };
-                let verdict_ms = verdict_start.elapsed().as_millis() as u64;
-                tracing::debug!(room = %job.code, player_id = job.player_id, proximity = verdict.score, critic = critique.score, verdict_ms, "verdicts received");
-                let ai = game::ai_score(verdict.score, critique.score);
-                match insert_answer_row(&state.pool, &job, &graded_prompt, &graded_output, turns.as_deref(), &verdict, &critique, true).await {
-                    Ok(()) => {
-                        // The note the round keeps, which may be an earlier attempt's.
-                        let kept: Option<(i64, Option<i64>)> = sqlx::query_as(
-                            "SELECT score, quality_llm FROM answer WHERE round_id = ? AND player_id = ?",
-                        )
-                        .bind(job.round_id)
-                        .bind(job.player_id)
-                        .fetch_optional(&state.pool)
-                        .await
-                        .ok()
-                        .flatten();
-                        let best = match kept {
-                            Some((p, Some(c))) => game::ai_score(p, c),
-                            _ => ai,
-                        };
-                        Ok((ai, best, truncated))
-                    }
-                    Err(e) => Err(e.to_string()),
-                }
+                insert_answer_row(&state.pool, &job, &stored_prompt, &stored_output, turns.as_deref(), true)
+                    .await
+                    .map(|()| truncated)
+                    .map_err(|e| e.to_string())
             }
             Err(e) => Err(e),
         };
         match outcome {
-            Ok((ai, best, truncated)) => {
+            Ok(truncated) => {
                 tracing::info!(
                     room = %job.code,
                     player_id = job.player_id,
-                    ai_score = ai,
                     truncated,
                     stream_ms,
                     total_ms = started.elapsed().as_millis() as u64,
-                    "answer scored"
+                    "answer stored"
                 );
                 job.hub.release(job.round_id, job.player_id).await;
                 let _ = job.hub.republish(&state.pool, &job.code).await;
-                // No feedback prose: the note is explained by the exercise's
-                // criteria, which the player screen shows beside it.
-                job.hub.publish_event(WsOut::AnswerDone {
-                    player,
-                    score: ai,
-                    best,
-                    feedback: String::new(),
-                    truncated,
-                });
+                job.hub.publish_event(WsOut::AnswerDone { player, truncated });
             }
             Err(e) => {
                 tracing::error!(room = %job.code, player_id = job.player_id, error = %e, elapsed_ms = started.elapsed().as_millis() as u64, "answer failed");
-                // A row still lands, scored 0 and marked: without it the
-                // round would wait for this player forever, and the summary
-                // says plainly what happened.
-                let marker = crate::llm::Verdict {
-                    score: 0,
-                    feedback: CRASH_NOTICE.into(),
-                };
+                // A row still lands, marked by attempts 0: without it the
+                // round would wait for this player forever.
                 // No turns on the marker: it only lands when no row exists,
                 // so the next prompt starts the conversation afresh.
-                if let Err(e) = insert_answer_row(&state.pool, &job, &job.prompt, &full, None, &marker, &marker, false).await {
+                if let Err(e) = insert_answer_row(&state.pool, &job, &job.prompt, &full, None, false).await {
                     tracing::error!(room = %job.code, player_id = job.player_id, error = %e, "fallback answer write failed");
                 }
                 job.hub.release(job.round_id, job.player_id).await;
@@ -928,23 +833,6 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::StreamResult> + Send + '_>> {
             Box::pin(async { Err("provider down".into()) })
         }
-        fn score(
-            &self,
-            _p: &str,
-            _o: &str,
-            _t: &str,
-            _c: &[String],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
-            unreachable!("a failed stream is never scored")
-        }
-        fn grade_prompt(
-            &self,
-            _p: &str,
-            _t: &str,
-            _c: &[String],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
-            unreachable!("a failed stream is never graded")
-        }
     }
 
     // Streams only once the test opens the gate: an answer still being
@@ -963,64 +851,12 @@ mod tests {
                 Ok(false)
             })
         }
-        fn score(
-            &self,
-            _p: &str,
-            _o: &str,
-            _t: &str,
-            _c: &[String],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
-            Box::pin(async { crate::llm::Verdict { score: 7, feedback: String::new() } })
-        }
-        fn grade_prompt(
-            &self,
-            _p: &str,
-            _t: &str,
-            _c: &[String],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
-            Box::pin(async { crate::llm::Verdict { score: 7, feedback: String::new() } })
-        }
-    }
-
-    // Notes a prompt by its words: "bon" earns 9, anything else 4.
-    struct ByWordSource;
-
-    impl crate::llm::LlmSource for ByWordSource {
-        fn stream_into(
-            &self,
-            _prompt: String,
-            tx: mpsc::UnboundedSender<String>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::StreamResult> + Send + '_>> {
-            Box::pin(async move {
-                let _ = tx.send("réponse".into());
-                Ok(false)
-            })
-        }
-        fn score(
-            &self,
-            p: &str,
-            _o: &str,
-            _t: &str,
-            _c: &[String],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
-            let score = if p.contains("bon") { 9 } else { 4 };
-            Box::pin(async move { crate::llm::Verdict { score, feedback: String::new() } })
-        }
-        fn grade_prompt(
-            &self,
-            p: &str,
-            t: &str,
-            c: &[String],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::llm::Verdict> + Send + '_>> {
-            self.score(p, "", t, c)
-        }
     }
 
     #[tokio::test]
-    async fn best_attempt_is_kept_not_the_latest() {
+    async fn latest_attempt_replaces_the_earlier_one() {
         let pool = test_pool().await;
-        let mut state = AppState::new(pool.clone());
-        state.llm = Arc::new(ByWordSource);
+        let state = AppState::new(pool.clone());
         rooms::create_room(&pool, "BE01").await.unwrap();
         let ana = rooms::add_player(&pool, "BE01", "ana").await.unwrap();
         sqlx::query("UPDATE round SET target = 'resume ce mail' WHERE room_code = 'BE01'")
@@ -1037,25 +873,20 @@ mod tests {
             let job = begin_answer(&state, "BE01", &ana.token, p).await.unwrap();
             spawn_answer(state.clone(), job);
             loop {
-                if let WsOut::AnswerDone { score, best, .. } = erx.recv().await.unwrap() {
-                    break (score, best);
+                if let WsOut::AnswerDone { .. } = erx.recv().await.unwrap() {
+                    break;
                 }
             }
         };
-        assert_eq!(send("un bon prompt").await, (9.0, 9.0));
-        // Worse retry: counted as a try, but the round keeps the first one.
-        assert_eq!(send("vague").await, (4.0, 9.0));
-        let row = || async {
-            sqlx::query_as::<_, (String, i64)>("SELECT prompt, attempts FROM answer WHERE player_id = ?")
+        send("un bon prompt").await;
+        send("vague").await;
+        let (prompt, attempts): (String, i64) =
+            sqlx::query_as("SELECT prompt, attempts FROM answer WHERE player_id = ?")
                 .bind(ana.id)
                 .fetch_one(&pool)
                 .await
-                .unwrap()
-        };
-        assert_eq!(row().await, ("un bon prompt".to_string(), 2));
-        // A tie goes to the newer attempt.
-        assert_eq!(send("encore un bon").await, (9.0, 9.0));
-        assert_eq!(row().await, ("encore un bon".to_string(), 3));
+                .unwrap();
+        assert_eq!((prompt.as_str(), attempts), ("vague", 2));
     }
 
     #[tokio::test]
@@ -1170,20 +1001,19 @@ mod tests {
         };
         assert!(matches!(err, WsOut::Error { player: Some(ref p), .. } if p == "ana"));
         // The marker row lands so the round does not wait on ana forever.
-        let (score, comment): (i64, String) =
-            sqlx::query_as("SELECT score, comment FROM answer WHERE player_id = ?")
-                .bind(ana.id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!((score, comment.as_str()), (0, CRASH_NOTICE));
+        let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM answer WHERE player_id = ?")
+            .bind(ana.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(attempts, 0, "the marker is no attempt");
         assert_eq!(hub.cached().await.1["error"], CRASH_NOTICE);
     }
 
     // An image round goes to the image model: the answer is a link to the
-    // stored picture, and the note is the critic's alone.
+    // stored picture.
     #[tokio::test]
-    async fn image_round_stores_picture_and_scores_by_critic() {
+    async fn image_round_stores_picture() {
         let pool = test_pool().await;
         let state = AppState::new(pool.clone());
         rooms::create_room(&pool, "IM01").await.unwrap();
@@ -1207,12 +1037,11 @@ mod tests {
                 break;
             }
         }
-        let (output, score, critic): (String, i64, i64) =
-            sqlx::query_as("SELECT output, score, quality_llm FROM answer WHERE player_id = ?")
-                .bind(ana.id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let output: String = sqlx::query_scalar("SELECT output FROM answer WHERE player_id = ?")
+            .bind(ana.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let id = output
             .strip_prefix("![Image générée](/api/images/")
             .and_then(|r| r.split_once(')'))
@@ -1221,8 +1050,6 @@ mod tests {
         let (mime, data) = crate::db::images::get(&pool, &id).await.unwrap().expect("picture stored");
         assert_eq!(mime, "image/svg+xml");
         assert!(!data.is_empty());
-        assert_eq!(score, critic, "no judge on an image round");
-        assert!(critic >= game::MIN_AI_SCORE, "AI notes are floored");
         // Two attempts on an image round, not three.
         let job = begin_answer(&state, "IM01", &ana.token, "deuxieme essai").await.expect("second attempt");
         spawn_answer(state.clone(), job);

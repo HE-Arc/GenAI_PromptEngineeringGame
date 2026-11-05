@@ -191,12 +191,6 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Verdict {
-    pub score: i64,
-    pub feedback: String,
-}
-
 // Boxed futures keep the trait dyn-compatible so AppState holds one
 // Arc<dyn LlmSource> regardless of which backend the factory picks.
 // Ok(truncated): the stream ended, `true` when the token cap cut it short.
@@ -218,25 +212,6 @@ pub trait LlmSource: Send + Sync + 'static {
         prompt: String,
         tx: mpsc::UnboundedSender<String>,
     ) -> Pin<Box<dyn Future<Output = StreamResult> + Send + '_>>;
-
-    // `criteria`: the exercise's grading criteria (data/targets.json), the
-    // same list the player sees beside the note.
-    fn score(
-        &self,
-        prompt: &str,
-        output: &str,
-        target: &str,
-        criteria: &[String],
-    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
-
-    // The critic: rates the prompt's METHOD against the exercise criteria,
-    // never its output. Anchors the ±3 band the peer mean is held to.
-    fn grade_prompt(
-        &self,
-        prompt: &str,
-        target: &str,
-        criteria: &[String],
-    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + '_>>;
 
     // Image rounds: the player's prompt alone goes to the image model. It must
     // not see the reference picture or the exercise, or a vague prompt would

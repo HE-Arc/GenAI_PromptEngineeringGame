@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { AnswerMeter, AutoArea, Board, Confetti, ConsoleBar, Criteria, PlayerName, PresenceDots, PhaseClock, Readout, ScoreScale, Section, Step } from './ui'
-import { fr, noun } from './format'
+import { AnswerMeter, AutoArea, Board, ConsoleBar, Criteria, PlayerName, PresenceDots, PhaseClock, Readout, Section, Step } from './ui'
+import { noun } from './format'
 import {
   absent,
   answerStart,
@@ -12,16 +12,14 @@ import {
   type State,
 } from './api'
 import ModelOutput from './ModelOutput'
-import { buzz, reduced, useCountUp } from './fx'
+import { buzz, reduced } from './fx'
 import type { AnswerFeed, Link } from './useRoom'
 
 // Same bound as the server's MAX_PROMPT_CHARS (server/src/ws/mod.rs).
 const MAX_PROMPT_CHARS = 4096
 
-// `best`: the note the round keeps, the best attempt so far (may beat `score`).
-type Result = { score: number; best: number; comment: string; output: string; round: number; truncated: boolean }
+type Result = { output: string; round: number; truncated: boolean }
 
-// The one-word reaction over the score, the way a game shouts "Excellent !" before the number.
 // The material of an exercise without its instruction: every target opens with the
 // instruction paragraph, then a blank line, then the data to work on. Empty when the exercise
 // is the instruction alone (nothing to paste into a prompt).
@@ -29,20 +27,6 @@ function exerciseContent(target: string | null): string {
   if (!target) return ''
   const cut = target.indexOf('\n\n')
   return cut === -1 ? '' : target.slice(cut + 2).trim()
-}
-
-function cheer(score: number): string {
-  if (score >= 9) return 'Parfait !'
-  if (score >= 7) return 'Excellent !'
-  if (score >= 5) return 'Pas mal !'
-  if (score >= 3) return 'Peut mieux faire'
-  return 'Aïe…'
-}
-
-// The score ticking up to its value. A component of its own so the hook restarts per verdict.
-// Counted in tenths: the AI note is a real division, and an integer count-up would round it.
-function ScoreUp({ score }: { score: number }) {
-  return <>{fr(useCountUp(Math.round(score * 10)) / 10)}</>
 }
 
 export default function Game({
@@ -78,7 +62,7 @@ export default function Game({
   // The answer as it is being written, and then the verdict. Two pieces of one thing rather
   // than two, because the player's question — « where is my note » — has one answer, and a
   // screen that could show either would have to say which half is on.
-  const [live, setLive] = useState<{ text: string; scoring: boolean } | null>(null)
+  const [live, setLive] = useState<{ text: string } | null>(null)
   // The verdict this screen is waiting on over the socket. The frames arrive on the room
   // feed the hook owns, not on the send call, so the waiter parks the resolve/reject pair
   // here and the effect below feeds it as frames land. One at a time: the composer is
@@ -86,8 +70,7 @@ export default function Game({
   const waiterRef = useRef<{
     player: string
     text: string
-    scoring: boolean
-    resolve: (v: { score: number; best: number; comment: string; text: string; truncated: boolean }) => void
+    resolve: (v: { text: string; truncated: boolean }) => void
     reject: (e: unknown) => void
   } | null>(null)
 
@@ -242,11 +225,9 @@ export default function Game({
   // What the button is waiting for. Two waits and two words: the pause after the text is two
   // more billed calls, so a button frozen on « le modèle réfléchit » while the jury reads is a
   // button telling the player the model is still working when it stopped two seconds ago.
-  // Sending again is allowed while the round is open: the best attempt is the one kept.
+  // Sending again is allowed while the round is open: the last attempt is the one kept.
   const submitLabel = busy
-    ? live?.scoring
-      ? 'Le jury délibère…'
-      : 'Le modèle réfléchit…'
+    ? 'Le modèle réfléchit…'
     : stale
       ? 'En attente de la reconnexion…'
       : ending
@@ -280,25 +261,23 @@ export default function Game({
     setErr('')
     buzz()
     setBusy(true)
-    setLive({ text: '', scoring: false })
+    setLive({ text: '' })
     // One frame on the live socket, and the verdict comes back as frames on the
     // same feed. The text the player watched is the verdict's text: the server
-    // stored the same string and the judge scored the same string, so one truth
-    // reaches the screen. The `done` frame carries no round — the round is the
+    // stored the same string, so one truth reaches the screen. The `done` frame carries no round — the round is the
     // one the prompt was sent on — and the socket never truncates mid-frame.
     const roundNow = state.current
     const slot = cur
     try {
-      const done = await new Promise<{ score: number; best: number; comment: string; text: string; truncated: boolean }>(
+      const done = await new Promise<{ text: string; truncated: boolean }>(
         (resolve, reject) => {
           // Armed before the send: the server may answer faster than React re-renders,
           // and a frame landing before the waiter exists would wait forever.
-          waiterRef.current = { player: myName, text: '', scoring: false, resolve, reject }
+          waiterRef.current = { player: myName, text: '', resolve, reject }
           answerStart(sendPrompt, text)
         },
       )
-      const verdict = { score: done.score, comment: done.comment, output: done.text, truncated: done.truncated }
-      setResult({ score: verdict.score, best: done.best, comment: verdict.comment, output: verdict.output, round: roundNow, truncated: verdict.truncated })
+      setResult({ output: done.text, round: roundNow, truncated: done.truncated })
       setLive(null)
       // Only the verdict earns the round its answer. Not the first chunk: the row does not exist
       // until the `done` frame, and a composer disabled on the strength of a delta would lock a
@@ -350,16 +329,14 @@ export default function Game({
       if (ev.player !== w.player) continue
       if (ev.kind === 'chunk') {
         w.text += ev.delta
-      } else if (ev.kind === 'scoring') {
-        w.scoring = true
       } else if (ev.kind === 'done') {
         waiterRef.current = null
-        w.resolve({ score: ev.score, best: ev.best, comment: ev.feedback, text: w.text, truncated: ev.truncated })
+        w.resolve({ text: w.text, truncated: ev.truncated })
         return
       }
     }
     const w = waiterRef.current
-    if (w) setLive({ text: w.text, scoring: w.scoring })
+    if (w) setLive({ text: w.text })
     // `answer` carries its own seq; depending on the object would miss repeat frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [answerSeq])
@@ -479,33 +456,26 @@ export default function Game({
               <div>
                 <p className="label verdict__livelabel">
                   <span className="spinner" aria-hidden="true" />
-                  {live.scoring ? 'Le jury délibère…' : 'Le modèle écrit…'}
+                  Le modèle écrit…
                 </p>
-                <ModelOutput text={live.text} streaming={!live.scoring} />
+                <ModelOutput text={live.text} streaming />
               </div>
             </div>
   )
   const resultPanel = result && (
-    <div className="verdict verdict--done" ref={verdictRef} tabIndex={-1} data-tier={result.score >= 7 ? 'high' : result.score >= 4 ? 'mid' : 'low'}>
-              {result.score >= 7 && <Confetti key={`${result.round}-${result.score}`} />}
-              <p className="verdict__cheer" aria-hidden="true">{cheer(result.score)}</p>
+    <div className="verdict verdict--done" ref={verdictRef} tabIndex={-1}>
               <div className="verdict__top">
-                <span className="verdict__score num"><ScoreUp score={result.score} /></span>
-                <span className="verdict__den">sur 10</span>
                 <span className="verdict__round">manche {result.round + 1}</span>
               </div>
-              <ScoreScale score={result.score} />
               {!scored && result.round === state.current && (
                 <p className="prose prose--sm prose--dim">
                   {conv
                     ? outOfAttempts
                       ? `Tu as envoyé tes ${state.max_attempts} prompts : c’est toute la conversation qui sera notée.`
                       : `Continue la conversation (${noun(attemptsLeft, 'prompt restant', 'prompts restants')}) : le modèle se souvient des échanges précédents, et c’est toute la conversation qui est notée.`
-                    : `${result.best > result.score ? `Cet essai fait moins bien : ta meilleure note (${fr(Math.round(result.best * 10) / 10)}/10) est gardée. ` : ''}${
-                        outOfAttempts
-                          ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ton meilleur prompt qui sera noté.`
-                          : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton meilleur essai compte.`
-                      }`}
+                    : outOfAttempts
+                      ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ton dernier prompt qui sera noté.`
+                      : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}
                 </p>
               )}
               {/* A conversation's answers are read in its slots, in order, not here. */}
@@ -513,12 +483,11 @@ export default function Game({
                 <p className="label">Le modèle a répondu</p>
                 <ModelOutput text={result.output} />
                 {/* Said here because the truncation is a fact about the answer, not about the
-                    game: the note below was given for a text that stops mid-sentence, and a class
-                    reading a bad score deserves to know the answer is why. */}
+                    game: the class grades a text that stops mid-sentence. */}
                 {result.truncated && (
                   <p className="prose prose--sm prose--dim">
                     La réponse s’arrête ici : le modèle a atteint sa limite de longueur. C’est ce
-                    texte, coupé à cet endroit, que le jury a noté.
+                    texte, coupé à cet endroit, que les autres joueurs noteront.
                   </p>
                 )}
               </div>}
@@ -553,14 +522,6 @@ export default function Game({
 
         {notice && <p className="notice">{notice}</p>}
 
-        {/* One permanent live region for the whole screen, always in the tree even when it has
-            nothing to say. A live region that is mounted at the same moment as its first
-            message is not reliably announced — the region has to already exist for the change
-            to be a change — so this one carries the empty string until a score lands. */}
-        <p className="visually-hidden" aria-live="polite">
-          {result ? `Note de l’IA : ${fr(result.score)} sur 10, à la manche ${result.round + 1}.` : ''}
-        </p>
-
         {/* The score, and it is above the target and above the field rather than under them.
             Under, it rendered at roughly y690 with a long target, and the visual viewport with
             the keyboard up is about 400px: the one thing the player had just earned, invisible,
@@ -582,8 +543,7 @@ export default function Game({
 
           {/* The synthesis of the round that has just been scored, above the target rather than
               on a screen of its own: what came of the last prompt is the reading the player does
-              while the next one waits. Three numbers and nothing else — the AI's note, the class's
-              note and the final one — because a player reads a result, not the arithmetic. */}
+              while the next one waits. One number and nothing else: the class's average grade. */}
           {scored && state.summary && (
             <section className="tally">
               <h2 className="label">Ta note de la manche {state.summary.round + 1}</h2>
@@ -603,19 +563,21 @@ export default function Game({
                         className="board__name board__name--me"
                       />
                     </div>
-                    {/* `fr` prints null as a dash: a round nobody rated has no class note. */}
+                    {/* A round nobody graded has no score. */}
                     <p className="prose" role="status">
-                      Note de l’IA : <span className="num">{fr(mine.ai_score === null ? null : Math.round(mine.ai_score * 10) / 10)}</span>/10
-                      {' · '}
-                      Note des autres joueurs : <span className="num">{fr(mine.quality_peers)}</span>/10
-                      {' · '}
                       Note finale :{' '}
                       {/* The number and its unit are one nowrap unit, and the space between them
                           is a real text node: JSX drops whitespace that sits between two tags on
                           different lines, which is what rendered "6sur 10". */}
                       <span className="num tally__round">
-                        {fr(Math.round(mine.round_score * 10) / 10)}
-                        <span className="tally__roundden">{' '}sur 10</span>
+                        {mine.round_score === null ? (
+                          'Non noté'
+                        ) : (
+                          <>
+                            {mine.round_score}
+                            <span className="tally__roundden">{' '}sur 10</span>
+                          </>
+                        )}
                       </span>
                       .
                     </p>

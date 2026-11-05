@@ -187,11 +187,11 @@ mod tests {
             .unwrap()
             .expect("order-0 round");
         let p = add_player(&pool, &room.code, "ana").await.unwrap();
-        answers::insert_answer(&pool, round.id, p.id, "x", "out", 7)
+        answers::insert_answer(&pool, round.id, p.id, "x", "out")
             .await
             .unwrap();
         // UNIQUE(round_id, player_id): one row per player per round, a retry upserts it.
-        let dup = answers::insert_answer(&pool, round.id, p.id, "y", "out", 5).await;
+        let dup = answers::insert_answer(&pool, round.id, p.id, "y", "out").await;
         assert!(dup.is_err());
     }
 }
