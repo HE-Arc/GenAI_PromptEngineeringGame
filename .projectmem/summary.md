@@ -1,6 +1,6 @@
 # projectmem - GenAI_PromptEngineeringGame
 
-_Last updated: 2026-10-27_
+_Last updated: 2026-11-06_
 
 ## Project purpose
 Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/GenAI_PromptEngineeringGame/wiki/Cahier-des-charges).
@@ -15,16 +15,16 @@ Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/G
 - No decisions logged yet.
 
 ## Notes
-- Fan snapshots into events channel: phase changes now reach live clients
-- Revive failed room feed on first snapshot after a server outage (no reload needed)
-- Start the game on a majority of present players, not everybody
-- UI updated
 - Optimize server for heavy load: tower limits, pool tuning, indexes, batched snapshots, WS backpressure, LLM deadlines, hardened container
 - Merge pull request #2 from HE-Arc/server_rewrite
 - Rustls, limites 5000 tokens / 1000 chars, intitule prompt en accent
 - Fusion server_rewrite : rustls, limites 5000 tokens / 1000 chars, intitule prompt en accent
 - Improve frontend UI with layered visual polish
 - feat(deploy): single Docker image serving API and SPA, with k8s manifests and Docker Hub CI
+- New feature: feat: configurable quiz window with reveal delay and ticker fix [frontend/src/Admin.tsx]
+- Merge: feat: wait for answers in flight, keep the best attempt, 4096-char prompts
+- New feature: feat: token usage stats page and in-panel exercise copy button [frontend/src/App.tsx]
+- Merge: fix: keep the page put while typing low in an autosizing field
 
 ## Key files
 - `server/Cargo.lock`

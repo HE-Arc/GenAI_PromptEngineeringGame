@@ -106,8 +106,21 @@ impl RoomHub {
         self.cached().await.0 + 1
     }
 
+    // The cache can be minutes old by the time a reconnecting phone reads it.
+    // Its deadlines are absolute, but `server_ms` is the server's clock at build
+    // time, and the client measures its skew from it: a stale one made a reload
+    // show the whole round again. So the clocks are re-stamped on every read.
     pub async fn cached(&self) -> SnapshotMsg {
-        self.snapshot.read().await.clone()
+        let (seq, mut state) = self.snapshot.read().await.clone();
+        let now = crate::game::now_ms();
+        for key in ["timer", "quiz"] {
+            if let Some(clock) = state.get_mut(key).and_then(Value::as_object_mut) {
+                if clock.contains_key("server_ms") {
+                    clock.insert("server_ms".into(), now.into());
+                }
+            }
+        }
+        (seq, state)
     }
 
     pub async fn subscribe(&self) -> broadcast::Receiver<SnapshotMsg> {
@@ -348,6 +361,21 @@ pub async fn get_hub(hubs: &Hubs, code: &str) -> Arc<RoomHub> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn cached_snapshot_restamps_server_clock() {
+        let hub = RoomHub::new();
+        let old = crate::game::now_ms() - 60_000;
+        hub.publish_snapshot(
+            1,
+            json!({"timer": {"deadline_ms": old + 180_000, "server_ms": old}, "quiz": {"server_ms": old}}),
+        )
+        .await;
+        let (_, snap) = hub.cached().await;
+        let fresh = |k: &str| snap[k]["server_ms"].as_i64().unwrap() >= old + 60_000;
+        assert!(fresh("timer") && fresh("quiz"), "a reload must not read a minute-old clock");
+        assert_eq!(snap["timer"]["deadline_ms"], json!(old + 180_000), "deadline untouched");
+    }
 
     #[tokio::test]
     async fn subscriber_gets_cached_snapshot_without_db_hit() {
