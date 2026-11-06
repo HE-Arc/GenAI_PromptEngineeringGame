@@ -7,12 +7,10 @@ import type { Link } from './useRoom'
 export default function Results({
   state,
   link,
-  onRetry,
   onLeave,
 }: {
   state: State
   link: Link
-  onRetry: () => void
   onLeave: () => void
 }) {
   const [first] = state.players
@@ -41,8 +39,8 @@ export default function Results({
         : `Égalité entre ${winners.map((p) => p.name).join(', ')}, avec ${fr(points)} ${point}.`
 
   return (
-    <div className="deck">
-      <ConsoleBar meta={`Partie ${state.code}`} link={link} onRetry={onRetry} />
+    <div className="deck" data-phase="results">
+      <ConsoleBar link={link} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--split" id="main" tabIndex={-1}>
         <div className="finale">
@@ -67,7 +65,6 @@ export default function Results({
                 const place = state.players.findIndex((q) => q.score === p.score) + 1
                 return (
                   <li key={p.name} className="podium__slot" data-place={place} style={{ '--i': i } as CSSProperties}>
-                    {place === 1 && <span className="podium__crown">👑</span>}
                     <Avatar name={p.name} size="lg" />
                     <span className="podium__name">{p.name}</span>
                     <span className="podium__pts num">{fr(p.score)}</span>

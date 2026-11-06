@@ -145,7 +145,7 @@ export default function Stats() {
 
   return (
     <div className="deck">
-      <ConsoleBar meta="Statistiques" />
+      <ConsoleBar />
       <main className="screen" id="main" tabIndex={-1}>
         <h1 className="title" tabIndex={-1}>Statistiques</h1>
         <p className="prose prose--dim">

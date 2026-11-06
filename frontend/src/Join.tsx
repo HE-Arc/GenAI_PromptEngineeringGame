@@ -61,7 +61,6 @@ export default function Join({
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--solo" id="main" tabIndex={-1}>
         <div className="hero">
-          <span className="hero__badge" aria-hidden="true">✦</span>
           <h1 className="title title--hero" tabIndex={-1}>Jeu GenAi</h1>
           <p className="hero__tag">Le jeu du prompt parfait</p>
         </div>

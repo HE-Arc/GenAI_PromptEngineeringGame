@@ -7,12 +7,10 @@ import { copyText } from './fx'
 export default function Lobby({
   state,
   link,
-  onRetry,
   onLeave,
 }: {
   state: State
   link: Link
-  onRetry: () => void
   onLeave: () => void
 }) {
   // Which branch actually did the work. A share sheet sends the sentence to someone else and
@@ -53,8 +51,8 @@ export default function Lobby({
   }
 
   return (
-    <div className="deck">
-      <ConsoleBar link={link} onRetry={onRetry} />
+    <div className="deck" data-phase="lobby">
+      <ConsoleBar link={link} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--split" id="main" tabIndex={-1}>
         {/* This screen had no heading at all, which left a route change with nothing to focus
@@ -79,7 +77,7 @@ export default function Lobby({
 
             <div className="actions">
               <button type="button" className="btn btn--signal btn--wide" onClick={() => void share()}>
-                {shared === 'copied' ? '✓ Lien copié' : shared === 'sent' ? '✓ Lien partagé' : 'Partager le lien'}
+                {shared === 'copied' ? 'Lien copié' : shared === 'sent' ? 'Lien partagé' : 'Partager le lien'}
               </button>
             </div>
 

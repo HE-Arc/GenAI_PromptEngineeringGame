@@ -34,14 +34,12 @@ export default function Game({
   state,
   code,
   link,
-  onRetry,
   answer,
   sendPrompt,
 }: {
   state: State
   code: string
   link: Link
-  onRetry: () => void
   answer: AnswerFeed | null
   sendPrompt: (prompt: string) => void
 }) {
@@ -515,8 +513,8 @@ export default function Game({
   )
 
   return (
-    <div className="deck">
-      <ConsoleBar meta={`Partie ${code} · ${scored ? 'Résumé' : 'Rédaction'}`} link={link} onRetry={onRetry} />
+    <div className="deck" data-phase="write">
+      <ConsoleBar link={link} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className={`screen screen--split screen--calm${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
         <Step current={state.current} total={state.total}>
@@ -524,7 +522,7 @@ export default function Game({
               counts down from the phone's own clock. */}
           {!scored && (
             <span data-testid="time-left">
-              <PhaseClock timer={state.timer} seconds={state.round_seconds} what="pour écrire ton prompt" />
+              <PhaseClock timer={state.timer} seconds={state.round_seconds} />
             </span>
           )}
         </Step>

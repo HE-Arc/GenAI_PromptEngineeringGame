@@ -132,6 +132,11 @@
   --glow: rgba(255, 200, 61, 0.35);
   --shadow: 0 10px 30px -12px rgba(5, 0, 30, 0.8);
 
+  /* Tokens this layout uses that main did not name, set to main's own colours. */
+  --phase-hi: var(--rail-lit);
+  /* One curve for everything that moves. */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
   --font-display: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
   --font-ui: 'Barlow', system-ui, sans-serif;
 
@@ -157,19 +162,17 @@ html {
 body {
   margin: 0;
   min-height: 100dvh;
-  color: var(--ink);
   font-family: var(--font-ui);
   font-size: 1rem;
   line-height: 1.5;
-  /* The stage: two coloured spotlights over violet. Fixed so it does not scroll with content. */
-  background:
-    radial-gradient(60rem 40rem at 110% -10%, rgba(255, 79, 163, 0.28), transparent 60%),
-    radial-gradient(50rem 40rem at -20% 30%, rgba(51, 189, 240, 0.22), transparent 60%),
-    linear-gradient(180deg, var(--stage-2) 0%, var(--stage-1) 55%, var(--stage-3) 100%);
-  background-attachment: fixed;
   /* No horizontal page scroll on a phone, ever: a sideways wobble under the thumb feels broken. */
   overflow-x: hidden;
   -webkit-tap-highlight-color: transparent;
+  color: var(--ink);
+  background: radial-gradient(60rem 40rem at 110% -10%, rgba(255, 79, 163, 0.28), transparent 60%),
+    radial-gradient(50rem 40rem at -20% 30%, rgba(51, 189, 240, 0.22), transparent 60%),
+    linear-gradient(180deg, var(--stage-2) 0%, var(--stage-1) 55%, var(--stage-3) 100%);
+  background-attachment: fixed;
 }
 /* A faint dot grid over the stage, for texture. */
 body::before {
@@ -196,17 +199,20 @@ figure {
   max-width: 40rem;
   min-height: 100dvh;
   margin-inline: auto;
-  /* Safety net: nothing animated inside a screen may widen the page. `clip`, not `hidden`, so
-   * it creates no scroll container and the sticky rail keeps working. */
-  overflow-x: clip;
   display: grid;
   grid-template-rows: auto 1fr;
   align-content: start;
 }
 
+/* Safety net: nothing animated inside a screen may widen the page. `clip`, not `hidden`, so
+ * it creates no scroll container. On the content, not the deck, so the full-bleed rail shows. */
+.deck > :not(.railbar) {
+  overflow-x: clip;
+}
+
 /* A rounded surface: the base of every card on every screen. */
 .card {
-  padding: 1.1rem var(--pad) 1.2rem;
+  padding: 1.25rem var(--pad);
   border: 1px solid var(--rail);
   border-radius: var(--radius);
   background: linear-gradient(180deg, var(--panel-2), var(--panel));
@@ -219,9 +225,7 @@ figure {
   color: var(--ink-dim);
 }
 h2.label {
-  font: 800 1.125rem/1.1 var(--font-display);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font: 600 1.375rem/1.1 var(--font-display);
   color: var(--ink);
 }
 
@@ -242,7 +246,7 @@ h2.label {
 
 /* A rendered model output. */
 .md {
-  padding: 0.75rem 0.85rem;
+  padding: 0.75rem;
   border: 1px solid var(--rail);
   border-radius: var(--radius-sm);
   background: var(--well);
@@ -258,8 +262,8 @@ h2.label {
 .md ul, .md ol { margin: 0.6rem 0; padding-left: 1.3rem; }
 .md li { margin: 0.2rem 0; }
 .md blockquote {
-  margin: 0.6rem 0;
-  padding-left: 0.7rem;
+  margin: 0.5rem 0;
+  padding-left: 0.75rem;
   border-left: 3px solid var(--cool);
   color: var(--ink-dim);
 }
@@ -268,8 +272,8 @@ h2.label {
   font-size: 0.9em;
 }
 .md pre {
-  margin: 0.6rem 0;
-  padding: 0.6rem 0.7rem;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
   overflow-x: auto;
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.25);
@@ -284,25 +288,24 @@ h2.label {
 
 /* Information that may be stale, or a rule of the game: calm cyan, never alarming. */
 .notice {
-  padding: 0.65rem 0.85rem;
+  padding: 0.75rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--edge-cool);
-  background: rgba(51, 189, 240, 0.12);
-  color: var(--cool-lit);
   font-size: 0.875rem;
   line-height: 1.4;
+  background: rgba(51, 189, 240, 0.12);
+  color: var(--cool-lit);
 }
 
 .num {
   font-family: var(--font-display);
-  font-weight: 800;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.01em;
 }
 
-/* ---- buttons: chunky, with a physical press ----------------------------------------------
- * 48px floor for one-thumb use. The coloured "depth" under each button is a solid offset
- * shadow; pressing moves the face down into it, which is the tactile cue a game button gives. */
+/* ---- buttons -----------------------------------------------------------------------------
+ * 48px floor for one-thumb use. Flat faces with a hairline; a press is a small scale down. The
+ * physical buzzer depth is kept for the quiz answer tiles only, where it is the game. */
 .btn {
   --depth: #160b40;
   position: relative;
@@ -311,22 +314,21 @@ h2.label {
   justify-content: center;
   gap: 0.5rem;
   min-height: 3.25rem;
-  padding: 0.75rem 1.15rem;
+  padding: 0.75rem 1.25rem;
   border: 0;
-  border-radius: 14px;
-  background: linear-gradient(180deg, var(--panel-hi), var(--panel-2));
-  color: var(--ink);
-  font: 700 1.0625rem/1.2 var(--font-ui);
+  border-radius: 12px;
+  font: 600 1.0625rem/1.2 var(--font-ui);
   text-align: center;
   cursor: pointer;
-  box-shadow: inset 0 0 0 1px var(--track-edge), inset 0 2px 0 var(--bevel), 0 4px 0 var(--depth);
-  transform: translateY(0);
-  transition: transform 90ms ease-out, box-shadow 90ms ease-out, background-color 120ms linear,
-    filter 120ms linear, opacity 160ms linear;
+  transition: transform 90ms var(--ease), background-color 150ms var(--ease),
+    box-shadow 90ms var(--ease), opacity 160ms var(--ease);
   touch-action: manipulation;
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-2));
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--track-edge), inset 0 2px 0 var(--bevel), 0 4px 0 var(--depth);
 }
 .btn:active:not(:disabled) {
   transform: translateY(3px);
@@ -341,29 +343,30 @@ h2.label {
   --depth: var(--signal-deep);
   background: linear-gradient(180deg, var(--signal-lit), var(--signal));
   color: var(--signal-ink);
-  font-weight: 600;
   box-shadow: inset 0 2px 0 var(--edge-warm), 0 4px 0 var(--depth), 0 8px 24px -8px var(--glow);
 }
 .btn--signal:active:not(:disabled) {
   box-shadow: inset 0 2px 0 var(--edge-warm), 0 1px 0 var(--depth);
 }
-.btn--ghost {
+.btn--ghost,
+.btn--ghost:active:not(:disabled) {
   --depth: transparent;
   background: rgba(255, 255, 255, 0.05);
   color: var(--ink-dim);
   box-shadow: inset 0 0 0 2px var(--rail-lit);
 }
 .btn--ghost:active:not(:disabled) {
+  transform: scale(0.98);
   box-shadow: inset 0 0 0 2px var(--rail-lit);
 }
-/* Unavailable: the face sinks flat, loses its colour and its depth. The label stays legible
- * (--ink-dim on --panel is AA), because "Réponse envoyée" is a state a player reads. */
+/* Unavailable: the face goes flat and loses its colour. The label stays legible (--ink-dim on
+ * --panel is AA), because "Réponse envoyée" is a state a player reads. */
 .btn:disabled {
+  transform: translateY(3px);
+  cursor: not-allowed;
   background: var(--panel);
   color: var(--ink-dim);
   box-shadow: inset 0 0 0 1px var(--rail-lit);
-  transform: translateY(3px);
-  cursor: not-allowed;
 }
 /* A waiting primary borrows the cyan of "waiting on others". */
 .btn--signal:disabled {
@@ -384,7 +387,7 @@ h2.label {
   display: grid;
   gap: 0.5rem;
   margin-top: 0.5rem;
-  padding: 0.9rem var(--pad) 0.8rem;
+  padding: 1rem var(--pad);
   border-radius: var(--radius);
   border: 1px dashed var(--rail-lit);
   background: rgba(255, 255, 255, 0.04);
@@ -404,12 +407,10 @@ h2.label {
   display: inline-block;
   margin-inline-end: 0.1em;
   font-family: var(--font-display);
-  font-weight: 900;
+  font-weight: 600;
   font-size: 1.5rem;
   line-height: 1;
-  letter-spacing: 0.02em;
   color: var(--signal);
-  text-transform: uppercase;
 }
 
 /* ---- fields ------------------------------------------------------------------------------
@@ -418,16 +419,16 @@ h2.label {
 .area {
   width: 100%;
   min-height: 3.25rem;
-  padding: 0.75rem 0.9rem;
-  border: 2px solid var(--rail-lit);
+  padding: 0.75rem;
+  border: 1px solid var(--track-edge);
   border-radius: 12px;
-  background: var(--well);
-  color: var(--ink);
-  font: 500 1rem/1.4 var(--font-ui);
-  box-shadow: inset 0 2px 6px var(--edge-sunk);
-  transition: border-color 120ms linear, box-shadow 120ms linear;
+  font: 400 1rem/1.4 var(--font-ui);
+  transition: border-color 150ms var(--ease), box-shadow 150ms var(--ease);
   -webkit-appearance: none;
   appearance: none;
+  background: var(--well);
+  color: var(--ink);
+  box-shadow: inset 0 2px 6px var(--edge-sunk);
 }
 .input::placeholder,
 .area::placeholder {
@@ -441,9 +442,9 @@ h2.label {
 }
 .input--code {
   font-family: var(--font-display);
-  font-weight: 900;
-  font-size: 1.75rem;
-  letter-spacing: 0.3em;
+  font-weight: 600;
+  font-size: 2rem;
+  letter-spacing: 0.24em;
   text-align: center;
   text-transform: uppercase;
   color: var(--signal);
@@ -469,21 +470,21 @@ h2.label {
   display: grid;
   gap: 0.5rem;
   margin: 0;
-  padding: 0.7rem 0.85rem;
+  padding: 0.75rem;
   border: 1px solid var(--fault);
   border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
   background: var(--fault-wash);
   color: var(--fault);
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1.4;
 }
 .err--inline {
   border: 0;
   border-left: 3px solid var(--fault);
   border-radius: 0;
   background: none;
-  padding: 0.15rem 0 0.15rem 0.6rem;
+  padding: 0.125rem 0 0.125rem 0.75rem;
 }
 
 :focus-visible {
@@ -504,26 +505,28 @@ h2.label {
   --kd: var(--well);
   justify-content: flex-start;
   min-height: 4rem;
-  gap: 0.8rem;
-  padding: 0.8rem 0.9rem;
+  gap: 0.75rem;
+  padding: 0.75rem;
   text-align: left;
-  color: #fff;
   font-weight: 600;
+  color: #fff;
   background: var(--k);
   box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25), 0 5px 0 var(--kd);
 }
 .choice[data-k='0'] { --k: var(--k0); --kd: var(--k0-deep); }
 .choice[data-k='1'] { --k: var(--k1); --kd: var(--k1-deep); }
-.choice[data-k='2'] { --k: var(--k2); --kd: var(--k2-deep); }
+.choice[data-k='2'] { --k: var(--k2); --kd: var(--k2-deep); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45); 
+}
 .choice[data-k='3'] { --k: var(--k3); --kd: var(--k3-deep); }
 .choice:active:not(:disabled) {
+  transform: translateY(3px);
   box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25), 0 1px 0 var(--kd);
 }
 /* Locked (answered or closed): still the colour, lowered and dimmed. */
 .btn.choice:disabled {
+  opacity: 0.6;
   background: var(--k);
   color: #fff;
-  opacity: 0.6;
   box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.15), 0 2px 0 var(--kd);
 }
 .choice__k {
@@ -531,14 +534,14 @@ h2.label {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.2rem;
-  min-width: 2.6rem;
-  height: 2.3rem;
-  padding: 0 0.35rem;
-  border-radius: 10px;
+  gap: 0.25rem;
+  min-width: 2.5rem;
+  height: 2.25rem;
+  padding: 0 0.5rem;
+  border-radius: 8px;
   background: rgba(0, 0, 0, 0.25);
   color: #fff;
-  font: 900 1.125rem/1 var(--font-display);
+  font: 600 1.125rem/1 var(--font-display);
 }
 .choice__shape {
   font-size: 0.8rem;
@@ -557,19 +560,17 @@ h2.label {
   height: 2rem;
   border-radius: 50%;
   background: #fff;
-  font: 900 1.1rem/1 var(--font-ui);
+  font: 600 1.125rem/1 var(--font-ui);
 }
-/* Your pick, before the reveal: ringed and lifted, nothing about right or wrong. */
+/* Your pick, before the reveal: ringed in white, nothing about right or wrong. */
 .btn.choice--picked:disabled {
   opacity: 1;
-  transform: scale(1.02);
   box-shadow: 0 0 0 3px #fff, 0 0 0 7px rgba(255, 255, 255, 0.25), 0 3px 0 var(--kd);
 }
-/* After the reveal: the key glows, the rest fade, a wrong pick is ringed in red. */
+/* After the reveal: the key is ringed in green, the rest fade, a wrong pick is ringed in red. */
 .btn.choice--right,
 .btn.choice--right:disabled {
   opacity: 1;
-  transform: scale(1.03);
   box-shadow: 0 0 0 3px var(--good), 0 0 28px 2px rgba(62, 227, 154, 0.55), 0 4px 0 var(--kd);
 }
 .btn.choice--right .choice__mark {
@@ -592,11 +593,11 @@ h2.label {
 .revealnote {
   display: grid;
   gap: 0.25rem;
-  padding: 0.9rem var(--pad);
+  padding: 1rem var(--pad);
   border-radius: var(--radius);
-  border: 2px solid var(--edge-cool);
-  background: rgba(51, 189, 240, 0.12);
+  border: 1px solid var(--edge-cool);
   text-align: center;
+  background: rgba(51, 189, 240, 0.12);
 }
 .revealnote--good {
   border-color: var(--good);
@@ -608,9 +609,7 @@ h2.label {
 }
 .revealnote__t {
   color: var(--ink);
-  font: 900 2rem/1.05 var(--font-display);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  font: 600 2rem/1.05 var(--font-display);
 }
 .revealnote__s {
   color: var(--ink);
@@ -635,7 +634,7 @@ h2.label {
   align-items: center;
   gap: 0.75rem;
   min-height: 3rem;
-  padding: 0.6rem 0.8rem;
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--track-edge);
   border-radius: 12px;
   background: var(--panel);
@@ -653,7 +652,7 @@ h2.label {
 }
 .check__text {
   display: grid;
-  gap: 0.15rem;
+  gap: 0.25rem;
   font: 600 1rem/1.3 var(--font-ui);
 }
 .check__hint {
@@ -663,19 +662,23 @@ h2.label {
   line-height: 1.35;
 }
 
-/* ---- rating grid: ten number tiles on a red-to-green ramp ---------------------------------- */
+/* ---- rating grid: ten split-flap number tiles ------------------------------------------------
+ * The scale runs red to green: Rating.tsx sets --h from 0 (lowest note) to 120 (highest). The
+ * note given is lifted and ringed in purple, the colour that means "yours". */
 .rate {
   --depth: hsl(var(--h) 70% 20%);
   min-height: 3.5rem;
-  padding: 0 0.2rem;
+  padding: 0 0.25rem;
+  border-radius: 8px;
+  font: 600 1.75rem/1 var(--font-display);
+  font-variant-numeric: tabular-nums;
   background: linear-gradient(180deg, hsl(var(--h) 65% 42%), hsl(var(--h) 70% 33%));
   color: #fff;
-  font: 900 1.6rem/1 var(--font-display);
-  font-variant-numeric: tabular-nums;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
   box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25), 0 4px 0 var(--depth);
 }
 .btn.rate:disabled {
+  opacity: 0.5;
   background: linear-gradient(180deg, hsl(var(--h) 25% 34%), hsl(var(--h) 25% 28%));
   color: rgba(255, 255, 255, 0.75);
 }
@@ -684,6 +687,7 @@ h2.label {
   background: linear-gradient(180deg, var(--signal-lit), var(--signal));
   color: var(--signal-ink);
   text-shadow: none;
+  opacity: 1;
   transform: translateY(-3px) scale(1.08);
   box-shadow: 0 0 0 3px #fff, 0 4px 0 var(--signal-deep), 0 8px 22px -4px var(--glow);
   z-index: 1;
@@ -695,7 +699,7 @@ h2.label {
   top: 0;
   left: 0;
   z-index: 10;
-  padding: 0.6rem 0.9rem;
+  padding: 0.5rem 0.75rem;
   border-radius: 0 0 12px 0;
   background: var(--panel-hi);
   color: var(--ink);

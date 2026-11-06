@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react'
-import { ConsoleBar, Criteria, PhaseClock, RoundTrack } from './ui'
+import { ConsoleBar, Criteria, RoundTrack } from './ui'
 import ModelOutput from './ModelOutput'
 import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
@@ -12,12 +12,10 @@ export default function Rating({
   state,
   code,
   link,
-  onRetry,
 }: {
   state: State
   code: string
   link: Link
-  onRetry: () => void
 }) {
   // The note this screen just tapped, ahead of the snapshot that confirms it. The server's
   // `reveal.my_score` is the truth (it survives a reconnect); this only bridges the round-trip.
@@ -43,8 +41,8 @@ export default function Rating({
 
   if (!reveal)
     return (
-      <div className="deck">
-        <ConsoleBar meta={`Partie ${code} · Notation`} link={link} onRetry={onRetry} />
+      <div className="deck" data-phase="rate">
+        <ConsoleBar link={link} />
         <main className="screen screen--solo screen--calm" id="main" tabIndex={-1}>
           <h1 className="visually-hidden" tabIndex={-1}>
             Notation croisée
@@ -111,8 +109,8 @@ export default function Rating({
   }
 
   return (
-    <div className="deck">
-      <ConsoleBar meta={`Partie ${code} · Notation`} link={link} onRetry={onRetry} />
+    <div className="deck" data-phase="rate">
+      <ConsoleBar link={link} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--narrow screen--calm" id="main" tabIndex={-1}>
         {/* The one heading, and the focus target the phase change lands on. It says which prompt
@@ -132,8 +130,6 @@ export default function Rating({
         {/* A round's prompts are a sequence, so they get the round's own track. Nothing else on
             this screen is a sequence, and this is the only thing on it that moves. */}
         <RoundTrack current={reveal.gradable_index + (mine ? 0 : 1)} total={reveal.gradable_count} />
-
-        <PhaseClock timer={state.timer} seconds={state.rate_seconds} what="pour noter ce prompt" />
 
         {/* No exercise here: the prompt is rated on its own, the instructions and their
             material (email, image) are shown only while the prompt is being written. */}
@@ -175,9 +171,8 @@ export default function Rating({
                   key={n}
                   type="button"
                   className={`btn rate${shown === n ? ' rate--on' : ''}`}
-                  // A warm-to-green ramp along the scale, so the grid reads as low-to-high at a glance.
-                  style={{ '--h': Math.round(((n - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)) * 130) } as CSSProperties}
                   aria-pressed={shown === n}
+                  style={{ '--h': ((n - SCALE_MIN) * 120) / (SCALE_MAX - SCALE_MIN) } as CSSProperties}
                   disabled={busy}
                   onClick={() => void rate(n)}
                 >

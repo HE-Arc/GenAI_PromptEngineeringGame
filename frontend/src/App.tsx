@@ -69,7 +69,7 @@ function SkipLink() {
 function Fault({ code, onRetry, onLeave }: { code: string; onRetry: () => void; onLeave: () => void }) {
   return (
     <div className="deck">
-      <ConsoleBar meta={`Partie ${code}`} />
+      <ConsoleBar />
       {/* The skip link's target, authored rather than stamped: `id` so the link resolves and
           `tabIndex` so `<main>` can hold focus at all — a focusable-by-default element is not
           a focusable one. The id is unique because there is one `<main>` per screen. */}
@@ -253,21 +253,21 @@ export default function App() {
       return (
         <>
           <SkipLink />
-          <Connecting code={view.code} link={link} />
+          <Connecting link={link} />
         </>
       )
     case 'lobby':
       return (
         <>
           <SkipLink />
-          <Lobby state={view.state} link={link} onRetry={retry} onLeave={() => go('/')} />
+          <Lobby state={view.state} link={link} onLeave={() => go('/')} />
         </>
       )
     case 'results':
       return (
         <>
           <SkipLink />
-          <Results state={view.state} link={link} onRetry={retry} onLeave={() => go('/')} />
+          <Results state={view.state} link={link} onLeave={() => go('/')} />
         </>
       )
     // Both of these are gated screens the phase switch opens and closes. The eight questions and
@@ -278,14 +278,14 @@ export default function App() {
       return (
         <>
           <SkipLink />
-          <Quiz state={view.state} code={view.code} link={link} onRetry={retry} />
+          <Quiz state={view.state} code={view.code} link={link} />
         </>
       )
     case 'rating':
       return (
         <>
           <SkipLink />
-          <Rating state={view.state} code={view.code} link={link} onRetry={retry} />
+          <Rating state={view.state} code={view.code} link={link} />
         </>
       )
     case 'game':
@@ -296,7 +296,6 @@ export default function App() {
             state={view.state}
             code={view.code}
             link={link}
-            onRetry={retry}
             answer={answer}
             sendPrompt={sendPrompt}
           />
@@ -307,12 +306,11 @@ export default function App() {
 
 // The stream is open but no frame has arrived yet. This is the only state that is genuinely a
 // wait, and it is bounded: the hook gives up after three misses and routes to `Fault`.
-// Deliberately almost empty — the rail already carries the lamp and the word, and a third
-// copy of "connecting" is the one thing a screen this short does not need.
-function Connecting({ code, link }: { code: string; link: Link }) {
+// Deliberately almost empty: one line says the board is loading.
+function Connecting({ link }: { link: Link }) {
   return (
     <div className="deck">
-      <ConsoleBar meta={`Partie ${code}`} link={link} />
+      <ConsoleBar link={link} />
       <main className="screen screen--solo" id="main" tabIndex={-1}>
         <p className="prose prose--dim">Lecture du tableau…</p>
       </main>

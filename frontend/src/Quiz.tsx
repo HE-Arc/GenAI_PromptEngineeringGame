@@ -41,12 +41,10 @@ export default function Quiz({
   state,
   code,
   link,
-  onRetry,
 }: {
   state: State
   code: string
   link: Link
-  onRetry: () => void
 }) {
   const [bank, setBank] = useState<QuizBank | null>(null)
   // What this browser has sent, keyed by the question's `order`.
@@ -289,8 +287,8 @@ export default function Quiz({
   const waiting = state.players.filter((p) => !p.quiz_done)
 
   return (
-    <div className="deck">
-      <ConsoleBar meta={`Partie ${code} · Didacticiel`} link={link} onRetry={onRetry} />
+    <div className="deck" data-phase="quiz">
+      <ConsoleBar link={link} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--narrow" id="main" tabIndex={-1}>
         {/* The one heading on this screen, and the target the phase change moves focus to. It
@@ -337,9 +335,6 @@ export default function Quiz({
               {open ? (
                 <>
                   <Ring left={left} length={windowLength} secs={secs} />
-                  <span className="qclock__t">
-                    {secs} {secs > 1 ? 'secondes pour répondre' : 'seconde pour répondre'}
-                  </span>
                 </>
               ) : (
                 <span className="qclock__t qclock__t--closed">
@@ -360,10 +355,10 @@ export default function Quiz({
           // discussion the player could not hear — and it would move the WHOLE room past a
           // discussion one member took no part in. A way forward that costs the room its
           // discussion is worse than a phone that waits. The bank is a request of its own, which
-          // is also why this does not reuse `onRetry`: that one re-reads the ROOM, and the room
+          // is also why this does not reuse the room retry: that one re-reads the ROOM, and the room
           // answered the first time.
           //
-          // `role="alert"` is on the sentence and not on the box, for the reason `StatusLamp`
+          // `role="alert"` is on the sentence and not on the box, for the reason a status line
           // gives: a live region announces its whole subtree when it changes, and a control
           // inside one gets announced as part of the fault — then re-announced when the box
           // changes under it, which here is the button disabling itself mid-flight. The box

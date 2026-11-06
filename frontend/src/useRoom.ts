@@ -8,19 +8,6 @@ import { connectRoomWs, type AnswerEvent, type RoomWs } from './ws'
  * This is the state that stops that. */
 export type Link = 'idle' | 'connecting' | 'live' | 'down' | 'failed'
 
-// A phone that sleeps, changes network or walks out of range flaps. That is not a failure and
-// must never be dressed as one: the reconnection reads in the calm cool colour, and nothing
-// here asserts anything the browser cannot actually see.
-const LINK_WORDS: Record<Link, string> = {
-  idle: '',
-  connecting: 'Connexion…',
-  live: '',
-  down: 'Reconnexion…',
-  failed: 'La partie ne répond pas',
-}
-
-export const linkWord = (link: Link) => LINK_WORDS[link]
-
 // A room that does not exist never answers, and the socket cannot read a refusal off
 // a connection that never opened, so the only honest signal is that nothing ever opened.
 // The browser has already retried three times by then, and a phone retrying forever against

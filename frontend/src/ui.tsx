@@ -4,63 +4,15 @@ import { countdown, fr, noun, nounOf } from './format'
 import { buzz, copyText, hueOf, initials } from './fx'
 import { TargetText } from './ModelOutput'
 import { useQuizWindow, type ServerWindow } from './serverClock'
-import { linkWord, type Link } from './useRoom'
+import { type Link } from './useRoom'
 import { type Player, type ReadyState } from './api'
 
 /* The instrument panel. Every screen is built from these, which is what makes six screens
  * read as one device: the same lamp, the same track, the same meter, the same board. */
 
-// How a link is coloured. 'down' is a phone that slept, changed network or walked out of
-// range: the stream reopens by itself within seconds, so it is stated in the calm cool colour
-// and never dressed as a fault. Only a room that genuinely is not there gets the red.
-const LINK_CLASS: Record<Link, string> = {
-  idle: '',
-  connecting: 'status--pending',
-  live: '',
-  down: 'status--pending',
-  failed: 'status--fault',
-}
-
-export function StatusLamp({ link, onRetry }: { link: Link; onRetry?: () => void }) {
-  if (link === 'idle') return null
-  const fault = link === 'failed'
-  return (
-    // Two elements, not one. The layout box stays a plain span so `.status` keeps owning the
-    // flex, the right-hand margin and the colour, and the live region shrinks to the two
-    // things that are actually a status: the lamp and the word.
-    //
-    // The button used to live inside the <output>, which is an anti-pattern rather than a
-    // style question: a live region announces its whole subtree when it changes, so a
-    // focusable control inside it got re-announced as part of the connection message on every
-    // flap, and the announcement described something the player cannot do. As a sibling it
-    // inherits the fault colour and the rail's type through the wrapper, unchanged.
-    <span className={`status ${LINK_CLASS[link]}`}>
-      {/* <output> carries an implicit role=status, so this is a polite live region: the lamp
-          change is announced without interrupting whatever the player is doing. */}
-      <output>
-        <span className={`lamp lamp--${link}`} aria-hidden="true" /> {linkWord(link)}
-      </output>
-      {/* A manual retry only where nothing is coming on its own. Offering it for a blip the
-          watchdog is already fixing would train a player to tap a button that does not need
-          tapping. */}
-      {fault && onRetry && (
-        <button type="button" className="status__retry" onClick={onRetry}>
-          Réessayer
-        </button>
-      )}
-    </span>
-  )
-}
-
-export function ConsoleBar({
-  meta,
-  link,
-  onRetry,
-}: {
-  meta?: string
-  link?: Link
-  onRetry?: () => void
-}) {
+// The bar across the top of every screen: the game's name, centred, and nothing else.
+// `link` is set inside a live room, only to make the name inert there (see below).
+export function ConsoleBar({ link }: { link?: Link }) {
   return (
     <header className="railbar">
       {/* The logo goes home, as a logo does. A real link for the address and the context menu,
@@ -69,10 +21,7 @@ export function ConsoleBar({
       {/* Not a link inside a live room (`link` set): one stray tap there left a running round
           with no warning. Those screens have their own exit where leaving is safe. */}
       {link ? (
-        <span className="railbar__mark">
-          <span className="railbar__spark" aria-hidden="true">✦</span>
-          Jeu GenAi
-        </span>
+        <span className="railbar__mark">Jeu GenAi</span>
       ) : (
         <a
           className="railbar__mark"
@@ -84,12 +33,9 @@ export function ConsoleBar({
             dispatchEvent(new PopStateEvent('popstate'))
           }}
         >
-          <span className="railbar__spark" aria-hidden="true">✦</span>
           Jeu GenAi
         </a>
       )}
-      {meta && <span className="railbar__meta">{meta}</span>}
-      {link && <StatusLamp link={link} onRetry={onRetry} />}
     </header>
   )
 }
@@ -442,7 +388,7 @@ export function Readout({
                   title={tipOpen ? 'Masquer le tip' : 'Afficher un tip'}
                   onClick={() => setTipOpen((o) => !o)}
                 >
-                  💡
+                  <Icon name="tip" />
                 </button>
               </div>
             )}
@@ -467,7 +413,7 @@ export function Readout({
                     title={copyStatus || 'Copier le contenu de l’exercice'}
                     onClick={() => void copyContent()}
                   >
-                    {copied === 'yes' ? '✓' : copied === 'failed' ? '⚠' : '📋'}
+                    <Icon name={copied === 'yes' ? 'check' : copied === 'failed' ? 'alert' : 'copy'} />
                   </button>
                   <span className="visually-hidden" aria-live="polite">
                     {copyStatus}
@@ -480,6 +426,48 @@ export function Readout({
       )}
       {image && <img className="readout__image" src={image} alt="Image de l’exercice" />}
     </div>
+  )
+}
+
+// Line icons for the two tool buttons on a target card (lucide paths, 24-unit box, 1.5 stroke).
+// Decorative: each button carries its own label.
+const ICONS = {
+  tip: (
+    <>
+      <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" />
+      <path d="M9 18h6" />
+      <path d="M10 22h4" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </>
+  ),
+  check: <path d="M20 6 9 17l-5-5" />,
+  alert: (
+    <>
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </>
+  ),
+}
+
+function Icon({ name }: { name: keyof typeof ICONS }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {ICONS[name]}
+    </svg>
   )
 }
 
@@ -501,7 +489,7 @@ function CodeTiles({ label, value }: { label: string; value: string }) {
   return (
     <>
       <span className={`readout__label${copied === 'yes' ? ' readout__label--ok' : ''}`} aria-live="polite">
-        {copied === 'yes' ? '✓ Code copié' : copied === 'failed' ? 'Copie impossible' : label}
+        {copied === 'yes' ? 'Code copié' : copied === 'failed' ? 'Copie impossible' : label}
       </span>
       <button
         type="button"
@@ -557,7 +545,7 @@ export function Board({ players, myName }: { players: Player[]; myName: string }
           <span className="board__bar" aria-hidden="true">
             <span
               className={`board__fill${i === 0 ? ' board__fill--top' : ''}`}
-              style={{ width: `${top > 0 ? ((p.score ?? 0) / top) * 100 : 100}%` }}
+              style={{ transform: `scaleX(${top > 0 ? Math.max((p.score ?? 0) / top, 0.02) : 1})` }}
             />
           </span>
         </div>
@@ -762,7 +750,10 @@ function readClockPos(): { x: number; y: number } | null {
   }
 }
 
-export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | null; what: string; seconds: number }) {
+// The floating round clock: the ring and its figure, nothing else, and only while the window is
+// open. Portalled to <body> because every screen animates in with `transform`, and a transformed
+// ancestor both traps `position: fixed` (the drag lands in the wrong place) and its z-index.
+export function PhaseClock({ timer, seconds }: { timer: ServerWindow | null; seconds: number }) {
   const { open, left } = useQuizWindow(timer)
   const ref = useRef<HTMLParagraphElement>(null)
   const drag = useRef<{ dx: number; dy: number; x0: number; y0: number; moved: boolean } | null>(null)
@@ -792,9 +783,9 @@ export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | nul
   }, [shown])
 
   const length = seconds * 1000
-  if (!timer) return null
+  if (!timer || !open) return null
   const secs = countdown(left)
-  return (
+  return createPortal(
     <p
       ref={ref}
       className="qclock qclock--float"
@@ -837,18 +828,10 @@ export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | nul
       onPointerCancel={() => {
         drag.current = null
       }}
-      data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
-      {open ? (
-        <>
-          <Ring left={left} length={length} secs={secs} />
-          <span className="qclock__t">
-            {secs > 1 ? 'secondes' : 'seconde'} {what}
-          </span>
-        </>
-      ) : (
-        <span className="qclock__t qclock__t--closed">Temps écoulé</span>
-      )}
-    </p>
+      data-state={secs > 5 ? 'open' : 'soon'}>
+      <Ring left={left} length={length} secs={secs} />
+    </p>,
+    document.body,
   )
 }
 
