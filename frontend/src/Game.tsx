@@ -700,13 +700,6 @@ export default function Game({
             )}
 
             {!scored && !conv && composer}
-
-            {scored && (
-              <p className="prose prose--dim">
-                La manche {state.current + 1} est commentée. L’animateur ouvre la suivante quand
-                la classe a fini.
-              </p>
-            )}
           </div>
 
           {/* The wait after submitting used to be nothing at all: a disabled button and a dead
