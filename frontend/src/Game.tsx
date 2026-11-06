@@ -487,8 +487,8 @@ export default function Game({
                 <p className="prose prose--sm prose--dim">
                   {conv
                     ? outOfAttempts
-                      ? `Tu as envoyé tes ${state.max_attempts} prompts : c’est toute la conversation qui sera notée.`
-                      : `Continue la conversation (${noun(attemptsLeft, 'prompt restant', 'prompts restants')}) : le modèle se souvient des échanges précédents, et c’est toute la conversation qui est notée.`
+                      ? `Tu as envoyé tes ${state.max_attempts} prompts.`
+                      : `Continue la conversation (${noun(attemptsLeft, 'prompt restant', 'prompts restants')}).`
                     : outOfAttempts
                       ? `Tu as utilisé tes ${state.max_attempts} essais : c’est ton dernier prompt qui sera noté.`
                       : `Tu peux corriger ton prompt et réessayer (${noun(attemptsLeft, 'essai restant', 'essais restants')}) : seul ton dernier essai compte.`}

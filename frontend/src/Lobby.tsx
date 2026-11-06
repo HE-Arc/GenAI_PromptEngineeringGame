@@ -98,7 +98,6 @@ export default function Lobby({
           <PlayerCloud players={state.players} myName={getName(state.code)} />
 
           <div className="foot">
-            <span className="foot__code">En attente de démarrage : seul l'animateur peut lancer la partie.</span>
             <button type="button" className="btn btn--ghost foot__end" onClick={onLeave}>
               Quitter la partie
             </button>

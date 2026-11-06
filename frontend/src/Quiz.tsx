@@ -545,10 +545,6 @@ export default function Quiz({
                 <span className="qboard__score num">{fr(me?.quiz_score ?? null)}</span>
                 <span className="qboard__den">bonnes réponses sur {total}</span>
               </p>
-              <p className="prose prose--sm prose--dim">
-                Chaque bonne réponse vaut 1 point. Répondre plus vite ne donne pas de points en
-                plus — seul le contenu compte.
-              </p>
             </div>
 
             <Section title="Classement du didacticiel">
