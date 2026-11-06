@@ -173,7 +173,7 @@ export default function Game({
   // "Réponses envoyées" is shown only once this player has sent (alreadyDone): before that
   // the meter counts other players, so the caption is the wait ("En attente des autres…").
   const caption = (() => {
-    if (alreadyDone) return left === 0 ? 'Tout le monde a répondu' : 'Réponses envoyées'
+    if (alreadyDone) return left === 0 ? 'Tout le monde a répondu' : 'Réponse envoyée'
     return 'En attente des autres…'
   })()
 
@@ -516,7 +516,7 @@ export default function Game({
 
   return (
     <div className="deck">
-      <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
+      <ConsoleBar meta={`Partie ${code} · ${scored ? 'Résumé' : 'Rédaction'}`} link={link} onRetry={onRetry} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className={`screen screen--split screen--calm${stale ? ' screen--stale' : ''}`} id="main" tabIndex={-1}>
         <Step current={state.current} total={state.total}>

@@ -290,7 +290,7 @@ export default function Quiz({
 
   return (
     <div className="deck">
-      <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
+      <ConsoleBar meta={`Partie ${code} · Didacticiel`} link={link} onRetry={onRetry} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--narrow" id="main" tabIndex={-1}>
         {/* The one heading on this screen, and the target the phase change moves focus to. It

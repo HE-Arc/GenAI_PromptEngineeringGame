@@ -66,19 +66,28 @@ export function ConsoleBar({
       {/* The logo goes home, as a logo does. A real link for the address and the context menu,
           but routed in place: App listens to `popstate`, so pushing the path and announcing it is
           a screen change with no reload, exactly like « Quitter la partie ». */}
-      <a
-        className="railbar__mark"
-        href="/"
-        onClick={(e) => {
-          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-          e.preventDefault()
-          history.pushState(null, '', '/')
-          dispatchEvent(new PopStateEvent('popstate'))
-        }}
-      >
-        <span className="railbar__spark" aria-hidden="true">✦</span>
-        Jeu GenAi
-      </a>
+      {/* Not a link inside a live room (`link` set): one stray tap there left a running round
+          with no warning. Those screens have their own exit where leaving is safe. */}
+      {link ? (
+        <span className="railbar__mark">
+          <span className="railbar__spark" aria-hidden="true">✦</span>
+          Jeu GenAi
+        </span>
+      ) : (
+        <a
+          className="railbar__mark"
+          href="/"
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+            e.preventDefault()
+            history.pushState(null, '', '/')
+            dispatchEvent(new PopStateEvent('popstate'))
+          }}
+        >
+          <span className="railbar__spark" aria-hidden="true">✦</span>
+          Jeu GenAi
+        </a>
+      )}
       {meta && <span className="railbar__meta">{meta}</span>}
       {link && <StatusLamp link={link} onRetry={onRetry} />}
     </header>

@@ -44,7 +44,7 @@ export default function Rating({
   if (!reveal)
     return (
       <div className="deck">
-        <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
+        <ConsoleBar meta={`Partie ${code} · Notation`} link={link} onRetry={onRetry} />
         <main className="screen screen--solo screen--calm" id="main" tabIndex={-1}>
           <h1 className="visually-hidden" tabIndex={-1}>
             Notation croisée
@@ -112,7 +112,7 @@ export default function Rating({
 
   return (
     <div className="deck">
-      <ConsoleBar meta={`Partie ${code}`} link={link} onRetry={onRetry} />
+      <ConsoleBar meta={`Partie ${code} · Notation`} link={link} onRetry={onRetry} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--narrow screen--calm" id="main" tabIndex={-1}>
         {/* The one heading, and the focus target the phase change lands on. It says which prompt

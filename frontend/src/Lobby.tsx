@@ -79,7 +79,7 @@ export default function Lobby({
 
             <div className="actions">
               <button type="button" className="btn btn--signal btn--wide" onClick={() => void share()}>
-                {shared === 'copied' ? '✓ Code copié' : shared === 'sent' ? '✓ Code partagé' : 'Partager le code'}
+                {shared === 'copied' ? '✓ Lien copié' : shared === 'sent' ? '✓ Lien partagé' : 'Partager le lien'}
               </button>
             </div>
 
