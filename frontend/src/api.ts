@@ -198,6 +198,9 @@ export type State = {
   round_seconds: number
   rate_seconds: number
   quiz_seconds: number
+  // How long the game is: didacticiel questions and prompt rounds, set in the lobby.
+  quiz_count: number
+  round_count: number
   max_attempts: number
   my_attempts: number
   // A conversation round chains its prompts instead of replacing them: each send continues

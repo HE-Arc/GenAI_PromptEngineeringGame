@@ -671,7 +671,7 @@ pub async fn admin_create(
 }
 
 // The room's settings, each written only when present in `data`: flags as
-// JSON booleans, durations clamped to their range. Only a room still in the
+// JSON booleans, durations and counts clamped to their range. Only a room still in the
 // lobby is changed: once started, the game runs on what it began with.
 async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value) {
     let mut sets: Vec<(&str, i64)> = Vec::new();
@@ -684,6 +684,8 @@ async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value)
         ("round_seconds", game::ROUND_SECONDS, game::ROUND_SECONDS_RANGE),
         ("rate_seconds", game::RATE_SECONDS, game::RATE_SECONDS_RANGE),
         ("quiz_seconds", game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE),
+        ("quiz_count", game::QUIZ_COUNT_DEFAULT, game::quiz_count_range()),
+        ("round_count", game::ROUND_COUNT_DEFAULT, game::round_count_range()),
     ];
     for (key, default, range) in durations {
         if data.get(key).is_some() {
@@ -735,8 +737,11 @@ pub async fn admin_start(
         }
     }
     touch(&state, &code).await;
-    let phase = game::load(&state.pool, &code).await.map(|g| g.phase).unwrap_or_default();
-    (StatusCode::OK, Json(json!({"ok": true, "total": game::ROUNDS_PER_GAME, "phase": phase}))).into_response()
+    let (phase, total) = game::load(&state.pool, &code)
+        .await
+        .map(|g| (g.phase, g.round_count))
+        .unwrap_or_default();
+    (StatusCode::OK, Json(json!({"ok": true, "total": total, "phase": phase}))).into_response()
 }
 
 pub async fn admin_next(

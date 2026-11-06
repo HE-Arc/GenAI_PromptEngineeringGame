@@ -396,6 +396,8 @@ type RoomSettings = {
   round_seconds: string
   rate_seconds: string
   quiz_seconds: string
+  quiz_count: string
+  round_count: string
 }
 
 function settingsOf(state: State): RoomSettings {
@@ -406,6 +408,8 @@ function settingsOf(state: State): RoomSettings {
     round_seconds: String(state.round_seconds),
     rate_seconds: String(state.rate_seconds),
     quiz_seconds: String(state.quiz_seconds),
+    quiz_count: String(state.quiz_count),
+    round_count: String(state.round_count),
   }
 }
 
@@ -413,7 +417,7 @@ const FLAGS: { key: 'tutorial' | 'anonymous' | 'auto_mode'; label: string; hint:
   {
     key: 'tutorial',
     label: 'Avec le didacticiel',
-    hint: 'Huit questions avant la première manche. Personne n’écrit de prompt avant d’y avoir répondu.',
+    hint: 'Des questions avant la première manche. Personne n’écrit de prompt avant d’y avoir répondu.',
   },
   {
     key: 'anonymous',
@@ -427,10 +431,20 @@ const FLAGS: { key: 'tutorial' | 'anonymous' | 'auto_mode'; label: string; hint:
   },
 ]
 
-const DURATIONS: { key: 'round_seconds' | 'rate_seconds' | 'quiz_seconds'; label: string; min: number; max: number }[] = [
-  { key: 'round_seconds', label: 'Temps par manche en secondes', min: 10, max: 600 },
-  { key: 'rate_seconds', label: 'Temps pour noter un prompt en secondes', min: 5, max: 300 },
-  { key: 'quiz_seconds', label: 'Temps par question du didacticiel en secondes', min: 5, max: 300 },
+// The number fields: game length, then durations. The bounds match the server's clamps (the
+// counts' maxima are what server/data holds: 8 questions, 10 exercises).
+const NUMBERS: {
+  key: 'quiz_count' | 'round_count' | 'round_seconds' | 'rate_seconds' | 'quiz_seconds'
+  label: string
+  min: number
+  max: number
+  unit: string
+}[] = [
+  { key: 'quiz_count', label: 'Nombre de questions du didacticiel', min: 1, max: 8, unit: 'questions' },
+  { key: 'round_count', label: 'Nombre de manches de prompt', min: 1, max: 10, unit: 'manches' },
+  { key: 'round_seconds', label: 'Temps par manche en secondes', min: 10, max: 600, unit: 'secondes' },
+  { key: 'rate_seconds', label: 'Temps pour noter un prompt en secondes', min: 5, max: 300, unit: 'secondes' },
+  { key: 'quiz_seconds', label: 'Temps par question du didacticiel en secondes', min: 5, max: 300, unit: 'secondes' },
 ]
 
 // The lobby's settings panel. Native checkboxes rather than drawn ones: real keyboard, focus and
@@ -460,7 +474,7 @@ function RoomSettingsForm({
         </label>
       ))}
       <div className="timers">
-        {DURATIONS.map((d) => (
+        {NUMBERS.map((d) => (
           <div className="field" key={d.key}>
             <label className="label" htmlFor={d.key}>
               {d.label}
@@ -476,7 +490,7 @@ function RoomSettingsForm({
               onChange={(e) => onChange(d.key, e.target.value)}
             />
             <p className="hint">
-              {d.min}–{d.max} secondes
+              {d.min}–{d.max} {d.unit}
             </p>
           </div>
         ))}
@@ -536,6 +550,11 @@ export default function Admin() {
   // a hook has to be: `!code` and `link === 'failed'` both render whole screens of their own, and
   // a hook after them would be called on some renders and not others.
   const quizWindow = useQuizWindow(state?.quiz ?? null)
+  // The round's own clock (writing, rating), so the host sees the seconds the players see.
+  const phaseWindow = useQuizWindow(state?.timer ?? null)
+  const phaseLeft = phaseWindow.open
+    ? `${noun(countdown(phaseWindow.left), 'seconde', 'secondes')} restantes`
+    : undefined
   const verified = useRef(false)
   // Armed on the gate screen rather than on mount, because on the way in there is a « … » line
   // first and there is no field to focus yet — see `useMountFocus`, which is the other half of
@@ -950,6 +969,7 @@ export default function Admin() {
             state && state.total > 0
               ? `Manche ${state.current + 1} sur ${state.total}.`
               : 'La première manche est ouverte.',
+          timer: phaseLeft,
           figures:
             here.length === 0
               ? 'Aucun joueur connecté.'
@@ -974,6 +994,7 @@ export default function Admin() {
         if (!r) return { state: 'La notation n’a pas encore commencé.' }
         return {
           state: `Prompt ${r.index + 1} sur ${r.count}.`,
+          timer: phaseLeft,
           figures: `${noun(r.rated, 'joueur a noté', 'joueurs ont noté')} ce prompt.`,
           // The sentence the board cannot say for itself. §4 hides every score for the whole
           // rating phase, so a host glancing at a console with no standings on it has no way to
@@ -1075,7 +1096,7 @@ export default function Admin() {
   if (link === 'failed') {
     return (
       <div className="deck">
-        <ConsoleBar meta="Console" link={link} onRetry={retry} />
+        <ConsoleBar link={link} />
         <main className="screen screen--solo" id="main" tabIndex={-1}>
           <h1 className="title" tabIndex={-1}>Cette partie n’existe plus</h1>
           <p className="prose prose--dim">
@@ -1112,7 +1133,7 @@ export default function Admin() {
 
   return (
     <div className="deck deck--wide">
-      <ConsoleBar meta="Console" link={link} onRetry={retry} />
+      <ConsoleBar link={link} />
       <main className="screen" id="main" tabIndex={-1}>
         <div className="split split--console">
           <div className="stack">

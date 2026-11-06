@@ -23,7 +23,16 @@ pub const QUIZ_SECONDS_DEFAULT: i64 = 60;
 pub const QUIZ_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const PROMPT_GRACE_MS: i64 = 2000;
-pub const ROUNDS_PER_GAME: usize = 10;
+// How long a game is: didacticiel questions and prompt rounds, chosen by the
+// host in the lobby. The upper bounds are what the data files hold.
+pub const QUIZ_COUNT_DEFAULT: i64 = 5;
+pub const ROUND_COUNT_DEFAULT: i64 = 5;
+pub fn quiz_count_range() -> (i64, i64) {
+    (1, quiz_bank().len() as i64)
+}
+pub fn round_count_range() -> (i64, i64) {
+    (1, targets().len() as i64)
+}
 // Prompts a player may send for one round; the latest replaces earlier ones
 // (conversation rounds chain instead — see below) and is graded by the peers.
 pub const MAX_ATTEMPTS: i64 = 3;
@@ -192,13 +201,18 @@ pub struct GameRoom {
     pub quiz_seconds: i64,
     #[sqlx(default)]
     pub auto_mode: i64,
+    #[sqlx(default)]
+    pub quiz_count: i64,
+    #[sqlx(default)]
+    pub round_count: i64,
 }
 
 pub async fn load(pool: &SqlitePool, code: &str) -> Result<GameRoom, sqlx::Error> {
     let sql = format!(
         "SELECT code, phase, current, tutorial, anonymous, quiz_index,
                 {} AS quiz_deadline_ms, {} AS phase_deadline_ms, round_seconds, rate_seconds,
-                COALESCE(quiz_seconds, 60) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode
+                COALESCE(quiz_seconds, 60) AS quiz_seconds, COALESCE(auto_mode, 0) AS auto_mode,
+                quiz_count, round_count
          FROM room WHERE code = ?",
         ms_of("quiz_deadline"),
         ms_of("phase_deadline"),
@@ -385,7 +399,7 @@ async fn close_quiz(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-// Draws the ten rounds and leaves the lobby. False when the room had already
+// Draws the room's rounds, trims the didacticiel to its length, and leaves the lobby. False when the room had already
 // begun: the conditional UPDATE is the claim, so the admin's button and the
 // last lobby vote landing together start the game once.
 pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Error> {
@@ -403,13 +417,21 @@ pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Err
     if claimed != 1 {
         return Ok(false);
     }
+    // The bank is drawn whole and shuffled at creation; the game keeps its
+    // first `quiz_count` questions. Attempts cannot exist yet: nobody can
+    // answer before the start.
+    sqlx::query("DELETE FROM quiz_question WHERE room_code = ? AND \"order\" >= ?")
+        .bind(code)
+        .bind(room.quiz_count)
+        .execute(&mut *tx)
+        .await?;
     // The placeholder order-0 round from creation/restart is replaced by the
-    // real draw: the first ROUNDS_PER_GAME targets, in file order.
+    // real draw: the first `round_count` targets, in file order.
     sqlx::query("DELETE FROM round WHERE room_code = ?")
         .bind(code)
         .execute(&mut *tx)
         .await?;
-    for (i, t) in targets().iter().take(ROUNDS_PER_GAME).enumerate() {
+    for (i, t) in targets().iter().take(room.round_count.max(1) as usize).enumerate() {
         sqlx::query("INSERT INTO round (room_code, \"order\", target) VALUES (?, ?, ?)")
             .bind(code)
             .bind(i as i64)
@@ -418,7 +440,7 @@ pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Err
             .await?;
     }
     tx.commit().await?;
-    tracing::info!(room = %code, first_phase = phase, rounds = ROUNDS_PER_GAME, "game started");
+    tracing::info!(room = %code, first_phase = phase, rounds = room.round_count, questions = room.quiz_count, "game started");
     let room = load(pool, code).await?;
     if phase == "quiz" {
         open_quiz(pool, code, room.quiz_index, 0).await?;
@@ -1388,6 +1410,8 @@ pub async fn room_snapshot(
         "anonymous": anonymous,
         "auto_mode": room.auto_mode != 0,
         "quiz_seconds": room.quiz_seconds,
+        "quiz_count": room.quiz_count,
+        "round_count": room.round_count,
         "tutorial": room.tutorial != 0,
         "round_seconds": room.round_seconds,
         "rate_seconds": room.rate_seconds,
@@ -1453,7 +1477,8 @@ mod tests {
     #[test]
     fn content_loads() {
         assert_eq!(quiz_bank().len(), 8);
-        assert!(targets().len() >= ROUNDS_PER_GAME);
+        assert!(targets().len() as i64 >= ROUND_COUNT_DEFAULT);
+        assert!(quiz_bank().len() as i64 >= QUIZ_COUNT_DEFAULT);
         assert!(quiz_bank().iter().all(|q| q.choices.len() == 4 && (0..4).contains(&q.correct)));
     }
 
@@ -1470,6 +1495,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_uses_the_rooms_game_length() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "LN33").await.unwrap();
+        create_bank(&pool, "LN33").await.unwrap();
+        sqlx::query("UPDATE room SET quiz_count = 2, round_count = 3 WHERE code = 'LN33'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::db::rooms::add_player(&pool, "LN33", "ana").await.unwrap();
+        assert!(start_game(&pool, "LN33").await.unwrap());
+        let snap = room_snapshot(&pool, "LN33", None).await.unwrap();
+        assert_eq!(snap["total"], 3);
+        assert_eq!(snap["quiz"]["total"], 2);
+        assert_eq!(snap["quiz_count"], 2);
+        assert_eq!(snap["round_count"], 3);
+        assert_eq!(clamp_seconds(Some(&json!(99)), QUIZ_COUNT_DEFAULT, quiz_count_range()), 8);
+        assert_eq!(clamp_seconds(Some(&json!(0)), ROUND_COUNT_DEFAULT, round_count_range()), 1);
+    }
+
+    #[tokio::test]
     async fn quiz_flow_reveals_key_only_after_deadline() {
         let pool = crate::db::test_pool().await;
         crate::db::rooms::create_room(&pool, "QZ11").await.unwrap();
@@ -1481,9 +1526,9 @@ mod tests {
         let online: HashSet<i64> = [ana.id].into();
         let snap = room_snapshot(&pool, "QZ11", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "quiz");
-        assert_eq!(snap["total"], 10);
+        assert_eq!(snap["total"], 5, "round_count default");
         assert_eq!(snap["quiz"]["index"], 0);
-        assert_eq!(snap["quiz"]["total"], 8);
+        assert_eq!(snap["quiz"]["total"], 5, "bank trimmed to quiz_count at start");
         assert_eq!(snap["quiz"]["revealed"], false);
         assert!(snap["quiz"]["correct"].is_null(), "key hidden while open");
         assert!(snap["quiz"]["deadline_ms"].as_i64().unwrap() > now_ms());
@@ -1752,7 +1797,7 @@ mod tests {
         assert_eq!(rows[0]["round_score"], 8);
         assert_eq!(rows[1]["round_score"], 4);
 
-        for _ in 0..ROUNDS_PER_GAME {
+        for _ in 0..ROUND_COUNT_DEFAULT {
             let phase = load(&pool, "RD22").await.unwrap().phase;
             if phase == "done" {
                 break;
