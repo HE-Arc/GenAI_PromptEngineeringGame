@@ -756,7 +756,8 @@ function readClockPos(): { x: number; y: number } | null {
 export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | null; what: string; seconds: number }) {
   const { open, left } = useQuizWindow(timer)
   const ref = useRef<HTMLParagraphElement>(null)
-  const drag = useRef<{ dx: number; dy: number } | null>(null)
+  const drag = useRef<{ dx: number; dy: number; x0: number; y0: number; moved: boolean } | null>(null)
+  const lastTap = useRef(0)
   const [pos, setPos] = useState(readClockPos)
   // The spot to persist on pointer-up: the render-closure `pos` can be stale
   // behind the last onPointerMove, so the drag keeps it in a ref.
@@ -789,22 +790,37 @@ export function PhaseClock({ timer, what, seconds }: { timer: ServerWindow | nul
       ref={ref}
       className="qclock qclock--float"
       style={pos ? { left: pos.x, top: pos.y, right: 'auto' } : undefined}
+      title="Glisser pour déplacer · double-toucher pour remettre en place"
       onPointerDown={(e) => {
         const r = e.currentTarget.getBoundingClientRect()
-        drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top }
+        drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top, x0: e.clientX, y0: e.clientY, moved: false }
         e.currentTarget.setPointerCapture(e.pointerId)
       }}
       onPointerMove={(e) => {
-        if (drag.current) {
-          const p = clamp(e.clientX - drag.current.dx, e.clientY - drag.current.dy)
-          latestPos.current = p
-          setPos(p)
-        }
+        const d = drag.current
+        if (!d) return
+        // A finger is never still: a few pixels of jitter is a tap, not a drag.
+        if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 6) return
+        d.moved = true
+        const p = clamp(e.clientX - d.dx, e.clientY - d.dy)
+        latestPos.current = p
+        setPos(p)
       }}
-      onPointerUp={() => {
+      onPointerUp={(e) => {
+        const tapped = drag.current !== null && !drag.current.moved
         drag.current = null
         try {
-          if (latestPos.current) localStorage.setItem(CLOCK_POS_KEY, JSON.stringify(latestPos.current))
+          // Two taps in a row put the clock back in its corner: a clock parked over a button on
+          // one screen otherwise stays there on every screen after it.
+          if (tapped && e.timeStamp - lastTap.current < 350) {
+            lastTap.current = 0
+            latestPos.current = null
+            setPos(null)
+            localStorage.removeItem(CLOCK_POS_KEY)
+            return
+          }
+          if (tapped) lastTap.current = e.timeStamp
+          else if (latestPos.current) localStorage.setItem(CLOCK_POS_KEY, JSON.stringify(latestPos.current))
         } catch {
           /* storage unavailable: the spot just isn't kept */
         }
