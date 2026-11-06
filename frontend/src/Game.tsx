@@ -455,9 +455,13 @@ export default function Game({
         >
           {submitLabel}
         </button>
-        <p className="hint">
-          {text.length} / {MAX_PROMPT_CHARS}
-        </p>
+        {/* Only near the limit: "0 / 4096" on every prompt is a number nobody needs. Not
+            `.hint`, which is desktop-only: a phone nearing the limit needs it too. */}
+        {text.length > MAX_PROMPT_CHARS * 0.8 && (
+          <p className="prose prose--sm prose--dim">
+            {text.length} / {MAX_PROMPT_CHARS}
+          </p>
+        )}
         <p className="hint">
           <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Entrée</kbd> pour envoyer
         </p>

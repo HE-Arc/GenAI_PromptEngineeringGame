@@ -196,7 +196,8 @@ export default function Rating({
               </p>
             )}
 
-            <p className="hint" role="status">
+            {/* Not `.hint`: that class is desktop-only, and this is the phone's confirmation. */}
+            <p className="prose prose--sm prose--dim" role="status">
               {sent ? 'Tu as noté, en attente des autres' : 'Touche une note pour la donner.'}
             </p>
           </div>
