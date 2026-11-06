@@ -902,12 +902,12 @@ export default function Admin() {
         if (submitted === 0) return null
         return {
           label: 'Passer la notation',
-          body: `La manche va directement au résumé, sans notation par la classe : la note finale de chaque prompt sera celle de l’IA.${left > 0 ? ` ${noun(left, 'joueur n’a', 'joueurs n’ont')} pas encore envoyé de prompt et ne pourront plus répondre.` : ''}`,
+          body: `La manche va directement au résumé, sans notation par la classe : aucun prompt de la manche ne sera noté.${left > 0 ? ` ${noun(left, 'joueur n’a', 'joueurs n’ont')} pas encore envoyé de prompt et ne pourront plus répondre.` : ''}`,
         }
       case 'rating':
         return {
           label: 'Passer la notation',
-          body: 'La notation s’arrête et la manche va au résumé. Les notes déjà données comptent ; les prompts pas encore notés gardent la note de l’IA.',
+          body: 'La notation s’arrête et la manche va au résumé. Les notes déjà données comptent ; les prompts pas encore notés restent sans note.',
         }
       default:
         return null
