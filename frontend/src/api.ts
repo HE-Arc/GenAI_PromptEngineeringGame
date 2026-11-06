@@ -426,7 +426,8 @@ const REASONS: Record<string, string> = {
   'you wrote this one': 'Ce prompt, c’est toi qui l’as écrit : personne ne note le sien.',
   'score 1-10': 'Choisis une note entre 1 et 10.',
   'prompt required': 'Écris un prompt avant de l’envoyer.',
-  'prompt too long': 'Ton prompt est trop long (500 caractères maximum).',
+  'prompt too long': 'Ton prompt est trop long (4096 caractères maximum).',
+  'partie non terminée': 'La partie n’est pas encore terminée.',
   'bad token': 'Cette partie a peut-être été relancée. Reprends le code depuis l’accueil.',
   'bad password': 'Mot de passe incorrect.',
   'admin only': 'Session expirée. Reconnecte-toi.',
@@ -439,6 +440,8 @@ export function describe(e: unknown): string {
   if (known) return known
   if (e.status === 403) return 'Accès refusé à cette partie.'
   if (e.status === 409) return 'Impossible pour le moment. Réessaie dans un instant.'
+  if (e.status === 429) return 'Trop de tentatives. Réessaie dans quelques secondes.'
   if (e.status >= 500) return 'La partie a planté côté serveur. Préviens l’animateur.'
-  return e.message
+  // Never the raw server reason: it is English, written for the logs, not for a player.
+  return 'La demande a été refusée. Recharge la page et réessaie.'
 }
