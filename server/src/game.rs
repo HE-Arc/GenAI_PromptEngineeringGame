@@ -346,10 +346,10 @@ pub fn clamp_seconds(v: Option<&Value>, default: i64, (lo, hi): (i64, i64)) -> i
 // the rest are no-ops instead of skipping prompts or rounds.
 
 // Sets the phase and arms its clock in one write: playing is timed, every
-// other phase clears the deadline. Each prompt to rate has its own clock
-// (`rate_seconds`, re-armed per prompt); it also moves on once every online
-// rater has rated, or on the votes or the admin's skip. Every write clears a
-// pause: a new step starts on a running clock.
+// other phase clears the deadline. Rating has no clock: the class discusses
+// each prompt aloud, and the host moves on (in automatic mode, once every
+// online rater has rated, or on the votes). Every write clears a pause: a new
+// step starts on a running clock.
 // Applies only if the room is still in the phase and round `room` was read
 // in; true when it moved.
 // En mode automatique, le résumé est aussi minuté (30 s) pour s'enchaîner seul ;
@@ -357,7 +357,6 @@ pub fn clamp_seconds(v: Option<&Value>, default: i64, (lo, hi): (i64, i64)) -> i
 async fn go(pool: &SqlitePool, room: &GameRoom, phase: &str) -> Result<bool, sqlx::Error> {
     let seconds = match phase {
         "playing" => Some(room.round_seconds),
-        "rating" => Some(room.rate_seconds),
         "summary" if room.is_auto() => Some(SUMMARY_AUTO_SECONDS),
         _ => None,
     };
@@ -1045,8 +1044,9 @@ pub async fn maybe_close_quiz_window(pool: &SqlitePool, code: &str, online: &Has
     }
 }
 
-// Rating: every online rater (author excluded) rated the prompt on screen →
-// next prompt. Playing never closes early: a player may send new attempts
+// Rating, automatic mode only: every online rater (author excluded) rated
+// the prompt on screen → next prompt. In manual mode the host moves on: the
+// class discusses each prompt aloud after rating it. Playing never closes early: a player may send new attempts
 // until the clock (or the animateur) ends the round. An empty rater set
 // never advances: a room must not run itself.
 pub async fn maybe_advance_phase(pool: &SqlitePool, code: &str, online: &HashSet<i64>) {
@@ -1054,6 +1054,9 @@ pub async fn maybe_advance_phase(pool: &SqlitePool, code: &str, online: &HashSet
         return;
     }
     let Ok(room) = load(pool, code).await else { return };
+    if !room.is_auto() {
+        return;
+    }
     let Some((round_id, revealed)) = current_round(pool, &room).await else {
         return;
     };
@@ -1138,7 +1141,8 @@ pub async fn maybe_advance_by_votes(pool: &SqlitePool, code: &str, online: &Hash
     }
     // Le lobby ne démarre jamais seul : seul l'animateur (admin_start) lance la
     // partie. Les votes restent comptés pour l'affichage du quorum.
-    if step == LOBBY_STEP {
+    // Ni la notation en mode manuel : l'animateur passe au prompt suivant.
+    if step == LOBBY_STEP || !room.is_auto() {
         return;
     } else if let Some(revealed) = step.rsplit(':').next().and_then(|r| r.parse().ok()) {
         // The vote was counted on `rating:<round>:<revealed>`: claim that cursor.
@@ -1948,11 +1952,11 @@ mod tests {
         pause_clock(&pool, "CK77").await.unwrap();
         let snap = room_snapshot(&pool, "CK77", None).await.unwrap();
         assert!(snap["timer"]["paused_left_ms"].as_i64().unwrap() > 0);
-        // The rating has its own clock.
+        // The rating has no clock: the host moves on after the discussion.
         let room = load(&pool, "CK77").await.unwrap();
         go(&pool, &room, "rating").await.unwrap();
         let room = load(&pool, "CK77").await.unwrap();
-        assert!(room.paused_ms.is_none() && room.phase_deadline_ms.is_some(), "rating is timed");
+        assert!(room.paused_ms.is_none() && room.phase_deadline_ms.is_none(), "rating is not timed");
     }
 
     #[tokio::test]
@@ -1968,6 +1972,35 @@ mod tests {
         assert_eq!(room.phase, "done");
         assert!(room.quiz_deadline_ms.is_some() && room.phase_deadline_ms.is_none());
         assert!(end_game(&pool, "EN88").await.is_err(), "already over");
+    }
+
+    #[tokio::test]
+    async fn manual_rating_waits_for_the_host_even_when_everyone_rated() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "MR99").await.unwrap();
+        sqlx::query("UPDATE room SET tutorial = 0 WHERE code = 'MR99'").execute(&pool).await.unwrap();
+        let ana = crate::db::rooms::add_player(&pool, "MR99", "ana").await.unwrap();
+        let bob = crate::db::rooms::add_player(&pool, "MR99", "bob").await.unwrap();
+        let online: HashSet<i64> = [ana.id, bob.id].into();
+        assert!(start_game(&pool, "MR99").await.unwrap());
+        let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'MR99' AND \"order\" = 0")
+            .fetch_one(&pool).await.unwrap();
+        let a = crate::db::answers::insert_answer(&pool, round, ana.id, "p1", "o1").await.unwrap();
+        crate::db::answers::insert_answer(&pool, round, bob.id, "p2", "o2").await.unwrap();
+        advance(&pool, "MR99").await.unwrap();
+        let room = load(&pool, "MR99").await.unwrap();
+        assert_eq!(room.phase, "rating");
+        assert!(room.phase_deadline_ms.is_none(), "no clock on the rating");
+        // bob rated ana's prompt, and votes: nothing moves without the host.
+        crate::db::answers::insert_rating(&pool, a.id, bob.id, 7).await.unwrap();
+        crate::db::answers::add_ready(&pool, "MR99", bob.id, "rating:0:0").await.unwrap();
+        maybe_advance_phase(&pool, "MR99", &online).await;
+        maybe_advance_by_votes(&pool, "MR99", &online).await;
+        let revealed: i64 = sqlx::query_scalar("SELECT revealed FROM round WHERE id = ?").bind(round).fetch_one(&pool).await.unwrap();
+        assert_eq!(revealed, 0, "still on the first prompt");
+        advance(&pool, "MR99").await.unwrap();
+        let revealed: i64 = sqlx::query_scalar("SELECT revealed FROM round WHERE id = ?").bind(round).fetch_one(&pool).await.unwrap();
+        assert_eq!(revealed, 1, "the host moved on");
     }
 
     #[tokio::test]
@@ -2078,6 +2111,8 @@ mod tests {
         }
         let online: HashSet<i64> = ids.iter().copied().collect();
         start_game(&pool, "CC44").await.unwrap();
+        // The class's own advance runs in automatic mode only.
+        sqlx::query("UPDATE room SET auto_mode = 1 WHERE code = 'CC44'").execute(&pool).await.unwrap();
         let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'CC44' AND \"order\" = 0")
             .fetch_one(&pool).await.unwrap();
         let mut answers = Vec::new();
@@ -2225,6 +2260,8 @@ mod tests {
         maybe_advance_by_votes(&pool, "RD22", &online).await;
         assert_eq!(load(&pool, "RD22").await.unwrap().phase, "waiting", "votes never start the game");
         assert!(start_game(&pool, "RD22").await.unwrap());
+        // The class's own advance runs in automatic mode only.
+        sqlx::query("UPDATE room SET auto_mode = 1 WHERE code = 'RD22'").execute(&pool).await.unwrap();
         let snap = room_snapshot(&pool, "RD22", Some(&online)).await.unwrap();
         assert_eq!(snap["phase"], "playing");
         assert!(snap["target"].is_string());

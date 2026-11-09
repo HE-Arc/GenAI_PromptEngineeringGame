@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react'
-import { ConsoleBar, Criteria, PhaseClock, RoundTrack } from './ui'
+import { ConsoleBar, Criteria, RoundTrack } from './ui'
 import ModelOutput from './ModelOutput'
 import { ApiError, describe, getName, getToken, post, SCALE_MAX, SCALE_MIN, type State } from './api'
 import type { Link } from './useRoom'
@@ -113,8 +113,6 @@ export default function Rating({
       <ConsoleBar link={link} />
       {/* The skip link's target — see the note on `SkipLink` in App.tsx. */}
       <main className="screen screen--narrow screen--calm" id="main" tabIndex={-1}>
-        {/* Each prompt has its own clock: the server moves on when it runs out. */}
-        <PhaseClock timer={state.timer} seconds={state.rate_seconds} />
         {/* The one heading, and the focus target the phase change lands on. It says which prompt
             of the round is in front of the player, because that is the only navigation this
             screen has: there is no list to go back to, by design. */}

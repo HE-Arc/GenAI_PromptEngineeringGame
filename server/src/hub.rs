@@ -455,6 +455,8 @@ mod tests {
             hub.player_connected(&pool, "EV11", p.id).await;
         }
         crate::game::start_game(&pool, "EV11").await.unwrap();
+        // The class's own advance runs in automatic mode only.
+        sqlx::query("UPDATE room SET auto_mode = 1 WHERE code = 'EV11'").execute(&pool).await.unwrap();
         let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'EV11' AND \"order\" = 0")
             .fetch_one(&pool).await.unwrap();
         let a = crate::db::answers::insert_answer(&pool, round, ana.id, "p", "o").await.unwrap();

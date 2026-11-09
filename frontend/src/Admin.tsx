@@ -547,7 +547,7 @@ export default function Admin() {
   // The round's own clock (writing, rating), so the host sees the seconds the players see.
   const phaseWindow = useQuizWindow(state?.timer ?? null)
   const phaseLeft = phaseWindow.open && state
-    ? { left: phaseWindow.left, length: (state.phase === 'rating' ? state.rate_seconds : state.round_seconds) * 1000 }
+    ? { left: phaseWindow.left, length: state.round_seconds * 1000 }
     : undefined
   const verified = useRef(false)
   // Armed on the gate screen rather than on mount, because on the way in there is a « … » line
@@ -1032,13 +1032,14 @@ export default function Admin() {
         if (!r) return { state: 'La notation n’a pas encore commencé.' }
         return {
           state: `Prompt ${r.index + 1} sur ${r.count}.`,
-          timer: phaseLeft,
           figures: `${noun(r.rated, 'joueur a noté', 'joueurs ont noté')} ce prompt.`,
           // The sentence the board cannot say for itself. §4 hides every score for the whole
           // rating phase, so a host glancing at a console with no standings on it has no way to
           // tell a deliberate absence from a broken screen — and "is it broken" is exactly the
           // thought that makes someone press the button.
-          hint: 'Les scores et les autres prompts sont masqués : c’est voulu.',
+          hint: state?.auto_mode
+            ? 'Les scores et les autres prompts sont masqués : c’est voulu.'
+            : 'Pas de chrono : quand la classe a noté et discuté, passe au prompt suivant. Les scores sont masqués, c’est voulu.',
         }
       }
       case 'summary': {
