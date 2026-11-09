@@ -655,9 +655,6 @@ pub async fn admin_create(
         "round_seconds": game::ROUND_SECONDS,
         "rate_seconds": game::RATE_SECONDS,
         "quiz_seconds": game::QUIZ_SECONDS_DEFAULT,
-        // Every question and every exercise by default.
-        "quiz_count": game::quiz_count_range().1,
-        "round_count": game::round_count_range().1,
     });
     if let (Some(base), Some(given)) = (settings.as_object_mut(), data.as_object()) {
         base.extend(given.clone());
@@ -673,7 +670,8 @@ pub async fn admin_create(
 }
 
 // The room's settings, each written only when present in `data`: flags as
-// JSON booleans, durations and counts clamped to their range. Only a room still in the
+// JSON booleans, durations clamped to their range. The game's length is not a
+// setting (`game::quiz_count`, `game::round_count`). Only a room still in the
 // lobby is changed: once started, the game runs on what it began with — except the
 // durations, which `admin_settings` may change at any time (`any_phase`).
 async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value, any_phase: bool) {
@@ -687,8 +685,6 @@ async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value,
         ("round_seconds", game::ROUND_SECONDS, game::ROUND_SECONDS_RANGE),
         ("rate_seconds", game::RATE_SECONDS, game::RATE_SECONDS_RANGE),
         ("quiz_seconds", game::QUIZ_SECONDS_DEFAULT, game::QUIZ_SECONDS_RANGE),
-        ("quiz_count", game::QUIZ_COUNT_DEFAULT, game::quiz_count_range()),
-        ("round_count", game::ROUND_COUNT_DEFAULT, game::round_count_range()),
     ];
     for (key, default, range) in durations {
         if data.get(key).is_some() {
@@ -717,9 +713,8 @@ fn rand_bit() -> u128 {
     RAND_BIT.fetch_add(0x9e3779b9, std::sync::atomic::Ordering::Relaxed) as u128
 }
 
-// The host's durations and game length, in any phase. A duration applies from
-// the next window it times: a clock already running keeps its deadline. A
-// count changes the questions and rounds still to come (`game::resize_game`).
+// The host's durations, in any phase. A duration applies from the next
+// window it times: a clock already running keeps its deadline.
 pub async fn admin_settings(
     State(state): State<AppState>,
     Path(code): Path<String>,
@@ -734,20 +729,6 @@ pub async fn admin_settings(
         .filter_map(|k| data.get(*k).map(|v| (k.to_string(), v.clone())))
         .collect();
     apply_settings(&state.pool, &code, &serde_json::Value::Object(durations), true).await;
-    let count = |key: &str, default: i64, range: (i64, i64)| {
-        data.get(key).map(|v| game::clamp_seconds(Some(v), default, range))
-    };
-    let quiz_count = count("quiz_count", game::QUIZ_COUNT_DEFAULT, game::quiz_count_range());
-    let round_count = count("round_count", game::ROUND_COUNT_DEFAULT, game::round_count_range());
-    // In the lobby the counts are plain settings; after the start, resize_game draws or drops.
-    let counts = json!({"quiz_count": quiz_count, "round_count": round_count});
-    let counts: serde_json::Map<String, serde_json::Value> =
-        counts.as_object().into_iter().flatten().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k.clone(), v.clone())).collect();
-    apply_settings(&state.pool, &code, &serde_json::Value::Object(counts), false).await;
-    if let Err(e) = game::resize_game(&state.pool, &code, quiz_count, round_count).await {
-        tracing::error!(room = %code, error = %e, "game resize failed");
-        return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
-    }
     touch(&state, &code).await;
     (StatusCode::OK, Json(json!({"ok": true}))).into_response()
 }
@@ -851,6 +832,90 @@ pub async fn admin_next(
     (StatusCode::OK, Json(json!({"ok": true, "phase": phase}))).into_response()
 }
 
+// The admin's choice on the last summary, instead of ending the game: the
+// next optional exercise as one more round (`game::bonus_round`).
+pub async fn admin_bonus(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_room_admin(&state.pool, &headers, &code).await {
+        return e.into_response();
+    }
+    tracing::info!(room = %code, "admin pressed bonus round");
+    if let Err(e) = game::bonus_round(&state.pool, &code).await {
+        return err(StatusCode::CONFLICT, &e).into_response();
+    }
+    touch(&state, &code).await;
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+}
+
+// The admin's one-click pass of the question or round on screen
+// (`game::pass`). The console confirms first: the players lose that step.
+pub async fn admin_pass(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let room = match require_room_admin(&state.pool, &headers, &code).await {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    tracing::info!(room = %code, phase = %room.phase, "admin pressed pass");
+    if let Err(e) = game::pass(&state.pool, &code).await {
+        return err(StatusCode::CONFLICT, &e).into_response();
+    }
+    touch(&state, &code).await;
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ClockBody {
+    // "pause", "resume" or "add".
+    pub action: String,
+    // For "add": seconds to add, 1 to 600.
+    pub seconds: Option<i64>,
+}
+
+// The host's hand on the clock on screen: pause, resume, or add time.
+pub async fn admin_clock(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ClockBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_room_admin(&state.pool, &headers, &code).await {
+        return e.into_response();
+    }
+    let r = match body.action.as_str() {
+        "pause" => game::pause_clock(&state.pool, &code).await,
+        "resume" => game::resume_clock(&state.pool, &code).await,
+        "add" => game::add_time(&state.pool, &code, body.seconds.unwrap_or(30).clamp(1, 600)).await,
+        _ => return err(StatusCode::BAD_REQUEST, "unknown clock action").into_response(),
+    };
+    if let Err(e) = r {
+        return err(StatusCode::CONFLICT, &e).into_response();
+    }
+    touch(&state, &code).await;
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+}
+
+// The host ends the game now, from any step (`game::end_game`).
+pub async fn admin_end(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_room_admin(&state.pool, &headers, &code).await {
+        return e.into_response();
+    }
+    if let Err(e) = game::end_game(&state.pool, &code).await {
+        return err(StatusCode::CONFLICT, &e).into_response();
+    }
+    touch(&state, &code).await;
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+}
+
 // The admin's skip: past the rest of the quizz, or past the rating
 // straight to the round's summary. The console confirms first, since the
 // players lose the step they were on.
@@ -900,11 +965,11 @@ pub async fn admin_restart(
     log_failed(&code, "restart", sqlx::query("DELETE FROM quiz_attempt WHERE player_id IN (SELECT id FROM player WHERE room_code = ?)")
         .bind(&code).execute(&state.pool).await);
     log_failed(&code, "restart", sqlx::query("DELETE FROM ready WHERE room_code = ?").bind(&code).execute(&state.pool).await);
-    let mut upd = "UPDATE room SET current = 0, phase = 'waiting', quiz_index = 0, quiz_deadline = NULL, phase_deadline = NULL WHERE code = ?".to_string();
+    let mut upd = "UPDATE room SET current = 0, phase = 'waiting', quiz_index = 0, quiz_deadline = NULL, phase_deadline = NULL, paused_ms = NULL WHERE code = ?".to_string();
     let tutorial_bool = body.and_then(|b| b.0.tutorial).and_then(|v| v.as_bool());
     if let Some(t) = tutorial_bool {
         upd = format!(
-            "UPDATE room SET current = 0, phase = 'waiting', tutorial = {}, quiz_index = 0, quiz_deadline = NULL, phase_deadline = NULL WHERE code = ?",
+            "UPDATE room SET current = 0, phase = 'waiting', tutorial = {}, quiz_index = 0, quiz_deadline = NULL, phase_deadline = NULL, paused_ms = NULL WHERE code = ?",
             if t { 1 } else { 0 }
         );
     }

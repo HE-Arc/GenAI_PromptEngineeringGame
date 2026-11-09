@@ -756,7 +756,7 @@ function readClockPos(): { x: number; y: number } | null {
 // open. Portalled to <body> because every screen animates in with `transform`, and a transformed
 // ancestor both traps `position: fixed` (the drag lands in the wrong place) and its z-index.
 export function PhaseClock({ timer, seconds }: { timer: ServerWindow | null; seconds: number }) {
-  const { open, left } = useQuizWindow(timer)
+  const { open, left, paused } = useQuizWindow(timer)
   const ref = useRef<HTMLParagraphElement>(null)
   const drag = useRef<{ dx: number; dy: number; x0: number; y0: number; moved: boolean } | null>(null)
   const lastTap = useRef(0)
@@ -830,8 +830,9 @@ export function PhaseClock({ timer, seconds }: { timer: ServerWindow | null; sec
       onPointerCancel={() => {
         drag.current = null
       }}
-      data-state={secs > 5 ? 'open' : 'soon'}>
+      data-state={paused ? 'paused' : secs > 5 ? 'open' : 'soon'}>
       <Ring left={left} length={length} secs={secs} />
+      {paused && <span className="qclock__t">En pause</span>}
     </p>,
     document.body,
   )
@@ -960,7 +961,7 @@ export function Criteria({ items }: { items: string[] }) {
   )
 }
 
-// One way out of a confirm, and the label says what it does ("Passer la notation"), never "OK".
+// One way out of a confirm, and the label says what it does ("Sauter la notation (aller au résumé)"), never "OK".
 export type ConfirmChoice = { label: string; onChoose: () => void }
 
 // The confirm for an action the host cannot take back, or one that cuts players off mid-step.

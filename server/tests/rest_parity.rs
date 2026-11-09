@@ -594,13 +594,7 @@ async fn room_created_bare_then_configured_in_lobby_at_launch() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(row, (180, 30, 60, 1, 1), "defaults written at creation");
-    let counts: (i64, i64) = sqlx::query_as("SELECT quiz_count, round_count FROM room WHERE code = ?")
-        .bind(&code)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(counts, (6, 7), "every question and every exercise by default");
+    assert_eq!(row, (300, 60, 60, 1, 1), "defaults written at creation");
 
     server
         .post(&format!("/api/admin/rooms/{code}/start"))
@@ -617,7 +611,7 @@ async fn room_created_bare_then_configured_in_lobby_at_launch() {
     .unwrap();
     assert_eq!(row, ("playing".into(), 120, 300, 0, 0), "lobby settings applied, durations clamped");
 
-    // Mid-game, the durations and the counts still change; the flags do not.
+    // Mid-game, the durations still change; the flags and the game's length do not.
     server
         .post(&format!("/api/admin/rooms/{code}/settings"))
         .add_header("cookie", cookie.clone())
@@ -631,5 +625,5 @@ async fn room_created_bare_then_configured_in_lobby_at_launch() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(row, (240, 20, 0, 1), "durations and counts change after the start, flags do not");
+    assert_eq!(row, (240, 20, 0, 5), "durations change after the start; flags and length do not");
 }

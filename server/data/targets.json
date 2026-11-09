@@ -24,18 +24,6 @@
   ]
  },
  {
-  "category": "reformuler_ingenieur",
-  "text": "Dans le cadre d'un projet de semestre, vous avez rencontré une entreprise qui souhaite relier deux de ses sites par fibre optique. Pendant la réunion, vous avez pris les notes ci-dessous à la va-vite. Votre professeur vous demande maintenant de les transformer en une note technique claire, précise et vérifiable. Rédigez un prompt pour que l'IA vous aide à reformuler vos notes selon les standards attendus d'un ingénieur.\n\nRéunion avec l'entreprise ce matin pour le projet. Ils veulent relier leur siège et leur nouvel entrepôt par fibre optique, les deux sites sont à environ 600 km l'un de l'autre.\n\nLeur responsable pense que vu que la fibre c'est de la lumière, la connexion sera instantanée. La lumière fait 300 000 km par seconde, mais dans la fibre elle va moins vite, genre 200 000 km par seconde je crois.\n\nLeur logiciel de gestion de stock a des problèmes si le délai dépasse 5 millisecondes. Il faut qu'on vérifie si sa passe, et combien de temps sa prend pour l'aller-retour.\n\nIls parlent aussi d'ouvrir un autre site plus tard, à environ 1500 km.\n\nSource pour la vitesse dans la fibre : un article un site wikipedia fibre optique",
-  "tip": "Appliquez la bonne structuration du prompt pour obtenir une réponse synthétique et précise qui a les bonnes notations scientifiques des nombres, des références explicites et vérifiables et une formulation du texte adaptée.",
-  "image": null,
-  "criteria": [
-   "Le rôle et le public cible (note technique d'ingénieur) sont précisés",
-   "La notation scientifique et les unités sont demandées",
-   "Une référence explicite et vérifiable est demandée à la place de la source vague",
-   "Le format de la note est précisé (structure, ton, correction des fautes)"
-  ]
- },
- {
   "category": "corriger_resolution",
   "text": "Vous faites un devoir de mathématiques à la maison. Vous avez résolu l'exercice ci-dessous, mais en relisant votre travail, vous avez l'impression que quelque chose ne colle pas. Votre professeur n'est pas joignable et vous n'avez personne autour de vous pour vous aider. Aidez-vous d'un prompt pour résoudre le problème.\n\n**Problème**\nUne balle est lancée vers le haut depuis le toit d'un bâtiment. Sa hauteur h (en mètres) en fonction du temps t (en secondes) est donnée par :\nh(t) = −5t² + 10t + 15\nÀ quel instant la balle touche-t-elle le sol ?\n\n**Votre résolution**\nLa balle touche le sol quand h(t) = 0, je dois donc résoudre :\n−5t² + 10t + 15 = 0\nJ'identifie les coefficients : a = −5, b = 10 et c = 15. Je calcule le discriminant :\nΔ = b² − 4ac = 10² − 4 × (−5) × 15 = 100 + 300 = 400\nComme Δ > 0, il y a deux solutions, avec √Δ = 20 :\nt₁ = (−b + √Δ) / (2a) = (−10 + 20) / 10 = 1\nt₂ = (−b − √Δ) / (2a) = (−10 − 20) / 10 = −3",
   "tip": "Demandez à l'IA d'examiner votre résolution de math, de vous indiquer où est l'erreur et de vous expliquer le concept qui a mal été compris.",
@@ -60,20 +48,6 @@
   ]
  },
  {
-  "category": "generer_image",
-  "text": "Vous voulez avoir l'image d'un trapèze ABCD, générez l'image ci-dessous à l'aide d'un prompt.",
-  "tip": "Le but est d'évaluer à quel point vous êtes précis en donnant du contexte. Faites bien attention de préciser la grille, qu'elle est en cm, qu'il y a une légende, etc. L'IA ne peut pas deviner ce que vous oubliez.",
-  "image": "/exercices/trapeze.png",
-  "criteria": [
-   "La forme et les sommets sont nommés : trapèze ABCD avec les points A, B, C, D",
-   "Les deux bases sont précisées avec leurs mesures (grande base AB = 6 cm, petite base CD = 3 cm)",
-   "La hauteur h est demandée (3 cm), avec l'indication de sa position (perpendiculaire aux bases)",
-   "Le repère 2D est précisé : axe x en abscisse et axe y en ordonnée, gradués en cm",
-   "Une légende est demandée (reprenant les mesures AB, CD, h)",
-   "Le style visuel est précisé (grille, schéma, couleurs, fond) et les éléments parasites sont écartés"
-  ]
- },
- {
   "category": "graphique_donnees",
   "text": "À partir des données ci-dessous, générez ce graphique à l'aide d'un prompt. Les données sont fictives.\n\n| Mois | Précipitations (mm) |\n|---|---|\n| Janvier | 68 |\n| Février | 61 |\n| Mars | 66 |\n| Avril | 72 |\n| Mai | 98 |\n| Juin | 104 |\n| Juillet | 96 |\n| Août | 102 |\n| Septembre | 88 |\n| Octobre | 82 |\n| Novembre | 79 |\n| Décembre | 81 |",
   "tip": "Le but est de trouver grâce à l'IA un graphique qui permette de facilement visualiser ces données, faites bien attention au contexte.",
@@ -86,5 +60,33 @@
    "Une échelle des ordonnées allant jusqu'à 120 mm est précisée",
    "L'outil ou le format de sortie est précisé"
   ]
+ },
+ {
+  "category": "generer_image",
+  "text": "Vous voulez avoir l'image d'un trapèze ABCD, générez l'image ci-dessous à l'aide d'un prompt.",
+  "tip": "Le but est d'évaluer à quel point vous êtes précis en donnant du contexte. Faites bien attention de préciser la grille, qu'elle est en cm, qu'il y a une légende, etc. L'IA ne peut pas deviner ce que vous oubliez.",
+  "image": "/exercices/trapeze.png",
+  "criteria": [
+   "La forme et les sommets sont nommés : trapèze ABCD avec les points A, B, C, D",
+   "Les deux bases sont précisées avec leurs mesures (grande base AB = 6 cm, petite base CD = 3 cm)",
+   "La hauteur h est demandée (3 cm), avec l'indication de sa position (perpendiculaire aux bases)",
+   "Le repère 2D est précisé : axe x en abscisse et axe y en ordonnée, gradués en cm",
+   "Une légende est demandée (reprenant les mesures AB, CD, h)",
+   "Le style visuel est précisé (grille, schéma, couleurs, fond) et les éléments parasites sont écartés"
+  ],
+  "optional": true
+ },
+ {
+  "category": "reformuler_ingenieur",
+  "text": "Dans le cadre d'un projet de semestre, vous avez rencontré une entreprise qui souhaite relier deux de ses sites par fibre optique. Pendant la réunion, vous avez pris les notes ci-dessous à la va-vite. Votre professeur vous demande maintenant de les transformer en une note technique claire, précise et vérifiable. Rédigez un prompt pour que l'IA vous aide à reformuler vos notes selon les standards attendus d'un ingénieur.\n\nRéunion avec l'entreprise ce matin pour le projet. Ils veulent relier leur siège et leur nouvel entrepôt par fibre optique, les deux sites sont à environ 600 km l'un de l'autre.\n\nLeur responsable pense que vu que la fibre c'est de la lumière, la connexion sera instantanée. La lumière fait 300 000 km par seconde, mais dans la fibre elle va moins vite, genre 200 000 km par seconde je crois.\n\nLeur logiciel de gestion de stock a des problèmes si le délai dépasse 5 millisecondes. Il faut qu'on vérifie si sa passe, et combien de temps sa prend pour l'aller-retour.\n\nIls parlent aussi d'ouvrir un autre site plus tard, à environ 1500 km.\n\nSource pour la vitesse dans la fibre : un article un site wikipedia fibre optique",
+  "tip": "Appliquez la bonne structuration du prompt pour obtenir une réponse synthétique et précise qui a les bonnes notations scientifiques des nombres, des références explicites et vérifiables et une formulation du texte adaptée.",
+  "image": null,
+  "criteria": [
+   "Le rôle et le public cible (note technique d'ingénieur) sont précisés",
+   "La notation scientifique et les unités sont demandées",
+   "Une référence explicite et vérifiable est demandée à la place de la source vague",
+   "Le format de la note est précisé (structure, ton, correction des fautes)"
+  ],
+  "optional": true
  }
 ]

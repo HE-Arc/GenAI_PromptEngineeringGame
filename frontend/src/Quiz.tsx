@@ -75,7 +75,7 @@ export default function Quiz({
   // The only clock on this screen, and it is the server's. See `serverClock.ts`: the skew is
   // measured once per frame and frozen, and `open` is a comparison against `deadline_ms` rather
   // than a timer that has been running since mount.
-  const { open, left } = useQuizWindow(quiz)
+  const { open, left, paused } = useQuizWindow(quiz)
   const windowLength = state.quiz_seconds * 1000
 
   // Fetched once. An effect because the bank does not arrive with the snapshot and cannot be
@@ -338,10 +338,11 @@ export default function Quiz({
                 and a phone whose time is two minutes out locks on the same side of the question
                 as everybody else. When the window is shut the number is replaced by the word,
                 because "0" running down into minus one is not a state the room is ever in. */}
-            <p className="qclock" data-state={open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
+            <p className="qclock" data-state={paused ? 'paused' : open ? (secs > 5 ? 'open' : 'soon') : 'closed'}>
               {open ? (
                 <>
                   <Ring left={left} length={windowLength} secs={secs} />
+                  {paused && <span className="qclock__t">En pause</span>}
                 </>
               ) : (
                 <span className="qclock__t qclock__t--closed">

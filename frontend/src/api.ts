@@ -28,6 +28,8 @@ export interface QuizState {
   choices: string[]
   deadline_ms: number
   server_ms: number
+  // Time left while the host has paused the question, or null while it runs.
+  paused_left_ms?: number | null
   revealed: boolean
   correct: number | null
   explanation: string | null
@@ -185,7 +187,9 @@ export type State = {
   target_criteria: string[]
   // The clock of the phase on screen — writing a prompt, rating one — or null when nothing is
   // timed. Same two clocks as `QuizState`, read through `useQuizWindow`.
-  timer: { deadline_ms: number; server_ms: number } | null
+  timer: { deadline_ms: number; server_ms: number; paused_left_ms?: number | null } | null
+  // The host paused the clock on screen (quizz question, writing, rating).
+  paused: boolean
   // Fixed for the whole game, so a screen can read it once instead of inferring anonymity from
   // whether a name happens to be present.
   anonymous: boolean
@@ -201,6 +205,9 @@ export type State = {
   // How long the game is: quizz questions and prompt rounds, set in the lobby.
   quiz_count: number
   round_count: number
+  // Optional exercises the host can still add as bonus rounds. Non-zero only on the summary of
+  // the last round, the one moment the console offers « Lancer une manche bonus » beside « Terminer et afficher le classement ».
+  bonus_left: number
   max_attempts: number
   my_attempts: number
   // A conversation round chains its prompts instead of replacing them: each send continues

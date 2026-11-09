@@ -51,11 +51,18 @@ export type QuizWindow = {
   /** Milliseconds left on the server's clock. Goes negative once the deadline has passed; every
    * caller checks `open` before it reads this, and nothing else. */
   left: number
+  /** The host paused this clock: `left` is frozen and `open` stays true. */
+  paused: boolean
 }
 
 /** Any server-timed window: the quizz's `QuizState`, or the snapshot's `timer` (writing a
  * prompt, rating one). Both carry the same two clocks. */
-export type ServerWindow = { deadline_ms: number; server_ms: number }
+export type ServerWindow = {
+  deadline_ms: number
+  server_ms: number
+  /** Set while the host has paused the clock: the time left, which does not count down. */
+  paused_left_ms?: number | null
+}
 
 export function useQuizWindow(quiz: ServerWindow | null): QuizWindow {
   const serverMs = quiz?.server_ms ?? null
@@ -83,13 +90,17 @@ export function useQuizWindow(quiz: ServerWindow | null): QuizWindow {
   // there is a window to count down and is torn down by the same comparison that locks the
   // choices — the moment the deadline passes, or the moment the stream dies mid-window, this
   // stops and nothing is left running behind a closed question.
-  const left = clock !== null && quiz !== null ? quiz.deadline_ms - (clock.at + clock.skew) : 0
-  const open = clock !== null && quiz !== null && left > 0
+  const pausedLeft = quiz?.paused_left_ms ?? null
+  const paused = pausedLeft !== null
+  const left = paused ? pausedLeft : clock !== null && quiz !== null ? quiz.deadline_ms - (clock.at + clock.skew) : 0
+  const open = paused || (clock !== null && quiz !== null && left > 0)
+  // A paused clock has nothing to sample: no timer runs behind a frozen figure.
+  const ticking = open && !paused
   useEffect(() => {
-    if (!open) return
+    if (!ticking) return
     const t = setInterval(() => setClock((c) => (c && { ...c, at: Date.now() })), BEAT_MS)
     return () => clearInterval(t)
-  }, [open])
+  }, [ticking])
 
-  return { open, left }
+  return { open, left, paused }
 }

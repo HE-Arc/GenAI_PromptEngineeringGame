@@ -77,21 +77,22 @@ function advanceLabel(
   windowClosed: boolean,
   submitted: number,
   lastPrompt: boolean,
+  lastRound: boolean,
 ): string | null {
   switch (phase) {
     case 'waiting':
       return 'Lancer la partie'
     case 'quiz':
       if (!quiz) return null
-      if (!windowClosed) return 'Fermer la question'
-      return quiz.index + 1 >= quiz.total ? 'Ouvrir la partie' : 'Question suivante'
+      if (!windowClosed) return 'Afficher la réponse'
+      return quiz.index + 1 >= quiz.total ? 'Commencer la première manche' : 'Question suivante'
     case 'playing':
       // Nothing to rate: the same press closes the round into its summary.
-      return submitted === 0 ? 'Passer la manche' : 'Ouvrir la notation'
+      return submitted === 0 ? 'Voir le résumé de la manche' : 'Arrêter l’écriture et noter les prompts'
     case 'rating':
-      return lastPrompt ? 'Terminer la notation' : 'Prompt suivant'
+      return lastPrompt ? 'Voir le résumé de la manche' : 'Noter le prompt suivant'
     case 'summary':
-      return 'Manche suivante'
+      return lastRound ? 'Terminer et afficher le classement' : 'Lancer la manche suivante'
     case 'done':
       return null
   }
@@ -397,8 +398,6 @@ type RoomSettings = {
   auto_mode: boolean
   round_seconds: string
   quiz_seconds: string
-  quiz_count: string
-  round_count: string
 }
 
 function settingsOf(state: State): RoomSettings {
@@ -408,8 +407,6 @@ function settingsOf(state: State): RoomSettings {
     auto_mode: state.auto_mode,
     round_seconds: String(state.round_seconds),
     quiz_seconds: String(state.quiz_seconds),
-    quiz_count: String(state.quiz_count),
-    round_count: String(state.round_count),
   }
 }
 
@@ -434,14 +431,12 @@ const FLAGS: { key: 'tutorial' | 'anonymous' | 'auto_mode'; label: string; hint:
 // The number fields: game length, then durations. The bounds match the server's clamps (the
 // counts' maxima are what server/data holds: 6 questions, 7 exercises).
 const NUMBERS: {
-  key: 'quiz_count' | 'round_count' | 'round_seconds' | 'quiz_seconds'
+  key: 'round_seconds' | 'quiz_seconds'
   label: string
   min: number
   max: number
   unit: string
 }[] = [
-  { key: 'quiz_count', label: 'Nombre de questions du quizz', min: 1, max: 6, unit: 'questions' },
-  { key: 'round_count', label: 'Nombre de manches de prompt', min: 1, max: 7, unit: 'manches' },
   { key: 'round_seconds', label: 'Temps par manche en secondes', min: 10, max: 600, unit: 'secondes' },
   { key: 'quiz_seconds', label: 'Temps par question du quizz en secondes', min: 5, max: 300, unit: 'secondes' },
 ]
@@ -552,7 +547,7 @@ export default function Admin() {
   // The round's own clock (writing, rating), so the host sees the seconds the players see.
   const phaseWindow = useQuizWindow(state?.timer ?? null)
   const phaseLeft = phaseWindow.open && state
-    ? { left: phaseWindow.left, length: state.round_seconds * 1000 }
+    ? { left: phaseWindow.left, length: (state.phase === 'rating' ? state.rate_seconds : state.round_seconds) * 1000 }
     : undefined
   const verified = useRef(false)
   // Armed on the gate screen rather than on mount, because on the way in there is a « … » line
@@ -871,7 +866,7 @@ export default function Admin() {
 
   // The window's state, on the host's screen as well as the players'. `revealed` is the server's
   // own word and it only turns on the next frame; the comparison turns at the deadline itself, so
-  // the OR is what lets a host press "Fermer la question" the instant the class has finished
+  // the OR is what lets a host press "Afficher la réponse" the instant the class has finished
   // talking rather than up to half a second later.
   const quizState = state?.quiz ?? null
   const quizClosed = quizState ? quizState.revealed || !quizWindow.open : true
@@ -882,7 +877,9 @@ export default function Admin() {
   const submitted = players.filter((p) => p.answered).length
   const reveal = state?.reveal ?? null
   const lastPrompt = reveal !== null && reveal.index + 1 >= reveal.count
-  const advance = phase === 'connecting' ? null : advanceLabel(phase, quizState, quizClosed, submitted, lastPrompt)
+  const lastRound = state !== null && state.total > 0 && state.current + 1 >= state.total
+  const bonusLeft = phase === 'summary' ? (state?.bonus_left ?? 0) : 0
+  const advance = phase === 'connecting' ? null : advanceLabel(phase, quizState, quizClosed, submitted, lastPrompt, lastRound)
   // Why the advance cuts players off, or null when it cuts nobody off. The host can always move
   // on; this only decides whether they are asked first.
   const advanceWarning = ((): string | null => {
@@ -913,24 +910,66 @@ export default function Admin() {
     switch (phase) {
       case 'quiz':
         return {
-          label: 'Passer le quizz',
+          label: 'Sauter le reste du quizz',
           body: 'Les questions restantes du quizz sont sautées et la première manche s’ouvre tout de suite. Impossible d’y revenir.',
         }
       case 'playing':
         if (submitted === 0) return null
         return {
-          label: 'Passer la notation',
+          label: 'Sauter la notation (aller au résumé)',
           body: `La manche va directement au résumé, sans notation par la classe : aucun prompt de la manche ne sera noté.${left > 0 ? ` ${noun(left, 'joueur n’a', 'joueurs n’ont')} pas encore envoyé de prompt et ne pourront plus répondre.` : ''}`,
         }
       case 'rating':
         return {
-          label: 'Passer la notation',
+          label: 'Sauter la notation (aller au résumé)',
           body: 'La notation s’arrête et la manche va au résumé. Les notes déjà données comptent ; les prompts pas encore notés restent sans note.',
         }
       default:
         return null
     }
   })()
+
+  // The one-click pass: the question or round on screen is dropped and the next one opens, with
+  // no reveal, rating or summary. Hidden where another button already does the same thing: once
+  // a question's answer is shown (« Question suivante »), and on the last round (it can only go
+  // to its summary, which « Sauter la notation » / « Voir le résumé » already do).
+  const pass = ((): { label: string; body: string } | null => {
+    switch (phase) {
+      case 'quiz': {
+        if (!quizState || quizClosed) return null
+        const last = quizState.index + 1 >= quizState.total
+        return {
+          label: 'Passer cette question',
+          body: last
+            ? 'La question est retirée sans afficher la réponse, et la première manche s’ouvre tout de suite.'
+            : 'La question est retirée sans afficher la réponse, et la question suivante s’ouvre tout de suite.',
+        }
+      }
+      case 'playing':
+      case 'rating':
+        if (lastRound) return null
+        return {
+          label: 'Passer cette manche',
+          body: 'La manche s’arrête sans notation ni résumé, et la manche suivante s’ouvre tout de suite. Les notes déjà données comptent ; un prompt en cours de génération sera perdu.',
+        }
+      default:
+        return null
+    }
+  })()
+
+  // The host's hand on the clock on screen: the open quizz question, the writing, the prompt being
+  // rated, or a timed summary. Shown while that clock runs or is paused, never on a closed window.
+  const paused = state?.paused ?? false
+  const clockOn =
+    paused ||
+    (phase === 'quiz' && !quizClosed) ||
+    ((phase === 'playing' || phase === 'rating' || phase === 'summary') && phaseWindow.open)
+  const clock = (body: { action: 'pause' | 'resume' | 'add'; seconds?: number }) =>
+    void run(() => post(`/api/admin/rooms/${code}/clock`, body))
+  // Ending now, from any step. Hidden on the last summary, where the main button already ends.
+  const canEnd =
+    (phase === 'quiz' || phase === 'playing' || phase === 'rating' || phase === 'summary') &&
+    !(phase === 'summary' && lastRound)
 
   // Where the game is, in one block. Every figure is read off the snapshot and nothing is stored,
   // so the block cannot disagree with the instruments below it — which is the failure it is
@@ -993,6 +1032,7 @@ export default function Admin() {
         if (!r) return { state: 'La notation n’a pas encore commencé.' }
         return {
           state: `Prompt ${r.index + 1} sur ${r.count}.`,
+          timer: phaseLeft,
           figures: `${noun(r.rated, 'joueur a noté', 'joueurs ont noté')} ce prompt.`,
           // The sentence the board cannot say for itself. §4 hides every score for the whole
           // rating phase, so a host glancing at a console with no standings on it has no way to
@@ -1014,9 +1054,11 @@ export default function Admin() {
           // with nothing after it would be the console's version of a stall, and this is the
           // moment in a game where the host is most likely to be talking and least likely to be
           // watching a screen.
-          hint: last
-            ? 'C’est la dernière : lance le classement final quand la classe a fini.'
-            : 'La partie attend ton bouton pour la manche suivante.',
+          hint: !last
+            ? 'La partie attend ton bouton pour la manche suivante.'
+            : (state?.bonus_left ?? 0) > 0
+              ? `C’est la dernière : termine la partie, ou lance une manche bonus (${state?.bonus_left} restante${(state?.bonus_left ?? 0) > 1 ? 's' : ''}).`
+              : 'C’est la dernière : lance le classement final quand la classe a fini.',
         }
       }
       case 'done':
@@ -1229,7 +1271,10 @@ export default function Admin() {
                 <ul className="kick">
                   {players.map((p) => (
                     <li className="kick__row" key={p.name}>
-                      <span className="kick__name">{p.name}</span>
+                      <span className="kick__name">
+                        {p.name}
+                        {!p.online && <span className="prose--dim"> · déconnecté</span>}
+                      </span>
                       <button
                         type="button"
                         className="btn btn--ghost"
@@ -1287,7 +1332,7 @@ export default function Admin() {
 {/* The quiz phase counts the players who have finished the quizz, because
                 that is what is holding the gate; the rating phase counts the players who have
                 scored the prompt on screen, which is the only question the host has to answer
-                between "Prompt suivant" presses. */}
+                between "Noter le prompt suivant" presses. */}
             {phase === 'quiz' && (
               <AnswerMeter
                 lit={players.flatMap((p, i) => (p.quiz_done ? [i] : []))}
@@ -1382,7 +1427,26 @@ export default function Admin() {
                 </button>
                 <p className="prose prose--sm prose--dim">
                   Les durées comptent dès la prochaine manche ou question : le chrono en cours ne change pas.
-                  Le nombre de questions et de manches ne descend jamais sous celle en cours.
+                </p>
+              </section>
+            )}
+
+            {clockOn && (
+              <section className="stack" aria-label="Chrono">
+                <p className="label">Chrono{paused ? ' — en pause' : ''}</p>
+                <div className="clockctl">
+                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => clock({ action: paused ? 'resume' : 'pause' })}>
+                    {paused ? 'Reprendre le chrono' : 'Mettre en pause'}
+                  </button>
+                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => clock({ action: 'add', seconds: 30 })}>
+                    +30 s
+                  </button>
+                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => clock({ action: 'add', seconds: 60 })}>
+                    +1 min
+                  </button>
+                </div>
+                <p className="prose prose--sm prose--dim">
+                  En pause, rien ne se ferme tout seul : les joueurs peuvent encore répondre ou noter.
                 </p>
               </section>
             )}
@@ -1420,6 +1484,53 @@ export default function Admin() {
                   }}
                 >
                   {advance}
+                </button>
+              )}
+              {bonusLeft > 0 && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--wide"
+                  disabled={busy}
+                  onClick={() => void run(() => post(`/api/admin/rooms/${code}/bonus`))}
+                >
+                  Lancer une manche bonus ({bonusLeft} restante{bonusLeft > 1 ? 's' : ''})
+                </button>
+              )}
+              {pass && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--wide"
+                  disabled={busy}
+                  onClick={() =>
+                    ask({
+                      title: `${pass.label} ?`,
+                      body: <p>{pass.body}</p>,
+                      choices: [choice(pass.label, () => run(() => post(`/api/admin/rooms/${code}/pass`)))],
+                    })
+                  }
+                >
+                  {pass.label}
+                </button>
+              )}
+              {canEnd && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--wide"
+                  disabled={busy}
+                  onClick={() =>
+                    ask({
+                      title: 'Terminer la partie maintenant ?',
+                      body: (
+                        <p>
+                          La partie s’arrête tout de suite et le classement final s’affiche. Les notes déjà données
+                          comptent ; les questions et manches restantes ne sont pas jouées.
+                        </p>
+                      ),
+                      choices: [choice('Terminer maintenant', () => run(() => post(`/api/admin/rooms/${code}/end`)))],
+                    })
+                  }
+                >
+                  Terminer la partie maintenant
                 </button>
               )}
               {skip && (
