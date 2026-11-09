@@ -15,7 +15,6 @@ Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/G
 - No decisions logged yet.
 
 ## Notes
-- Merge pull request #2 from HE-Arc/server_rewrite
 - Rustls, limites 5000 tokens / 1000 chars, intitule prompt en accent
 - Fusion server_rewrite : rustls, limites 5000 tokens / 1000 chars, intitule prompt en accent
 - Improve frontend UI with layered visual polish
@@ -25,6 +24,7 @@ Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/G
 - New feature: feat: token usage stats page and in-panel exercise copy button [frontend/src/App.tsx]
 - Merge: fix: keep the page put while typing low in an autosizing field
 - New feature: feat: host picks the number of quiz questions and prompt rounds (default 5 and 5) [frontend/src/Admin.tsx]
+- New feature: feat: new quiz and prompt content, live game settings, player removal, event-scale rate limits [frontend/src/Admin.tsx]
 
 ## Key files
 - `server/Cargo.lock`

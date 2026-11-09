@@ -365,7 +365,9 @@ export function Readout({
     window.clearTimeout(resetTimer.current)
     resetTimer.current = window.setTimeout(() => setCopied('no'), 1800)
   }
-  const size = TIERS.find((t) => value.length <= t.max)!.size
+  // An exercise is always a paragraph card: sizing it by length drew a short one (the trapèze,
+  // 93 characters) as a gold headline while every other exercise read as body text.
+  const size = consigne ? 'text' : TIERS.find((t) => value.length <= t.max)!.size
   return (
     // The tier rides on the panel, not on the text, so every rule below can be written as
     // `.readout[data-size=…] .readout__value` and win on specificity rather than on
