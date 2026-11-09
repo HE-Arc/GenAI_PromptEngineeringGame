@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import { AnswerMeter, Board, ConfirmModal, ConsoleBar, Criteria, Readout, Ring, Roster, RosterList, Step, type ConfirmChoice } from './ui'
 import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
+import ModelOutput from './ModelOutput'
 import { absent, ApiError, describe, listRooms, post, present, type Phase, type QuizState, type RoomSummary, type State } from './api'
 import { useRoom } from './useRoom'
 
@@ -1210,6 +1211,9 @@ export default function Admin() {
               <section className="stack" aria-label="Prompt en cours de notation">
                 <p className="label">Prompt noté en ce moment</p>
                 <pre className="slot">{state.reveal.prompt}</pre>
+                {/* The model's answer the class is grading, as the players see it. */}
+                <p className="label">Réponse du modèle</p>
+                <ModelOutput text={state.reveal.output} />
               </section>
             )}
 

@@ -440,7 +440,8 @@ async fn draw_questions(
     Ok(())
 }
 
-// Appends `count` random rounds, numbered from `from`, skipping the targets in `used`.
+// Appends `count` rounds in targets.json order, numbered from `from`,
+// skipping the targets in `used`: the exercises follow the file, not a draw.
 async fn draw_rounds(
     conn: &mut sqlx::SqliteConnection,
     code: &str,
@@ -449,7 +450,7 @@ async fn draw_rounds(
     used: &[String],
 ) -> Result<(), sqlx::Error> {
     let all = targets();
-    let fresh = shuffled(all.len()).into_iter().map(|i| &all[i]).filter(|t| !used.contains(&t.text));
+    let fresh = all.iter().filter(|t| !used.contains(&t.text));
     for (pos, t) in (from..).zip(fresh.take(count.max(0) as usize)) {
         sqlx::query("INSERT INTO round (room_code, \"order\", target) VALUES (?, ?, ?)")
             .bind(code)
@@ -573,8 +574,8 @@ pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Err
     if claimed != 1 {
         return Ok(false);
     }
-    // A fresh random draw on every start, restarts included: `quiz_count`
-    // questions from the bank and `round_count` targets, each in random order.
+    // A fresh draw on every start, restarts included: `quiz_count` random
+    // questions from the bank, and the first `round_count` targets in file order.
     // Attempts cannot exist yet: nobody can answer before the start, and a
     // restart deletes them.
     sqlx::query("DELETE FROM quiz_question WHERE room_code = ?")
@@ -1669,7 +1670,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_start_draws_questions_and_targets_at_random() {
+    async fn each_start_draws_questions_at_random_and_targets_in_file_order() {
         let pool = crate::db::test_pool().await;
         crate::db::rooms::create_room(&pool, "RN44").await.unwrap();
         let mut firsts = HashSet::new();
@@ -1682,11 +1683,12 @@ mod tests {
                 .fetch_all(&pool).await.unwrap();
             assert_eq!(targets.len() as i64, ROUND_COUNT_DEFAULT);
             assert_eq!(prompts.len() as i64, QUIZ_COUNT_DEFAULT);
-            assert_eq!(targets.iter().collect::<HashSet<_>>().len(), targets.len(), "no target twice");
+            let in_file: Vec<&str> = super::targets().iter().take(targets.len()).map(|t| t.text.as_str()).collect();
+            assert_eq!(targets, in_file, "targets follow the file order");
             assert_eq!(prompts.iter().collect::<HashSet<_>>().len(), prompts.len(), "no question twice");
-            firsts.insert((targets[0].clone(), prompts[0].clone()));
+            firsts.insert(prompts[0].clone());
         }
-        assert!(firsts.len() > 1, "20 starts never changed the draw");
+        assert!(firsts.len() > 1, "20 starts never changed the quizz draw");
     }
 
     #[tokio::test]

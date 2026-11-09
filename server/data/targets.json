@@ -75,16 +75,16 @@
  },
  {
   "category": "graphique_donnees",
-  "text": "À partir des données ci-dessous, générez un graphique à l'aide d'un prompt. Les données sont fictives.\n\n| Mois | Précipitations (mm) |\n|---|---|\n| Janvier | 68 |\n| Février | 61 |\n| Mars | 66 |\n| Avril | 72 |\n| Mai | 98 |\n| Juin | 104 |\n| Juillet | 96 |\n| Août | 102 |\n| Septembre | 88 |\n| Octobre | 82 |\n| Novembre | 79 |\n| Décembre | 81 |",
+  "text": "À partir des données ci-dessous, générez ce graphique à l'aide d'un prompt. Les données sont fictives.\n\n| Mois | Précipitations (mm) |\n|---|---|\n| Janvier | 68 |\n| Février | 61 |\n| Mars | 66 |\n| Avril | 72 |\n| Mai | 98 |\n| Juin | 104 |\n| Juillet | 96 |\n| Août | 102 |\n| Septembre | 88 |\n| Octobre | 82 |\n| Novembre | 79 |\n| Décembre | 81 |",
   "tip": "Le but est de trouver grâce à l'IA un graphique qui permette de facilement visualiser ces données, faites bien attention au contexte.",
   "image": "/exercices/precipitations.png",
   "criteria": [
    "Toutes les données (12 mois avec leurs valeurs) sont recopiées dans le prompt",
-   "Le type de graphique est précisé et adapté à des données mensuelles",
-   "Un titre explicite pour le graphique est demandé",
-   "Les axes ou les légendes sont nommés avec leur unité : « Mois » et « Précipitations (mm) »",
+   "Le type de graphique est précisé : un histogramme en barres avec les 12 mois en abscisse",
+   "Le titre « Précipitations mensuelles d'une station fictive » (ou équivalent) est demandé",
+   "Les axes sont nommés avec leur unité : « Mois » et « Précipitations (mm) »",
+   "Une échelle des ordonnées allant jusqu'à 120 mm est précisée",
    "L'outil ou le format de sortie est précisé"
-  ],
-  "hide_image": true
+  ]
  }
 ]
