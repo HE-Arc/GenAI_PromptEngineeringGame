@@ -1,4 +1,4 @@
-/* The didacticiel's clock, and the only place in this console where the time comes from the
+/* The quizz's clock, and the only place in this console where the time comes from the
  * server rather than from the phone.
  *
  * The thirty seconds belong to the ROOM: one question, one window, one instant of revelation for
@@ -53,7 +53,7 @@ export type QuizWindow = {
   left: number
 }
 
-/** Any server-timed window: the didacticiel's `QuizState`, or the snapshot's `timer` (writing a
+/** Any server-timed window: the quizz's `QuizState`, or the snapshot's `timer` (writing a
  * prompt, rating one). Both carry the same two clocks. */
 export type ServerWindow = { deadline_ms: number; server_ms: number }
 

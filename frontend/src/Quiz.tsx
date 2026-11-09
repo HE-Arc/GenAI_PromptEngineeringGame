@@ -15,7 +15,7 @@ import {
 } from './api'
 import type { Link } from './useRoom'
 
-/* The didacticiel: ONE question for the whole room, thirty seconds that belong to the server,
+/* The quizz: ONE question for the whole room, thirty seconds that belong to the server,
  * and a reveal that lands for everyone at the same instant.
  *
  * The screen owns none of the sequence. Which question is on screen is `state.quiz.index`, whether
@@ -24,7 +24,7 @@ import type { Link } from './useRoom'
  * whole point: a cursor is a browser invention, so a reload used to throw it away, the player came
  * back to question one, answered it again, got the unique-constraint 409, and — because « Suivant »
  * is only drawn once the reveal is on screen and a 409 never produces one — had no way forward at
- * all. Not a bad end to a question. An unreachable end of the didacticiel.
+ * all. Not a bad end to a question. An unreachable end of the quizz.
  */
 
 // The letters are on the buttons and not in the text: a class of ten reading the same four rows
@@ -233,7 +233,7 @@ export default function Quiz({
       // or the phone came back after it. There is no cursor to move any more, so there is nothing
       // to skip to — the honest repair is to record the lock and let the reveal say what it says.
       // Matched on the reason as well as the status, because `already answered` is also what the
-      // same route returns when the didacticiel has closed under the player, and that one wants
+      // same route returns when the quizz has closed under the player, and that one wants
       // the ordinary error line, already translated in `api.ts` for this phase.
       if (e instanceof ApiError && e.status === 409 && e.message === 'already answered') {
         setAnswered((a) => ({ ...a, [order]: null }))
@@ -276,7 +276,7 @@ export default function Quiz({
 
   const secs = countdown(left)
 
-  // The class ranking, sorted on the didacticiel's own score. Sorted here rather than asked of
+  // The class ranking, sorted on the quizz's own score. Sorted here rather than asked of
   // the snapshot: `Player.quiz_score` is per player already, and the server sorts the game
   // standings by something else entirely, so the one order this screen needs is not the one
   // that arrives. A stable sort leaves equal scores in join order, and a tie is a tie — no
@@ -295,7 +295,7 @@ export default function Quiz({
             says what the screen is rather than which question it is on, because the clock label
             and the panel below already say that and would be heard twice otherwise. */}
         <h1 className="visually-hidden" tabIndex={-1}>
-          Didacticiel du prompt engineering
+          Quizz du prompt engineering
         </h1>
 
         {/* One live region for the whole screen, mounted from the first frame because a region
@@ -391,6 +391,7 @@ export default function Quiz({
                 standing up, one-handed, in a room, eight times in a row. `disabled` rather than
                 removed once answered, so the list a player just chose from stays on screen where
                 their thumb is, and the verdict lands on it rather than replacing it. */}
+            <p className="prose prose--sm prose--dim">Une seule réponse possible.</p>
             <div className="choices">
               {question.choices.map((text, i) => {
                 const isKey = key !== null && i === key
@@ -522,10 +523,10 @@ export default function Quiz({
           </>
         )}
 
-        {/* The eight-question ranking, and only the didacticiel's. It is here rather than on a
+        {/* The eight-question ranking, and only the quizz's. It is here rather than on a
             separate screen because the player has just been told what they got right and the
             question they actually have is "was that good". It is deliberately not the game's
-            leaderboard and not `Board`: the didacticiel score never enters the final ranking, so
+            leaderboard and not `Board`: the quizz score never enters the final ranking, so
             drawing it with the instrument that draws the standings would be drawing the same
             object twice in two places with two different meanings.
             *
@@ -542,7 +543,7 @@ export default function Quiz({
               </p>
             </div>
 
-            <Section title="Classement du didacticiel">
+            <Section title="Classement du quizz">
               <div className="qboard__list">
                 {rows.map((p, i) => (
                   <div className="qboard__row" key={p.name}>

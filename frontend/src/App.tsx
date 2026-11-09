@@ -272,7 +272,7 @@ export default function App() {
       )
     // Both of these are gated screens the phase switch opens and closes. The eight questions and
     // the nine prompts are short, deliberate and single-purpose: a composer half-written on the
-    // play screen has to be somewhere to go while the didacticiel runs, and unmounting this
+    // play screen has to be somewhere to go while the quizz runs, and unmounting this
     // screen is where its local question index and the note in flight go.
     case 'quiz':
       return (

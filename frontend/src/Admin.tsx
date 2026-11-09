@@ -48,7 +48,7 @@ function roomsEveryMs(rooms: RoomSummary[]): number {
 const PHASE_NAME: Record<Phase | 'connecting', string> = {
   connecting: 'Connexion',
   waiting: 'En attente',
-  quiz: 'Didacticiel',
+  quiz: 'Quizz',
   playing: 'Rédaction',
   rating: 'Notation croisée',
   summary: 'Résumé de manche',
@@ -61,7 +61,7 @@ const PHASE_NAME: Record<Phase | 'connecting', string> = {
 // what will happen next rather than repeating the phase, because the phase is a word from the
 // contract and a button labelled `rating` tells an admin nothing they can act on.
 //
-// The didacticiel is in here and not in the spec's list of four, and it carries the only label in
+// The quizz is in here and not in the spec's list of four, and it carries the only label in
 // the console that is not a constant. One button, three jobs, all of them read off the snapshot:
 // §2 gives the host the power to close a question that is still open ("the same button closes the
 // question in progress when it is pressed before the deadline, to move faster once the class has
@@ -136,7 +136,7 @@ function useMountFocus<T extends HTMLElement>(armed = true) {
 }
 
 // The two relaunch targets, drawn together because they are always offered together: after a
-// finished game, where a relaunch is the obvious thing to do and "with the didacticiel" is the
+// finished game, where a relaunch is the obvious thing to do and "with the quizz" is the
 // primary action, and behind the armed confirm of a running one, where both are the ghost half of
 // a destructive pair. Same two buttons, same order, same strings — the only difference between
 // the two sites is which of them is primary, so that is the only thing this component takes.
@@ -160,7 +160,7 @@ function RelaunchButtons({
         disabled={busy}
         onClick={() => onRestart(true)}
       >
-        Relancer avec le didacticiel
+        Relancer avec le quizz
       </button>
       <button
         type="button"
@@ -168,7 +168,7 @@ function RelaunchButtons({
         disabled={busy}
         onClick={() => onRestart(false)}
       >
-        Relancer sans didacticiel
+        Relancer sans quizz
       </button>
     </>
   )
@@ -416,7 +416,7 @@ function settingsOf(state: State): RoomSettings {
 const FLAGS: { key: 'tutorial' | 'anonymous' | 'auto_mode'; label: string; hint: string }[] = [
   {
     key: 'tutorial',
-    label: 'Avec le didacticiel',
+    label: 'Avec le quizz',
     hint: 'Des questions avant la première manche. Personne n’écrit de prompt avant d’y avoir répondu.',
   },
   {
@@ -427,7 +427,7 @@ const FLAGS: { key: 'tutorial' | 'anonymous' | 'auto_mode'; label: string; hint:
   {
     key: 'auto_mode',
     label: 'Mode automatique — enchaîner les manches sans intervention',
-    hint: 'Le didacticiel et les résumés avancent seuls à la fin du chrono.',
+    hint: 'Le quizz et les résumés avancent seuls à la fin du chrono.',
   },
 ]
 
@@ -440,11 +440,11 @@ const NUMBERS: {
   max: number
   unit: string
 }[] = [
-  { key: 'quiz_count', label: 'Nombre de questions du didacticiel', min: 1, max: 8, unit: 'questions' },
+  { key: 'quiz_count', label: 'Nombre de questions du quizz', min: 1, max: 8, unit: 'questions' },
   { key: 'round_count', label: 'Nombre de manches de prompt', min: 1, max: 10, unit: 'manches' },
   { key: 'round_seconds', label: 'Temps par manche en secondes', min: 10, max: 600, unit: 'secondes' },
   { key: 'rate_seconds', label: 'Temps pour noter un prompt en secondes', min: 5, max: 300, unit: 'secondes' },
-  { key: 'quiz_seconds', label: 'Temps par question du didacticiel en secondes', min: 5, max: 300, unit: 'secondes' },
+  { key: 'quiz_seconds', label: 'Temps par question du quizz en secondes', min: 5, max: 300, unit: 'secondes' },
 ]
 
 // The lobby's settings panel. Native checkboxes rather than drawn ones: real keyboard, focus and
@@ -909,13 +909,13 @@ export default function Admin() {
         return null
     }
   })()
-  // The second way forward: past the rest of the didacticiel, or past the class's rating.
+  // The second way forward: past the rest of the quizz, or past the class's rating.
   const skip = ((): { label: string; body: string } | null => {
     switch (phase) {
       case 'quiz':
         return {
-          label: 'Passer le didacticiel',
-          body: 'Les questions restantes du didacticiel sont sautées et la première manche s’ouvre tout de suite. Impossible d’y revenir.',
+          label: 'Passer le quizz',
+          body: 'Les questions restantes du quizz sont sautées et la première manche s’ouvre tout de suite. Impossible d’y revenir.',
         }
       case 'playing':
         if (submitted === 0) return null
@@ -949,7 +949,7 @@ export default function Admin() {
         }
       case 'quiz': {
         const q = state?.quiz
-        if (!q) return { state: 'Le didacticiel n’est pas encore ouvert.' }
+        if (!q) return { state: 'Le quizz n’est pas encore ouvert.' }
         return {
           state: quizClosed
             ? 'La bonne réponse est affichée, la classe peut commenter.'
@@ -1146,7 +1146,7 @@ export default function Admin() {
                 Its own live region announces the phase and the state and nothing else. The
                 countdown and the counts are inside this block and change several times a second
                 and several times a question respectively; putting either in the region would have
-                a screen reader talking over the class for the whole didacticiel. */}
+                a screen reader talking over the class for the whole quizz. */}
             <div className="runshow" data-live={quizClosed ? undefined : 'true'}>
               <p className="visually-hidden" aria-live="polite">
                 {`${PHASE_NAME[phase]}. ${note.state}`}
@@ -1182,7 +1182,7 @@ export default function Admin() {
             )}
 
             {/* What the phones are showing right now, so the host can talk about it without
-                looking over a shoulder: the didacticiel question, the exercise of the round, and
+                looking over a shoulder: the quizz question, the exercise of the round, and
                 during the rating the prompt the class is scoring. */}
             {phase === 'quiz' && quizState && quizState.prompt && (
               <section className="stack" aria-label="Question affichée aux joueurs">
@@ -1237,7 +1237,7 @@ export default function Admin() {
               </section>
             )}
 
-{/* The quiz phase counts the players who have finished the didacticiel, because
+{/* The quiz phase counts the players who have finished the quizz, because
                 that is what is holding the gate; the rating phase counts the players who have
                 scored the prompt on screen, which is the only question the host has to answer
                 between "Prompt suivant" presses. */}
@@ -1246,7 +1246,7 @@ export default function Admin() {
                 lit={players.flatMap((p, i) => (p.quiz_done ? [i] : []))}
                 total={players.length}
                 mine={-1}
-                caption="Ont terminé le didacticiel"
+                caption="Ont terminé le quizz"
               />
             )}
             {phase === 'playing' && (
@@ -1285,7 +1285,7 @@ export default function Admin() {
                 as the secondary.
 
                 One advance button, and its label is derived from the snapshot rather than stored:
-                the room already says where it is and how far through the didacticiel it is, and a
+                the room already says where it is and how far through the quizz it is, and a
                 label the host has to keep in step with a state machine is a label that will be
                 wrong during the round the host most needs to trust it. */}
             {phase === 'waiting' && state && (
@@ -1354,7 +1354,7 @@ export default function Admin() {
                   partie… » — so this block is simply empty until there is something to press,
                   which is what an empty action area is supposed to mean. */}
 
-              {/* Both relaunch targets, offered by one action. "With the didacticiel" is the one
+              {/* Both relaunch targets, offered by one action. "With the quizz" is the one
                   pressed by default because a course that has just taught the material is the
                   case the spec is about; "without" is the practice run, and it exists because a
                   class that has already done it once must be able to do it again without sitting
@@ -1371,7 +1371,7 @@ export default function Admin() {
                         title: 'Relancer la partie ?',
                         body: <p>Les résultats de cette partie sont effacés et les mêmes joueurs repartent de zéro. Impossible de revenir en arrière.</p>,
                         choices: [
-                          choice(withTutorial ? 'Relancer avec le didacticiel' : 'Relancer sans didacticiel', () => restart(withTutorial)),
+                          choice(withTutorial ? 'Relancer avec le quizz' : 'Relancer sans quizz', () => restart(withTutorial)),
                         ],
                       })
                     }
@@ -1423,8 +1423,8 @@ export default function Admin() {
                           </p>
                         ),
                         choices: [
-                          choice('Relancer avec le didacticiel', () => restart(true)),
-                          choice('Relancer sans didacticiel', () => restart(false)),
+                          choice('Relancer avec le quizz', () => restart(true)),
+                          choice('Relancer sans quizz', () => restart(false)),
                         ],
                       })
                     }
@@ -1490,8 +1490,8 @@ export default function Admin() {
           <div className="stack">
             {/* The standings, in the two phases where there is one to stand in. Not in the lobby, where
                 every score is zero and ten full bars say less than the list of names beside them;
-                not during the didacticiel, where the board would draw a column of zeros — and not
-                the didacticiel's OWN numbers either, which live in `quiz_score` and which this
+                not during the quizz, where the board would draw a column of zeros — and not
+                the quizz's OWN numbers either, which live in `quiz_score` and which this
                 board never reads, so the host is told nothing twice; not during the rating, where
                 the server does blank every score and the board would draw ten em dashes. One
                 thing the host cannot use, when what they need is where the room actually is. The

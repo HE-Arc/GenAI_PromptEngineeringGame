@@ -162,7 +162,7 @@ export function Roster({ players, online, myName }: { players: Player[]; online:
 // whole console — and a copy of it is a place where that meaning can drift.
 //
 // `className` is passed rather than derived: the roster list sets the name in a row of its own
-// and never flags it, while the board, the tally and the didacticiel standings all set the same
+// and never flags it, while the board, the tally and the quizz standings all set the same
 // base class and add the `--me` modifier. Those are different rules about the same box, so the
 // box stays the caller's and only the badge is shared.
 export function PlayerName({
@@ -229,7 +229,7 @@ export function RosterList({ players, myName }: { players: Player[]; myName: str
               that hands the ranking a zero nobody earned, which is the exact inference the
               rating phase exists to prevent. Re-derive `scored` later and this stays true for
               free; the moment somebody writes a fallback, it stops being true everywhere.
-              It is `score` and never `quiz_score`: the didacticiel's figure is deliberately kept
+              It is `score` and never `quiz_score`: the quizz's figure is deliberately kept
               out of the ranking, and it is already drawn where it belongs, under its own heading,
               with its own sentence saying it does not count. A roster carrying both would be a
               second surface making the one distinction this game refuses to blur. */}
@@ -573,7 +573,7 @@ export function Board({ players, myName }: { players: Player[]; myName: string }
 // third field, where `Record<string, string>` would have said nothing.
 //
 // Keyed on the family — the part before the colon — because the cursor in `ready.step` is an
-// index: `quiz:3` must read as the didacticiel whatever question it is, and a key per index would
+// index: `quiz:3` must read as the quizz whatever question it is, and a key per index would
 // be eight sentences of which four can never be right.
 //
 // Derived rather than passed in, because `current_step` already names the discussion in the payload
@@ -585,7 +585,7 @@ const DISCUSSION: Record<string, readonly [string, string]> = {
   lobby: ['Dis', 'à voix haute si tout le monde est là.'],
   // The one screen where the discussion is not « what did you think » but « why ». The explanation
   // is on screen precisely so a student can argue it to a neighbour, and a bar that said
-  // « comparez vos idées » here would spend the strongest moment of the didacticiel on the
+  // « comparez vos idées » here would spend the strongest moment of the quizz on the
   // vaguest possible prompt.
   quiz: ['Explique', 'à un voisin pourquoi c’est la bonne réponse.'],
   // PRESENT tense, « ce que vous pensez », and it is not a style choice: the bar is up from the
@@ -735,7 +735,7 @@ export function Section({ title, children }: { title: string; children: ReactNod
   )
 }
 
-// The clock of a timed phase — writing a prompt, rating one — drawn like the didacticiel's.
+// The clock of a timed phase — writing a prompt, rating one — drawn like the quizz's.
 // Read off the server's deadline and clock, so a phone that arrives late or runs fast counts the
 // same seconds as the rest of the room. Renders nothing when the phase has no clock.
 // It floats above the page and can be dragged anywhere; the spot is kept in localStorage.

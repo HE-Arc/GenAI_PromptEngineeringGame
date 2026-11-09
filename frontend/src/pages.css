@@ -390,7 +390,7 @@
     margin-inline: auto;
     width: 100%;
   }
-  /* The didacticiel and the cross-rating screens are one column of prose and controls and have
+  /* The quizz and the cross-rating screens are one column of prose and controls and have
    * no second column to earn either — a rating screen on a 27" is a wall of 1500px with a prompt
    * in it. Wider than the solo form, because these carry a question or a prompt that is meant to
    * be read closely, and 34rem would put a 200-character prompt on six lines to no purpose. */

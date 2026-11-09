@@ -316,7 +316,7 @@ def main():
     ap.add_argument("--password", default=os.environ.get("ADMIN_PASSWORD", "genai"))
     ap.add_argument("--rooms", type=int, default=10)
     ap.add_argument("--players", type=int, default=10, help="players per room")
-    ap.add_argument("--rounds", type=int, default=2, help="prompt rounds to play after the didacticiel")
+    ap.add_argument("--rounds", type=int, default=2, help="prompt rounds to play after the quizz")
     ap.add_argument("--speed", type=float, default=5.0, help="divide human think times by this")
     ap.add_argument("--lock-chance", type=float, default=0.03, help="chance a phone locks at each room change")
     ap.add_argument("--round-seconds", type=int, default=120)

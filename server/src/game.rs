@@ -1,5 +1,5 @@
 // The game engine: what used to live in Django's views.py/models.py
-// (start, the didacticiel window, the reveal walk, settling, the votes and
+// (start, the quizz window, the reveal walk, settling, the votes and
 // the full room_state). REST and WS handlers only validate and call in here,
 // so the admin button, a class vote and an expired clock all run the same
 // transition code.
@@ -23,7 +23,7 @@ pub const QUIZ_SECONDS_DEFAULT: i64 = 60;
 pub const QUIZ_SECONDS_RANGE: (i64, i64) = (5, 300);
 pub const QUIZ_REVEAL_SECONDS: i64 = 8;
 pub const PROMPT_GRACE_MS: i64 = 2000;
-// How long a game is: didacticiel questions and prompt rounds, chosen by the
+// How long a game is: quizz questions and prompt rounds, chosen by the
 // host in the lobby. The upper bounds are what the data files hold.
 pub const QUIZ_COUNT_DEFAULT: i64 = 5;
 pub const ROUND_COUNT_DEFAULT: i64 = 5;
@@ -274,15 +274,20 @@ fn random_u64() -> u64 {
     u64::from_le_bytes(buf)
 }
 
-// A permutation of the whole bank: the bank is exactly one quiz long, so the
-// only variety between two rooms is the order (Fisher-Yates).
-pub async fn create_bank(pool: &SqlitePool, code: &str) -> Result<(), sqlx::Error> {
-    let bank = quiz_bank();
-    let mut order: Vec<usize> = (0..bank.len()).collect();
+// A random permutation of 0..n (Fisher-Yates).
+fn shuffled(n: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..n).collect();
     for i in (1..order.len()).rev() {
         order.swap(i, (random_u64() % (i as u64 + 1)) as usize);
     }
-    for (pos, &i) in order.iter().enumerate() {
+    order
+}
+
+// A permutation of the whole bank, so the room has questions before its start.
+// `start_game` draws again, so every run of the room gets its own selection.
+pub async fn create_bank(pool: &SqlitePool, code: &str) -> Result<(), sqlx::Error> {
+    let bank = quiz_bank();
+    for (pos, &i) in shuffled(bank.len()).iter().enumerate() {
         let q = &bank[i];
         crate::db::answers::create_quiz_question(
             pool,
@@ -375,7 +380,7 @@ async fn open_quiz(pool: &SqlitePool, code: &str, from: i64, index: i64) -> Resu
         .await?
         .rows_affected();
     if moved == 1 {
-        tracing::info!(room = %code, question = index + 1, seconds = secs, "didacticiel question opened");
+        tracing::info!(room = %code, question = index + 1, seconds = secs, "quizz question opened");
     }
     Ok(moved == 1)
 }
@@ -399,7 +404,7 @@ async fn close_quiz(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-// Draws the room's rounds, trims the didacticiel to its length, and leaves the lobby. False when the room had already
+// Draws the room's rounds, trims the quizz to its length, and leaves the lobby. False when the room had already
 // begun: the conditional UPDATE is the claim, so the admin's button and the
 // last lobby vote landing together start the game once.
 pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Error> {
@@ -417,25 +422,42 @@ pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Err
     if claimed != 1 {
         return Ok(false);
     }
-    // The bank is drawn whole and shuffled at creation; the game keeps its
-    // first `quiz_count` questions. Attempts cannot exist yet: nobody can
-    // answer before the start.
-    sqlx::query("DELETE FROM quiz_question WHERE room_code = ? AND \"order\" >= ?")
+    // A fresh random draw on every start, restarts included: `quiz_count`
+    // questions from the bank and `round_count` targets, each in random order.
+    // Attempts cannot exist yet: nobody can answer before the start, and a
+    // restart deletes them.
+    sqlx::query("DELETE FROM quiz_question WHERE room_code = ?")
         .bind(code)
-        .bind(room.quiz_count)
         .execute(&mut *tx)
         .await?;
+    let bank = quiz_bank();
+    for (pos, &i) in shuffled(bank.len()).iter().take(room.quiz_count.max(1) as usize).enumerate() {
+        let q = &bank[i];
+        sqlx::query(
+            "INSERT INTO quiz_question (room_code, \"order\", prompt, choices, correct, explanation)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(code)
+        .bind(pos as i64)
+        .bind(&q.prompt)
+        .bind(serde_json::to_string(&q.choices).unwrap_or_else(|_| "[]".into()))
+        .bind(q.correct)
+        .bind(&q.explanation)
+        .execute(&mut *tx)
+        .await?;
+    }
     // The placeholder order-0 round from creation/restart is replaced by the
-    // real draw: the first `round_count` targets, in file order.
+    // real draw.
     sqlx::query("DELETE FROM round WHERE room_code = ?")
         .bind(code)
         .execute(&mut *tx)
         .await?;
-    for (i, t) in targets().iter().take(room.round_count.max(1) as usize).enumerate() {
+    let all = targets();
+    for (pos, &i) in shuffled(all.len()).iter().take(room.round_count.max(1) as usize).enumerate() {
         sqlx::query("INSERT INTO round (room_code, \"order\", target) VALUES (?, ?, ?)")
             .bind(code)
-            .bind(i as i64)
-            .bind(&t.text)
+            .bind(pos as i64)
+            .bind(&all[i].text)
             .execute(&mut *tx)
             .await?;
     }
@@ -669,7 +691,7 @@ async fn close_round(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Err
     Ok(())
 }
 
-// The admin's skip: the didacticiel jumps to the first round, a round being
+// The admin's skip: the quizz jumps to the first round, a round being
 // written or rated jumps to its summary.
 pub async fn skip(pool: &SqlitePool, code: &str) -> Result<(), String> {
     let room = load(pool, code).await.map_err(|e| e.to_string())?;
@@ -814,11 +836,11 @@ pub async fn maybe_advance_by_votes(pool: &SqlitePool, code: &str, online: &Hash
 // The phase clock ran out. Playing waits for streams still in flight so an
 // answer that beat the clock is never lost; the deadline is claimed with a
 // conditional UPDATE so concurrent callers run the transition once.
-// En mode automatique, le résumé minuté et le didacticiel s'enchaînent seuls.
+// En mode automatique, le résumé minuté et le quizz s'enchaînent seuls.
 pub async fn expire_phase(state: &AppState, code: &str) -> bool {
     let pool = &state.pool;
     let Ok(room) = load(pool, code).await else { return false };
-    // Auto : le didacticiel avance après la fenêtre de réponse PLUS le délai
+    // Auto : le quizz avance après la fenêtre de réponse PLUS le délai
     // de révélation, pour laisser le verdict visible avant d'enchaîner.
     if room.phase == "quiz" && room.is_auto() {
         if matches!(room.quiz_deadline_ms, Some(d) if now_ms() >= d + QUIZ_REVEAL_SECONDS * 1000) {
@@ -1512,6 +1534,27 @@ mod tests {
         assert_eq!(snap["round_count"], 3);
         assert_eq!(clamp_seconds(Some(&json!(99)), QUIZ_COUNT_DEFAULT, quiz_count_range()), 8);
         assert_eq!(clamp_seconds(Some(&json!(0)), ROUND_COUNT_DEFAULT, round_count_range()), 1);
+    }
+
+    #[tokio::test]
+    async fn each_start_draws_questions_and_targets_at_random() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "RN44").await.unwrap();
+        let mut firsts = HashSet::new();
+        for _ in 0..20 {
+            sqlx::query("UPDATE room SET phase = 'waiting' WHERE code = 'RN44'").execute(&pool).await.unwrap();
+            assert!(start_game(&pool, "RN44").await.unwrap());
+            let targets: Vec<String> = sqlx::query_scalar("SELECT target FROM round WHERE room_code = 'RN44' ORDER BY \"order\"")
+                .fetch_all(&pool).await.unwrap();
+            let prompts: Vec<String> = sqlx::query_scalar("SELECT prompt FROM quiz_question WHERE room_code = 'RN44' ORDER BY \"order\"")
+                .fetch_all(&pool).await.unwrap();
+            assert_eq!(targets.len() as i64, ROUND_COUNT_DEFAULT);
+            assert_eq!(prompts.len() as i64, QUIZ_COUNT_DEFAULT);
+            assert_eq!(targets.iter().collect::<HashSet<_>>().len(), targets.len(), "no target twice");
+            assert_eq!(prompts.iter().collect::<HashSet<_>>().len(), prompts.len(), "no question twice");
+            firsts.insert((targets[0].clone(), prompts[0].clone()));
+        }
+        assert!(firsts.len() > 1, "20 starts never changed the draw");
     }
 
     #[tokio::test]

@@ -34,7 +34,7 @@
 .deck[data-phase='results'] {
   --phase-hi: var(--signal);
 }
-/* The didacticiel is read closely and in French: Barlow, not the condensed display face, so the
+/* The quizz is read closely and in French: Barlow, not the condensed display face, so the
  * accents are drawn and a question reads like a sentence rather than a sign. */
 .deck[data-phase='quiz'] .readout__value {
   font-family: var(--font-ui);
@@ -719,7 +719,7 @@
   line-height: 1.4;
 }
 
-/* ---- the didacticiel's explanation and ranking -------------------------------------------- */
+/* ---- the quizz's explanation and ranking -------------------------------------------- */
 
 .explain {
   display: grid;

@@ -7,7 +7,7 @@ things at each step: latency (how long the burst takes) and delivery (every
 socket actually received the frames the step must fan out — a fast server
 that drops events on a lagged broadcast channel fails here, not silently).
 
-    join storm -> N sockets + hello -> lobby vote storm -> didacticiel answer
+    join storm -> N sockets + hello -> lobby vote storm -> quizz answer
     storm (early close + reveal) -> 8 admin advances -> N concurrent prompts
     (every socket must see every player's chunks and done) -> rating storm
 
@@ -286,8 +286,8 @@ def main():
     done, missing = converge(clients, lambda c: c.snapshot["phase"] == "quiz" and c.snapshot["quiz"], t0, 15)
     rep.gate("ready: game start reaches every socket", not missing, f"{fmt_lat(done)} missing={len(missing)}")
 
-    # 4. Didacticiel: bank fetch storm, answer storm, early close + reveal.
-    print("\n[4] didacticiel")
+    # 4. Quizz: bank fetch storm, answer storm, early close + reveal.
+    print("\n[4] quizz")
     wall, res = storm(lambda c: anon.call("GET", f"/api/rooms/{code}/quiz?token={c.token}"), clients)
     lat = [r[0] for r in res]
     full = sum(1 for r in res if r[1] == 200 and len(r[2]["questions"]) == 8)

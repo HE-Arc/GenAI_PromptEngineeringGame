@@ -4,7 +4,7 @@
 
 export type Phase = 'waiting' | 'quiz' | 'playing' | 'rating' | 'summary' | 'done'
 
-// The didacticiel, as the room sees it. ROOM-level, not per-viewer: the snapshot is one
+// The quizz, as the room sees it. ROOM-level, not per-viewer: the snapshot is one
 // payload for every phone and the admin screen, so it cannot say who is reading. The three
 // clocks matter:
 //
@@ -87,7 +87,7 @@ export type ReadyState = {
   mine: boolean
 }
 
-// One question of the didacticiel, as the GET endpoint returns it: no `correct`, no
+// One question of the quizz, as the GET endpoint returns it: no `correct`, no
 // `explanation`. Those two travel in the POST response that reveals the answer, so a player
 // with devtools open cannot read the key off the bank.
 export interface Question {
@@ -149,7 +149,7 @@ export type Player = {
   // someone whose screen locked is still in the roster and still counted in the score, and
   // only stops being `online`.
   online: boolean
-  // The didacticiel's score. Carried into `score` raw — one correct answer is one point —
+  // The quizz's score. Carried into `score` raw — one correct answer is one point —
   // and kept as a separate field so screens can show the two halves apart.
   quiz_score: number | null
   quiz_done: boolean
@@ -198,7 +198,7 @@ export type State = {
   round_seconds: number
   rate_seconds: number
   quiz_seconds: number
-  // How long the game is: didacticiel questions and prompt rounds, set in the lobby.
+  // How long the game is: quizz questions and prompt rounds, set in the lobby.
   quiz_count: number
   round_count: number
   max_attempts: number
@@ -403,10 +403,9 @@ export async function postReady(code: string, token: string): Promise<void> {
 const REASONS: Record<string, string> = {
   'name required': 'Choisis un pseudo.',
   'name taken': 'Ce pseudo est déjà pris. Choisis-en un autre.',
-  'game already started': "La partie a déjà commencé. L’animateur doit en créer une nouvelle.",
   'already answered': 'Tu as déjà répondu à cette question.',
   'no attempts left': 'Tu as utilisé tous tes essais pour cette manche.',
-  // Two refusals specific to the timed didacticiel. They are 409s, so without these they would
+  // Two refusals specific to the timed quizz. They are 409s, so without these they would
   // land on the generic "Impossible pour le moment. Réessaie dans un instant." — which is the
   // wrong advice here: the window has closed and retrying cannot reopen it. A player tapping at
   // the buzzer needs to be told the room moved on, not to try again.
@@ -415,7 +414,7 @@ const REASONS: Record<string, string> = {
   'already rated': 'Tu as déjà noté ce prompt. Le suivant arrive.',
   'not the current prompt': 'La classe est passée au prompt suivant : note celui qui est affiché.',
   'not playing': "La partie n’est pas encore démarrée.",
-  'quiz not open': 'Le didacticiel est fermé. L’animateur fait avancer la partie.',
+  'quiz not open': 'Le quizz est fermé. L’animateur fait avancer la partie.',
   'not rating': 'La notation est fermée. L’animateur fait avancer la partie.',
   'your own prompt': 'Ce prompt est le tien : tu ne peux pas le noter.',
   // The three refusals of the ready bar, and the first two are the reason the generic line below

@@ -146,8 +146,7 @@ pub async fn join(
             touch(&state, &code).await;
             return (StatusCode::OK, Json(json!({"token": p.token, "name": p.name}))).into_response();
         }
-        // Django refuse les arrivées une fois le lobby fermé ; même 409 ici.
-        return err(StatusCode::CONFLICT, "game already started").into_response();
+        // Un pseudo inédit rejoint en cours de partie : il arrive sur la phase en cours.
     }
     let player = match rooms::add_player(&state.pool, &code, &name).await {
         Ok(p) => p,
@@ -662,7 +661,7 @@ pub async fn admin_create(
     }
     apply_settings(&state.pool, &code, &settings).await;
     if let Err(e) = game::create_bank(&state.pool, &code).await {
-        tracing::error!(room = %code, error = %e, "didacticiel bank create failed");
+        tracing::error!(room = %code, error = %e, "quizz bank create failed");
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
     }
     tracing::info!(room = %code, "room created");
@@ -769,7 +768,7 @@ pub async fn admin_next(
     (StatusCode::OK, Json(json!({"ok": true, "phase": phase}))).into_response()
 }
 
-// The admin's skip: past the rest of the didacticiel, or past the rating
+// The admin's skip: past the rest of the quizz, or past the rating
 // straight to the round's summary. The console confirms first, since the
 // players lose the step they were on.
 pub async fn admin_skip(

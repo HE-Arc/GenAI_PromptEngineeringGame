@@ -6,7 +6,7 @@ import { ApiError, describe, getStats, post, type Phase, type StatsData } from '
 // aggregate, and the console's own table is private to Admin.
 const PHASE_NAME: Record<Phase, string> = {
   waiting: 'En attente',
-  quiz: 'Didacticiel',
+  quiz: 'Quizz',
   playing: 'Rédaction',
   rating: 'Notation croisée',
   summary: 'Résumé de manche',
@@ -228,7 +228,7 @@ export default function Stats() {
           </section>
 
           <section className="card">
-            <h2 className="label">Didacticiel</h2>
+            <h2 className="label">Quizz</h2>
             <ul className="stats__rows">
               <Row label="Essais" value={int(quiz.attempts)} />
               <Row label="Bonnes réponses" value={int(quiz.correct)} />

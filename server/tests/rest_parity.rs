@@ -46,8 +46,8 @@ async fn unknown_room_404_parity() {
 }
 
 #[tokio::test]
-async fn join_wrong_phase_409_parity() {
-    // Django join refuses non-waiting rooms with 409 — Axum must match.
+async fn join_mid_game_is_accepted() {
+    // A new player may join a game already under way.
     let (server, pool, _) = server_with_pool().await;
     rooms::create_room(&pool, "AB12").await.unwrap();
     sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'AB12'")
@@ -58,8 +58,8 @@ async fn join_wrong_phase_409_parity() {
         .post("/api/rooms/AB12/join")
         .json(&json!({"name": "ana"}))
         .await;
-    res.assert_status(axum::http::StatusCode::CONFLICT);
-    res.assert_text(r#"{"error":"game already started"}"#);
+    res.assert_status_ok();
+    assert_eq!(res.json::<serde_json::Value>()["name"], "ana");
 }
 
 #[tokio::test]
@@ -365,13 +365,13 @@ async fn join_same_pseudo_after_start_rejoins_ok() {
         .execute(&pool)
         .await
         .unwrap();
-    // Un pseudo inédit reste refusé une fois le lobby fermé.
+    // Un pseudo inédit rejoint en cours de partie, avec son propre jeton.
     let fresh = server
         .post("/api/rooms/RJ42/join")
         .json(&json!({"name": "bob"}))
         .await;
-    fresh.assert_status(axum::http::StatusCode::CONFLICT);
-    fresh.assert_text(r#"{"error":"game already started"}"#);
+    fresh.assert_status_ok();
+    assert_ne!(fresh.json::<serde_json::Value>()["token"].as_str(), Some(token.as_str()));
     // Le même pseudo reprend la partie avec le même jeton.
     let again = server
         .post("/api/rooms/RJ42/join")
@@ -387,7 +387,7 @@ async fn join_same_pseudo_after_start_rejoins_ok() {
 #[tokio::test]
 async fn admin_next_and_skip_always_move_the_game() {
     // The admin is never blocked: an empty round closes into its summary,
-    // rating can be skipped, and so can the didacticiel.
+    // rating can be skipped, and so can the quizz.
     let (server, pool, _) = server_with_pool().await;
     rooms::create_room(&pool, "VT17").await.unwrap();
     server::game::start_game(&pool, "VT17").await.unwrap();
@@ -416,7 +416,7 @@ async fn admin_next_and_skip_always_move_the_game() {
         .to_owned();
     let post = |path: &'static str| server.post(path).add_header("cookie", cookie.clone());
 
-    // Skip the didacticiel: straight to the first round.
+    // Skip the quizz: straight to the first round.
     post("/api/admin/rooms/VT17/skip").await.assert_status_ok();
     assert_eq!(phase(pool.clone()).await, "playing");
     // Nobody wrote: "next" closes the round into its summary.
