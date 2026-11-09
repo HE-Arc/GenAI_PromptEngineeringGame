@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { State } from './api'
+import { tokenKey, type State } from './api'
 import { connectRoomWs, type AnswerEvent, type RoomWs } from './ws'
 
 /* What the room feed is doing, as far as the browser can tell. A phone on a LAN drops
@@ -100,6 +100,15 @@ export function useRoom(code: string | null, token?: string | null) {
         // A refusal names no player and belongs to the sender alone, but it still
         // proves the socket is alive: only the verdict waiter reads it, the link stays.
         if (event.kind === 'error' && (event.code === 'bad_token' || event.code === 'unknown_room')) {
+          // A token the server no longer knows (the host removed this player) is dropped, so
+          // the next render shows the join form for this room instead of a dead screen.
+          if (event.code === 'bad_token' && !anonymous) {
+            try {
+              localStorage.removeItem(tokenKey(room))
+            } catch {
+              // Storage blocked: the fault screen still offers another code.
+            }
+          }
           dead = true
           setLink('failed')
           setWsUp(false)

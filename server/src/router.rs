@@ -164,10 +164,10 @@ pub fn spawn_rate_limit_retention() {
     });
 }
 
-fn keyed_limit(per_second: u64, burst: u32) -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
+fn keyed_limit(period: Duration, burst: u32) -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
     let config = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(per_second)
+            .period(period)
             .burst_size(burst)
             .key_extractor(PeerIp)
             .finish()
@@ -178,27 +178,31 @@ fn keyed_limit(per_second: u64, burst: u32) -> GovernorLayer<PeerIp, governor::m
     GovernorLayer { config }
 }
 
-// One classroom of 30 players behind one NAT shares one IP: 30 req/s sustained,
-// bursts of 100 for the /join and /rate bursts at game start.
-fn classroom_limit() -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
-    keyed_limit(30, 100)
+// `keyed_limit(period, burst)`: tower_governor refills ONE request every
+// `period`. A whole event (1000 players) can share one IP behind a NAT or a
+// proxy, so /join gets a burst of 2000 and 200 joins/s after it: a class never
+// waits, a script flooding the player table still does.
+fn join_limit() -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
+    keyed_limit(Duration::from_millis(5), 2000)
 }
 
-// Admin login is brute-forced by one agent, not a roomful: strict.
+// Admin login is brute-forced by one agent, not a roomful: a burst of 20,
+// then one try every 10 s.
 fn login_limit() -> GovernorLayer<PeerIp, governor::middleware::NoOpMiddleware> {
-    keyed_limit(10, 20)
+    keyed_limit(Duration::from_secs(10), 20)
 }
 
 pub fn build_router(state: AppState) -> Router {
-    // Brute-forceable or spammable endpoints: login, join, rate. The classroom
-    // burst is bigger than the login one (see the limit functions).
+    // Brute-forceable or spammable endpoints: login and join (see the limit
+    // functions). /rate has no IP limit: it needs a player token and stores one
+    // rating per player per prompt, so a spammer gains nothing, while a per-IP
+    // bucket would block a whole event sharing one IP.
     let login_limited = Router::new()
         .route("/api/admin/login", post(rest::admin_login))
         .route_layer(login_limit());
-    let classroom_limited = Router::new()
+    let join_limited = Router::new()
         .route("/api/rooms/:code/join", get(rest::join_get).post(rest::join))
-        .route("/api/rooms/:code/rate", post(rest::rate))
-        .route_layer(classroom_limit());
+        .route_layer(join_limit());
     let rest = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/admin/stats", get(rest::admin_stats))
@@ -207,10 +211,13 @@ pub fn build_router(state: AppState) -> Router {
             get(rest::admin_list).post(rest::admin_create),
         )
         .route("/api/admin/rooms/:code/start", post(rest::admin_start))
+        .route("/api/admin/rooms/:code/settings", post(rest::admin_settings))
+        .route("/api/admin/rooms/:code/players/:name", delete(rest::admin_remove_player))
         .route("/api/admin/rooms/:code/next", post(rest::admin_next))
         .route("/api/admin/rooms/:code/skip", post(rest::admin_skip))
         .route("/api/admin/rooms/:code", delete(rest::admin_delete))
         .route("/api/admin/rooms/:code/restart", post(rest::admin_restart))
+        .route("/api/rooms/:code/rate", post(rest::rate))
         .route("/api/rooms/:code/ready", post(rest::ready))
         .route("/api/images/:id", get(rest::image_get))
         .route(
@@ -218,7 +225,7 @@ pub fn build_router(state: AppState) -> Router {
             get(rest::quiz_get).post(rest::quiz_post),
         )
         .merge(login_limited)
-        .merge(classroom_limited)
+        .merge(join_limited)
         .route_layer(middleware::from_fn_with_state(rest_slots(), limit_concurrency))
         .route_layer(middleware::from_fn(rest_timeout))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))

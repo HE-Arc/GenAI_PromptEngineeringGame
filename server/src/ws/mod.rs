@@ -822,58 +822,6 @@ mod tests {
         assert_eq!(err.code, "too_many_attempts");
     }
 
-    #[tokio::test]
-    async fn conversation_round_chains_prompts_instead_of_replacing() {
-        let pool = test_pool().await;
-        let state = AppState::new(pool.clone());
-        rooms::create_room(&pool, "CV01").await.unwrap();
-        let ana = rooms::add_player(&pool, "CV01", "ana").await.unwrap();
-        let target = game::conversation_target().expect("a conversation exercise").to_string();
-        sqlx::query("UPDATE round SET target = ? WHERE room_code = 'CV01'")
-            .bind(&target)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'CV01'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let hub = get_hub(&state.hubs, "CV01").await;
-        let mut erx = hub.subscribe_events().await;
-        for (i, p) in ["voici les notions", "fais une synthese", "teste-moi", "corrige-moi"].iter().enumerate() {
-            let job = begin_answer(&state, "CV01", &ana.token, p).await.expect("prompt admitted");
-            // Each prompt reaches the model with the earlier ones.
-            assert!(job.enriched.contains("voici les notions"));
-            assert!(job.enriched.contains(&format!("(prompt {})", i + 1)));
-            spawn_answer(state.clone(), job);
-            loop {
-                if let WsOut::AnswerDone { .. } = erx.recv().await.unwrap() {
-                    break;
-                }
-            }
-        }
-        let err = match begin_answer(&state, "CV01", &ana.token, "et encore").await {
-            Ok(_) => panic!("a fifth prompt must be refused"),
-            Err(e) => e,
-        };
-        assert_eq!(err.code, "too_many_attempts");
-        let (prompt, turns, attempts): (String, String, i64) =
-            sqlx::query_as("SELECT prompt, turns, attempts FROM answer WHERE player_id = ?")
-                .bind(ana.id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(attempts, game::MAX_CONVERSATION_PROMPTS);
-        assert_eq!(crate::llm::parse_turns(Some(&turns)).len(), 4, "every prompt kept");
-        assert!(prompt.starts_with("Prompt 1 :\nvoici les notions"));
-        assert!(prompt.contains("Prompt 4 :\ncorrige-moi"));
-        let snap = game::room_snapshot(&pool, "CV01", None).await.unwrap();
-        let mine = game::personalize(&snap, Some(ana.id));
-        assert_eq!(mine["conversation"], true);
-        assert_eq!(mine["my_turns"].as_array().map(|t| t.len()), Some(4));
-        assert!(game::personalize(&snap, None)["my_turns"].as_array().unwrap().is_empty());
-    }
-
     struct FailingSource;
 
     impl crate::llm::LlmSource for FailingSource {

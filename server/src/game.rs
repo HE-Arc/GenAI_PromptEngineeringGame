@@ -79,6 +79,10 @@ pub struct Target {
     // replacing the previous prompt; the whole chain is graded and rated.
     #[serde(default)]
     pub conversation: bool,
+    // The round is still answered by the image model, but its picture is not
+    // shown: the player builds the visual from the data alone.
+    #[serde(default)]
+    pub hide_image: bool,
 }
 
 fn quiz_bank() -> &'static [QuizItem] {
@@ -104,13 +108,16 @@ pub fn image_for(target: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-pub fn conversation_target() -> Option<&'static str> {
-    targets().iter().find(|t| t.conversation).map(|t| t.text.as_str())
-}
-
-#[cfg(test)]
 pub fn targets_with_image() -> impl Iterator<Item = &'static str> {
     targets().iter().filter(|t| t.image.is_some()).map(|t| t.text.as_str())
+}
+
+// The picture shown to the players, unless the exercise hides it.
+pub fn shown_image_for(target: &str) -> Option<String> {
+    targets()
+        .iter()
+        .find(|t| t.text == target && !t.hide_image)
+        .and_then(|t| t.image.clone())
 }
 
 pub fn is_conversation(target: &str) -> bool {
@@ -322,15 +329,16 @@ pub fn clamp_seconds(v: Option<&Value>, default: i64, (lo, hi): (i64, i64)) -> i
 // round, reveal cursor, question), so exactly one of them moves the room and
 // the rest are no-ops instead of skipping prompts or rounds.
 
-// Sets the phase and arms its clock in one write: playing and rating are
-// timed, every other phase clears the deadline. Applies only if the room is
-// still in the phase and round `room` was read in; true when it moved.
+// Sets the phase and arms its clock in one write: playing is timed, every
+// other phase clears the deadline. Rating has no clock: it moves on once
+// every online rater has rated, or on the votes or the admin's skip.
+// Applies only if the room is still in the phase and round `room` was read
+// in; true when it moved.
 // En mode automatique, le résumé est aussi minuté (30 s) pour s'enchaîner seul ;
 // en manuel, aucun délai : l'animateur avance quand la relecture est finie.
 async fn go(pool: &SqlitePool, room: &GameRoom, phase: &str) -> Result<bool, sqlx::Error> {
     let seconds = match phase {
         "playing" => Some(room.round_seconds),
-        "rating" => Some(room.rate_seconds),
         "summary" if room.is_auto() => Some(SUMMARY_AUTO_SECONDS),
         _ => None,
     };
@@ -404,6 +412,149 @@ async fn close_quiz(pool: &SqlitePool, room: &GameRoom) -> Result<(), sqlx::Erro
     Ok(())
 }
 
+// Appends `count` random questions from the bank, numbered from `from`,
+// skipping the prompts in `used`.
+async fn draw_questions(
+    conn: &mut sqlx::SqliteConnection,
+    code: &str,
+    from: i64,
+    count: i64,
+    used: &[String],
+) -> Result<(), sqlx::Error> {
+    let bank = quiz_bank();
+    let fresh = shuffled(bank.len()).into_iter().map(|i| &bank[i]).filter(|q| !used.contains(&q.prompt));
+    for (pos, q) in (from..).zip(fresh.take(count.max(0) as usize)) {
+        sqlx::query(
+            "INSERT INTO quiz_question (room_code, \"order\", prompt, choices, correct, explanation)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(code)
+        .bind(pos)
+        .bind(&q.prompt)
+        .bind(serde_json::to_string(&q.choices).unwrap_or_else(|_| "[]".into()))
+        .bind(q.correct)
+        .bind(&q.explanation)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+// Appends `count` random rounds, numbered from `from`, skipping the targets in `used`.
+async fn draw_rounds(
+    conn: &mut sqlx::SqliteConnection,
+    code: &str,
+    from: i64,
+    count: i64,
+    used: &[String],
+) -> Result<(), sqlx::Error> {
+    let all = targets();
+    let fresh = shuffled(all.len()).into_iter().map(|i| &all[i]).filter(|t| !used.contains(&t.text));
+    for (pos, t) in (from..).zip(fresh.take(count.max(0) as usize)) {
+        sqlx::query("INSERT INTO round (room_code, \"order\", target) VALUES (?, ?, ?)")
+            .bind(code)
+            .bind(pos)
+            .bind(&t.text)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+// The host changes the game's length after the start. What the room has
+// already reached is kept: the count never drops below the current question
+// or round, and only later ones are removed or drawn. The quizz length is
+// ignored once the quizz is over, the round count once the game is done. In
+// the lobby the setting alone is enough: `start_game` draws from it.
+pub async fn resize_game(
+    pool: &SqlitePool,
+    code: &str,
+    quiz_count: Option<i64>,
+    round_count: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let room = load(pool, code).await?;
+    if room.phase == "waiting" {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    if let Some(n) = quiz_count.filter(|_| room.phase == "quiz") {
+        let n = n.max(room.quiz_index + 1);
+        sqlx::query("DELETE FROM quiz_question WHERE room_code = ? AND \"order\" >= ?")
+            .bind(code)
+            .bind(n)
+            .execute(&mut *tx)
+            .await?;
+        let used: Vec<String> = sqlx::query_scalar("SELECT prompt FROM quiz_question WHERE room_code = ?")
+            .bind(code)
+            .fetch_all(&mut *tx)
+            .await?;
+        let have = used.len() as i64;
+        draw_questions(&mut tx, code, have, n - have, &used).await?;
+        sqlx::query("UPDATE room SET quiz_count = ? WHERE code = ?").bind(n).bind(code).execute(&mut *tx).await?;
+    }
+    if let Some(n) = round_count.filter(|_| room.phase != "done") {
+        let n = n.max(room.current + 1);
+        sqlx::query("DELETE FROM round WHERE room_code = ? AND \"order\" >= ?")
+            .bind(code)
+            .bind(n)
+            .execute(&mut *tx)
+            .await?;
+        let used: Vec<String> = sqlx::query_scalar("SELECT target FROM round WHERE room_code = ?")
+            .bind(code)
+            .fetch_all(&mut *tx)
+            .await?;
+        let have = used.len() as i64;
+        draw_rounds(&mut tx, code, have, n - have, &used).await?;
+        sqlx::query("UPDATE room SET round_count = ? WHERE code = ?").bind(n).bind(code).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    tracing::info!(room = %code, ?quiz_count, ?round_count, "game length changed");
+    Ok(())
+}
+
+// Removes a player at any point of the game, with everything they wrote:
+// answers, ratings, quizz attempts and votes go with the row (ON DELETE
+// CASCADE). During rating, the cursor on the prompt being rated is kept on
+// the same prompt when an earlier one disappears; when the removed prompt
+// was the last one left to rate, the round moves to its summary. False when
+// the player is not in this room.
+pub async fn remove_player(pool: &SqlitePool, code: &str, player_id: i64) -> Result<bool, sqlx::Error> {
+    let room = load(pool, code).await?;
+    let round = current_round(pool, &room).await;
+    let mut tx = pool.begin().await?;
+    if let (Some((round_id, revealed)), "rating") = (round, room.phase.as_str()) {
+        let ids: Vec<i64> = sqlx::query_scalar("SELECT player_id FROM answer WHERE round_id = ? ORDER BY id")
+            .bind(round_id)
+            .fetch_all(&mut *tx)
+            .await?;
+        if ids.iter().position(|&p| p == player_id).is_some_and(|i| (i as i64) < revealed) {
+            sqlx::query("UPDATE round SET revealed = revealed - 1 WHERE id = ?")
+                .bind(round_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    let gone = sqlx::query("DELETE FROM player WHERE id = ? AND room_code = ?")
+        .bind(player_id)
+        .bind(code)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    if gone == 0 {
+        return Ok(false);
+    }
+    tracing::info!(room = %code, player_id, "player removed");
+    if let Some((round_id, revealed)) = current_round(pool, &room).await.filter(|_| room.phase == "rating") {
+        let count = round_answers(pool, round_id).await.len() as i64;
+        if revealed >= count {
+            // The removed prompt was the one on screen and the last: nothing is left to rate.
+            advance_reveal_and_settle(pool, &room, revealed).await?;
+        }
+    }
+    Ok(true)
+}
+
 // Draws the room's rounds, trims the quizz to its length, and leaves the lobby. False when the room had already
 // begun: the conditional UPDATE is the claim, so the admin's button and the
 // last lobby vote landing together start the game once.
@@ -430,37 +581,14 @@ pub async fn start_game(pool: &SqlitePool, code: &str) -> Result<bool, sqlx::Err
         .bind(code)
         .execute(&mut *tx)
         .await?;
-    let bank = quiz_bank();
-    for (pos, &i) in shuffled(bank.len()).iter().take(room.quiz_count.max(1) as usize).enumerate() {
-        let q = &bank[i];
-        sqlx::query(
-            "INSERT INTO quiz_question (room_code, \"order\", prompt, choices, correct, explanation)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(code)
-        .bind(pos as i64)
-        .bind(&q.prompt)
-        .bind(serde_json::to_string(&q.choices).unwrap_or_else(|_| "[]".into()))
-        .bind(q.correct)
-        .bind(&q.explanation)
-        .execute(&mut *tx)
-        .await?;
-    }
+    draw_questions(&mut tx, code, 0, room.quiz_count.max(1), &[]).await?;
     // The placeholder order-0 round from creation/restart is replaced by the
     // real draw.
     sqlx::query("DELETE FROM round WHERE room_code = ?")
         .bind(code)
         .execute(&mut *tx)
         .await?;
-    let all = targets();
-    for (pos, &i) in shuffled(all.len()).iter().take(room.round_count.max(1) as usize).enumerate() {
-        sqlx::query("INSERT INTO round (room_code, \"order\", target) VALUES (?, ?, ?)")
-            .bind(code)
-            .bind(pos as i64)
-            .bind(&all[i].text)
-            .execute(&mut *tx)
-            .await?;
-    }
+    draw_rounds(&mut tx, code, 0, room.round_count.max(1), &[]).await?;
     tx.commit().await?;
     tracing::info!(room = %code, first_phase = phase, rounds = room.round_count, questions = room.quiz_count, "game started");
     let room = load(pool, code).await?;
@@ -1418,7 +1546,7 @@ pub async fn room_snapshot(
         "phase": room.phase,
         "current": room.current,
         "total": total_rounds,
-        "target_image": target.as_deref().and_then(image_for),
+        "target_image": target.as_deref().and_then(shown_image_for),
         "target_tip": target.as_deref().and_then(tip_for),
         // Hidden while writing: a phone writing must not hold the checklist, not even
         // in devtools, or it would write to the list. Raters need it to grade.
@@ -1498,7 +1626,11 @@ mod tests {
 
     #[test]
     fn content_loads() {
-        assert_eq!(quiz_bank().len(), 8);
+        assert_eq!(quiz_bank().len(), 6);
+        assert_eq!(targets().len(), 7);
+        // The chart exercise is answered by the image model but shows no picture.
+        let chart = targets().iter().find(|t| t.hide_image).expect("a hidden-image exercise");
+        assert!(image_for(&chart.text).is_some() && shown_image_for(&chart.text).is_none());
         assert!(targets().len() as i64 >= ROUND_COUNT_DEFAULT);
         assert!(quiz_bank().len() as i64 >= QUIZ_COUNT_DEFAULT);
         assert!(quiz_bank().iter().all(|q| q.choices.len() == 4 && (0..4).contains(&q.correct)));
@@ -1532,7 +1664,7 @@ mod tests {
         assert_eq!(snap["quiz"]["total"], 2);
         assert_eq!(snap["quiz_count"], 2);
         assert_eq!(snap["round_count"], 3);
-        assert_eq!(clamp_seconds(Some(&json!(99)), QUIZ_COUNT_DEFAULT, quiz_count_range()), 8);
+        assert_eq!(clamp_seconds(Some(&json!(99)), QUIZ_COUNT_DEFAULT, quiz_count_range()), 6);
         assert_eq!(clamp_seconds(Some(&json!(0)), ROUND_COUNT_DEFAULT, round_count_range()), 1);
     }
 
@@ -1852,6 +1984,64 @@ mod tests {
             advance(&pool, "RD22").await.unwrap();
         }
         assert_eq!(load(&pool, "RD22").await.unwrap().phase, "done");
+    }
+
+    #[tokio::test]
+    async fn resize_keeps_what_the_room_reached() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "RS11").await.unwrap();
+        sqlx::query("UPDATE room SET quiz_count = 2, round_count = 2 WHERE code = 'RS11'").execute(&pool).await.unwrap();
+        assert!(start_game(&pool, "RS11").await.unwrap());
+        let counts = || async {
+            let q: Vec<String> = sqlx::query_scalar("SELECT prompt FROM quiz_question WHERE room_code = 'RS11' ORDER BY \"order\"")
+                .fetch_all(&pool).await.unwrap();
+            let r: Vec<String> = sqlx::query_scalar("SELECT target FROM round WHERE room_code = 'RS11' ORDER BY \"order\"")
+                .fetch_all(&pool).await.unwrap();
+            (q, r)
+        };
+        let (q0, r0) = counts().await;
+        resize_game(&pool, "RS11", Some(6), Some(7)).await.unwrap();
+        let (q, r) = counts().await;
+        assert_eq!((q.len(), r.len()), (6, 7));
+        assert_eq!((&q[..2], &r[..2]), (&q0[..], &r0[..]), "drawn ones kept, in place");
+        assert_eq!(q.iter().collect::<HashSet<_>>().len(), 6, "no question twice");
+        assert_eq!(r.iter().collect::<HashSet<_>>().len(), 7, "no target twice");
+        // On question 3 and round 4, shrinking stops at what is reached.
+        sqlx::query("UPDATE room SET quiz_index = 2, current = 3 WHERE code = 'RS11'").execute(&pool).await.unwrap();
+        resize_game(&pool, "RS11", Some(1), Some(1)).await.unwrap();
+        let (q, r) = counts().await;
+        assert_eq!((q.len(), r.len()), (3, 4));
+        let room = load(&pool, "RS11").await.unwrap();
+        assert_eq!((room.quiz_count, room.round_count), (3, 4));
+    }
+
+    #[tokio::test]
+    async fn removing_a_player_keeps_the_rating_cursor_on_its_prompt() {
+        let pool = crate::db::test_pool().await;
+        crate::db::rooms::create_room(&pool, "RM22").await.unwrap();
+        sqlx::query("UPDATE room SET tutorial = 0 WHERE code = 'RM22'").execute(&pool).await.unwrap();
+        let mut players = Vec::new();
+        for name in ["ana", "bob", "cy"] {
+            players.push(crate::db::rooms::add_player(&pool, "RM22", name).await.unwrap());
+        }
+        assert!(start_game(&pool, "RM22").await.unwrap());
+        let round: i64 = sqlx::query_scalar("SELECT id FROM round WHERE room_code = 'RM22' AND \"order\" = 0")
+            .fetch_one(&pool).await.unwrap();
+        for p in &players {
+            crate::db::answers::insert_answer(&pool, round, p.id, "p", "o").await.unwrap();
+        }
+        advance(&pool, "RM22").await.unwrap();
+        sqlx::query("UPDATE round SET revealed = 1 WHERE id = ?").bind(round).execute(&pool).await.unwrap();
+        // bob's prompt is on screen; ana's, before it, goes: the cursor follows bob's.
+        assert!(remove_player(&pool, "RM22", players[0].id).await.unwrap());
+        let revealed: i64 = sqlx::query_scalar("SELECT revealed FROM round WHERE id = ?").bind(round).fetch_one(&pool).await.unwrap();
+        assert_eq!(revealed, 0);
+        assert_eq!(round_answers(&pool, round).await[0].player_id, players[1].id);
+        assert!(!remove_player(&pool, "RM22", players[0].id).await.unwrap(), "already gone");
+        // cy's prompt, the last, is on screen and goes: nothing is left, the round closes.
+        sqlx::query("UPDATE round SET revealed = 1 WHERE id = ?").bind(round).execute(&pool).await.unwrap();
+        assert!(remove_player(&pool, "RM22", players[2].id).await.unwrap());
+        assert_eq!(load(&pool, "RM22").await.unwrap().phase, "summary");
     }
 
     #[tokio::test]

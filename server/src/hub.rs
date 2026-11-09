@@ -190,6 +190,11 @@ impl RoomHub {
         self.presence.lock().unwrap().seats.len()
     }
 
+    // A removed player leaves the online set at once, without the grace timer.
+    pub fn evict(&self, player_id: i64) {
+        self.presence.lock().unwrap().seats.remove(&player_id);
+    }
+
     pub fn online(&self) -> HashSet<i64> {
         self.presence.lock().unwrap().seats.keys().copied().collect()
     }

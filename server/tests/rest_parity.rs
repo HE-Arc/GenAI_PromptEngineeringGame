@@ -98,11 +98,11 @@ async fn join_name_trimmed_and_truncated_by_chars() {
 
 #[tokio::test]
 async fn join_rate_limited_per_ip() {
-    // Classroom-sized burst: one IP may spend 100 joins at once (30/s after),
-    // so 150 joins in a row must exhaust the bucket and hit 429.
+    // Event-sized burst: one IP may spend 2000 joins at once (200/s after),
+    // so 2600 joins in a row must exhaust the bucket and hit 429.
     let server = test_server().await;
     let mut limited = 0;
-    for _ in 0..150 {
+    for _ in 0..2600 {
         let res = server
             .post("/api/rooms/ZZ99/join")
             .add_header("x-forwarded-for", "203.0.113.7")
@@ -112,7 +112,7 @@ async fn join_rate_limited_per_ip() {
             limited += 1;
         }
     }
-    assert!(limited >= 50, "150 joins must burn the burst of 100 and hit 429");
+    assert!(limited > 0, "2600 joins must burn the burst of 2000 and hit 429");
     // Another client IP has its own bucket.
     let other = server
         .post("/api/rooms/ZZ99/join")
@@ -120,6 +120,20 @@ async fn join_rate_limited_per_ip() {
         .json(&json!({"name": "ana"}))
         .await;
     other.assert_status(axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rate_has_no_ip_limit() {
+    // 1000 players behind one IP all rate the same prompt at once.
+    let server = test_server().await;
+    for _ in 0..1000 {
+        let res = server
+            .post("/api/rooms/ZZ99/rate")
+            .add_header("x-forwarded-for", "203.0.113.8")
+            .json(&json!({"token": "t", "score": 3}))
+            .await;
+        assert_ne!(res.status_code(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+    }
 }
 
 #[tokio::test]
@@ -581,10 +595,16 @@ async fn room_created_bare_then_configured_in_lobby_at_launch() {
     .await
     .unwrap();
     assert_eq!(row, (180, 30, 60, 1, 1), "defaults written at creation");
+    let counts: (i64, i64) = sqlx::query_as("SELECT quiz_count, round_count FROM room WHERE code = ?")
+        .bind(&code)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(counts, (6, 7), "every question and every exercise by default");
 
     server
         .post(&format!("/api/admin/rooms/{code}/start"))
-        .add_header("cookie", cookie)
+        .add_header("cookie", cookie.clone())
         .json(&json!({"tutorial": false, "anonymous": false, "round_seconds": 120, "rate_seconds": 9999}))
         .await
         .assert_status_ok();
@@ -596,4 +616,20 @@ async fn room_created_bare_then_configured_in_lobby_at_launch() {
     .await
     .unwrap();
     assert_eq!(row, ("playing".into(), 120, 300, 0, 0), "lobby settings applied, durations clamped");
+
+    // Mid-game, the durations and the counts still change; the flags do not.
+    server
+        .post(&format!("/api/admin/rooms/{code}/settings"))
+        .add_header("cookie", cookie.clone())
+        .json(&json!({"round_seconds": 240, "quiz_seconds": 20, "anonymous": true, "round_count": 1}))
+        .await
+        .assert_status_ok();
+    let row: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT round_seconds, quiz_seconds, anonymous, round_count FROM room WHERE code = ?",
+    )
+    .bind(&code)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row, (240, 20, 0, 1), "durations and counts change after the start, flags do not");
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { AnswerMeter, Board, ConfirmModal, ConsoleBar, Criteria, Readout, Roster, RosterList, Step, type ConfirmChoice } from './ui'
+import { AnswerMeter, Board, ConfirmModal, ConsoleBar, Criteria, Readout, Ring, Roster, RosterList, Step, type ConfirmChoice } from './ui'
 import { countdown, noun } from './format'
 import { useQuizWindow } from './serverClock'
 import { absent, ApiError, describe, listRooms, post, present, type Phase, type QuizState, type RoomSummary, type State } from './api'
@@ -110,8 +110,9 @@ type Note = {
    * it must never carry the countdown: a value that changes four times a second inside a live
    * region talks over everything else on the page. */
   state: string
-  /** The countdown, in the visible block only. */
-  timer?: string
+  /** The countdown, drawn as the players' ring, in the visible block only. `length` is the
+   * window's configured length in ms. */
+  timer?: { left: number; length: number }
   /** The counts, in the visible block only. */
   figures?: string
   /** What the host can do about it. */
@@ -394,7 +395,6 @@ type RoomSettings = {
   anonymous: boolean
   auto_mode: boolean
   round_seconds: string
-  rate_seconds: string
   quiz_seconds: string
   quiz_count: string
   round_count: string
@@ -406,7 +406,6 @@ function settingsOf(state: State): RoomSettings {
     anonymous: state.anonymous,
     auto_mode: state.auto_mode,
     round_seconds: String(state.round_seconds),
-    rate_seconds: String(state.rate_seconds),
     quiz_seconds: String(state.quiz_seconds),
     quiz_count: String(state.quiz_count),
     round_count: String(state.round_count),
@@ -432,18 +431,17 @@ const FLAGS: { key: 'tutorial' | 'anonymous' | 'auto_mode'; label: string; hint:
 ]
 
 // The number fields: game length, then durations. The bounds match the server's clamps (the
-// counts' maxima are what server/data holds: 8 questions, 10 exercises).
+// counts' maxima are what server/data holds: 6 questions, 7 exercises).
 const NUMBERS: {
-  key: 'quiz_count' | 'round_count' | 'round_seconds' | 'rate_seconds' | 'quiz_seconds'
+  key: 'quiz_count' | 'round_count' | 'round_seconds' | 'quiz_seconds'
   label: string
   min: number
   max: number
   unit: string
 }[] = [
-  { key: 'quiz_count', label: 'Nombre de questions du quizz', min: 1, max: 8, unit: 'questions' },
-  { key: 'round_count', label: 'Nombre de manches de prompt', min: 1, max: 10, unit: 'manches' },
+  { key: 'quiz_count', label: 'Nombre de questions du quizz', min: 1, max: 6, unit: 'questions' },
+  { key: 'round_count', label: 'Nombre de manches de prompt', min: 1, max: 7, unit: 'manches' },
   { key: 'round_seconds', label: 'Temps par manche en secondes', min: 10, max: 600, unit: 'secondes' },
-  { key: 'rate_seconds', label: 'Temps pour noter un prompt en secondes', min: 5, max: 300, unit: 'secondes' },
   { key: 'quiz_seconds', label: 'Temps par question du quizz en secondes', min: 5, max: 300, unit: 'secondes' },
 ]
 
@@ -552,8 +550,8 @@ export default function Admin() {
   const quizWindow = useQuizWindow(state?.quiz ?? null)
   // The round's own clock (writing, rating), so the host sees the seconds the players see.
   const phaseWindow = useQuizWindow(state?.timer ?? null)
-  const phaseLeft = phaseWindow.open
-    ? `${noun(countdown(phaseWindow.left), 'seconde', 'secondes')} restantes`
+  const phaseLeft = phaseWindow.open && state
+    ? { left: phaseWindow.left, length: state.round_seconds * 1000 }
     : undefined
   const verified = useRef(false)
   // Armed on the gate screen rather than on mount, because on the way in there is a « … » line
@@ -954,9 +952,9 @@ export default function Admin() {
           state: quizClosed
             ? 'La bonne réponse est affichée, la classe peut commenter.'
             : 'La fenêtre de réponse est ouverte à toute la classe.',
-          timer: quizClosed
+          timer: quizClosed || !state
             ? undefined
-            : `${noun(countdown(quizWindow.left), 'seconde', 'secondes')} pour répondre`,
+            : { left: quizWindow.left, length: state.quiz_seconds * 1000 },
           figures: `${noun(q.done, 'joueur a répondu', 'joueurs ont répondu')} sur ${noun(q.online_count, 'joueur connecté', 'joueurs connectés')}.`,
           hint: quizClosed
             ? 'La classe passe à la suite quand la majorité est prête. Tu peux forcer.'
@@ -994,7 +992,6 @@ export default function Admin() {
         if (!r) return { state: 'La notation n’a pas encore commencé.' }
         return {
           state: `Prompt ${r.index + 1} sur ${r.count}.`,
-          timer: phaseLeft,
           figures: `${noun(r.rated, 'joueur a noté', 'joueurs ont noté')} ce prompt.`,
           // The sentence the board cannot say for itself. §4 hides every score for the whole
           // rating phase, so a host glancing at a console with no standings on it has no way to
@@ -1152,13 +1149,12 @@ export default function Admin() {
                 {`${PHASE_NAME[phase]}. ${note.state}`}
               </p>
               <h2 className="runshow__phase">{PHASE_NAME[phase]}</h2>
-              <p className="runshow__lead">
-                {note.state}
-                {/* A space, not a separator. The state sentence ends in a full stop, so anything
-                    between the two would land between two sentences that are already separate —
-                    and the colour is what tells the figure out anyway. */}
-                {note.timer && <span className="runshow__timer"> {note.timer}</span>}
-              </p>
+              <p className="runshow__lead">{note.state}</p>
+              {note.timer && (
+                <p className="runshow__clock">
+                  <Ring left={note.timer.left} length={note.timer.length} secs={countdown(note.timer.left)} />
+                </p>
+              )}
               {note.figures && <p className="runshow__figs">{note.figures}</p>}
               {note.hint && <p className="runshow__hint">{note.hint}</p>}
             </div>
@@ -1220,6 +1216,53 @@ export default function Admin() {
             <Readout label="Code de la partie" value={code} code />
 
             <Roster players={players} online={state?.online_count ?? 0} myName="" />
+
+            {/* Removing a player, at any point of the game. Their prompts, ratings and quizz
+                answers go with them, so it sits behind a confirm. */}
+            {players.length > 0 && (
+              <section className="stack" aria-label="Retirer un joueur">
+                <p className="label">Retirer un joueur</p>
+                <ul className="kick">
+                  {players.map((p) => (
+                    <li className="kick__row" key={p.name}>
+                      <span className="kick__name">{p.name}</span>
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        disabled={busy}
+                        onClick={() =>
+                          ask({
+                            title: `Retirer ${p.name} ?`,
+                            body: (
+                              <p>
+                                Ses prompts, ses notes et ses réponses au quizz sont supprimés. Son téléphone
+                                quitte la partie ; il peut la rejoindre à nouveau avec le code.
+                              </p>
+                            ),
+                            choices: [
+                              choice(`Retirer ${p.name}`, () =>
+                                run(async () => {
+                                  const res = await fetch(
+                                    `/api/admin/rooms/${code}/players/${encodeURIComponent(p.name)}`,
+                                    { method: 'DELETE' },
+                                  )
+                                  if (!res.ok) {
+                                    const data = await res.json().catch(() => ({}))
+                                    throw new ApiError(res.status, (data as { error?: string }).error ?? `HTTP ${res.status}`)
+                                  }
+                                }, lostSession),
+                              ),
+                            ],
+                          })
+                        }
+                      >
+                        Retirer
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
             {state?.admin_results && state.admin_results.length > 0 && (phase === 'playing' || phase === 'rating' || phase === 'summary') && (
               <section className="stack" aria-label="Résultats en direct">
@@ -1293,6 +1336,51 @@ export default function Admin() {
                 value={{ ...settingsOf(state), ...draft }}
                 onChange={(k, v) => setDraft((d) => ({ ...d, [k]: v }))}
               />
+            )}
+            {/* Mid-game, the durations and the game's length stay editable. */}
+            {phase !== 'waiting' && phase !== 'connecting' && state && (
+              <section className="checks" aria-label="Durées et longueur de la partie">
+                <p className="label">Durées et longueur de la partie</p>
+                <div className="timers">
+                  {NUMBERS.map((d) => (
+                    <div className="field" key={d.key}>
+                      <label className="label" htmlFor={d.key}>
+                        {d.label}
+                      </label>
+                      <input
+                        id={d.key}
+                        className="input"
+                        type="number"
+                        inputMode="numeric"
+                        min={d.min}
+                        max={d.max}
+                        value={{ ...settingsOf(state), ...draft }[d.key]}
+                        onChange={(e) => setDraft((dr) => ({ ...dr, [d.key]: e.target.value }))}
+                      />
+                      <p className="hint">
+                        {d.min}–{d.max} {d.unit}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--wide"
+                  disabled={busy || Object.keys(draft).length === 0}
+                  onClick={() =>
+                    void run(async () => {
+                      await post(`/api/admin/rooms/${code}/settings`, draft)
+                      setDraft({})
+                    })
+                  }
+                >
+                  Appliquer
+                </button>
+                <p className="prose prose--sm prose--dim">
+                  Les durées comptent dès la prochaine manche ou question : le chrono en cours ne change pas.
+                  Le nombre de questions et de manches ne descend jamais sous celle en cours.
+                </p>
+              </section>
             )}
 
             <div className="actions">

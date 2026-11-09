@@ -1,6 +1,6 @@
 # projectmem - GenAI_PromptEngineeringGame
 
-_Last updated: 2026-11-06_
+_Last updated: 2026-11-09_
 
 ## Project purpose
 Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/GenAI_PromptEngineeringGame/wiki/Cahier-des-charges).
@@ -15,7 +15,6 @@ Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/G
 - No decisions logged yet.
 
 ## Notes
-- Optimize server for heavy load: tower limits, pool tuning, indexes, batched snapshots, WS backpressure, LLM deadlines, hardened container
 - Merge pull request #2 from HE-Arc/server_rewrite
 - Rustls, limites 5000 tokens / 1000 chars, intitule prompt en accent
 - Fusion server_rewrite : rustls, limites 5000 tokens / 1000 chars, intitule prompt en accent
@@ -25,6 +24,7 @@ Spécification complète : [wiki Cahier-des-charges](https://github.com/HE-Arc/G
 - Merge: feat: wait for answers in flight, keep the best attempt, 4096-char prompts
 - New feature: feat: token usage stats page and in-panel exercise copy button [frontend/src/App.tsx]
 - Merge: fix: keep the page put while typing low in an autosizing field
+- New feature: feat: host picks the number of quiz questions and prompt rounds (default 5 and 5) [frontend/src/Admin.tsx]
 
 ## Key files
 - `server/Cargo.lock`

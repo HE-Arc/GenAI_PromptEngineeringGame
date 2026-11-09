@@ -123,7 +123,8 @@ export default function Quiz({
     return () => {
       gone = true
     }
-  }, [code, bankAttempt])
+    // `quiz?.total` too: the host can change the number of questions mid-quizz.
+  }, [code, bankAttempt, quiz?.total])
 
   const questions = bank?.questions ?? null
   const total = questions?.length ?? 0
@@ -250,6 +251,12 @@ export default function Quiz({
   // panel appear above them: a change nothing announces. Focus is what says "you have been handed
   // something now", and `block: 'nearest'` is the smallest scroll that will do it, so a short phone
   // is not yanked past the answer it just earned.
+  // A new question starts at the top of the page: the previous one's explanation left the player
+  // scrolled down, below the new question and its clock.
+  useEffect(() => {
+    window.scrollTo({ top: 0 })
+  }, [index])
+
   useEffect(() => {
     if (!revealed) return
     const el = revealRef.current

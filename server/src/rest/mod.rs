@@ -655,11 +655,14 @@ pub async fn admin_create(
         "round_seconds": game::ROUND_SECONDS,
         "rate_seconds": game::RATE_SECONDS,
         "quiz_seconds": game::QUIZ_SECONDS_DEFAULT,
+        // Every question and every exercise by default.
+        "quiz_count": game::quiz_count_range().1,
+        "round_count": game::round_count_range().1,
     });
     if let (Some(base), Some(given)) = (settings.as_object_mut(), data.as_object()) {
         base.extend(given.clone());
     }
-    apply_settings(&state.pool, &code, &settings).await;
+    apply_settings(&state.pool, &code, &settings, false).await;
     if let Err(e) = game::create_bank(&state.pool, &code).await {
         tracing::error!(room = %code, error = %e, "quizz bank create failed");
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
@@ -671,8 +674,9 @@ pub async fn admin_create(
 
 // The room's settings, each written only when present in `data`: flags as
 // JSON booleans, durations and counts clamped to their range. Only a room still in the
-// lobby is changed: once started, the game runs on what it began with.
-async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value) {
+// lobby is changed: once started, the game runs on what it began with — except the
+// durations, which `admin_settings` may change at any time (`any_phase`).
+async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value, any_phase: bool) {
     let mut sets: Vec<(&str, i64)> = Vec::new();
     for key in ["tutorial", "anonymous", "auto_mode"] {
         if let Some(b) = data.get(key).and_then(|v| v.as_bool()) {
@@ -696,7 +700,8 @@ async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value)
     }
     // Column names come from the fixed lists above, never from the request.
     let assignments: Vec<String> = sets.iter().map(|(k, _)| format!("{k} = ?")).collect();
-    let sql = format!("UPDATE room SET {} WHERE code = ? AND phase = 'waiting'", assignments.join(", "));
+    let only_lobby = if any_phase { "" } else { " AND phase = 'waiting'" };
+    let sql = format!("UPDATE room SET {} WHERE code = ?{only_lobby}", assignments.join(", "));
     let mut q = sqlx::query(&sql);
     for (_, v) in &sets {
         q = q.bind(*v);
@@ -710,6 +715,84 @@ async fn apply_settings(pool: &SqlitePool, code: &str, data: &serde_json::Value)
 static RAND_BIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x9e3779b9);
 fn rand_bit() -> u128 {
     RAND_BIT.fetch_add(0x9e3779b9, std::sync::atomic::Ordering::Relaxed) as u128
+}
+
+// The host's durations and game length, in any phase. A duration applies from
+// the next window it times: a clock already running keeps its deadline. A
+// count changes the questions and rounds still to come (`game::resize_game`).
+pub async fn admin_settings(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+    Json(data): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Err(e) = require_room_admin(&state.pool, &headers, &code).await {
+        return e.into_response();
+    }
+    let durations: serde_json::Map<String, serde_json::Value> = ["round_seconds", "quiz_seconds"]
+        .iter()
+        .filter_map(|k| data.get(*k).map(|v| (k.to_string(), v.clone())))
+        .collect();
+    apply_settings(&state.pool, &code, &serde_json::Value::Object(durations), true).await;
+    let count = |key: &str, default: i64, range: (i64, i64)| {
+        data.get(key).map(|v| game::clamp_seconds(Some(v), default, range))
+    };
+    let quiz_count = count("quiz_count", game::QUIZ_COUNT_DEFAULT, game::quiz_count_range());
+    let round_count = count("round_count", game::ROUND_COUNT_DEFAULT, game::round_count_range());
+    // In the lobby the counts are plain settings; after the start, resize_game draws or drops.
+    let counts = json!({"quiz_count": quiz_count, "round_count": round_count});
+    let counts: serde_json::Map<String, serde_json::Value> =
+        counts.as_object().into_iter().flatten().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k.clone(), v.clone())).collect();
+    apply_settings(&state.pool, &code, &serde_json::Value::Object(counts), false).await;
+    if let Err(e) = game::resize_game(&state.pool, &code, quiz_count, round_count).await {
+        tracing::error!(room = %code, error = %e, "game resize failed");
+        return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
+    }
+    touch(&state, &code).await;
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+}
+
+// The host removes a player, in any phase. Their phone is told its token is
+// gone; the checks that wait on every online player run again without them.
+pub async fn admin_remove_player(
+    State(state): State<AppState>,
+    Path((code, name)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_room_admin(&state.pool, &headers, &code).await {
+        return e.into_response();
+    }
+    // By name: names are unique in a room, and the snapshot carries no ids.
+    let player_id: Option<i64> = sqlx::query_scalar("SELECT id FROM player WHERE name = ? AND room_code = ?")
+        .bind(&name)
+        .bind(&code)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or(None);
+    let Some(player_id) = player_id else {
+        return err(StatusCode::NOT_FOUND, "unknown player").into_response();
+    };
+    match game::remove_player(&state.pool, &code, player_id).await {
+        Ok(true) => {}
+        Ok(false) => return err(StatusCode::NOT_FOUND, "unknown player").into_response(),
+        Err(e) => {
+            tracing::error!(room = %code, player_id, error = %e, "player removal failed");
+            return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response();
+        }
+    }
+    let hub = get_hub(&state.hubs, &code).await;
+    hub.evict(player_id);
+    hub.publish_event(crate::ws::protocol::WsOut::Error {
+        code: "bad_token".into(),
+        message: "removed by the host".into(),
+        player: Some(name),
+    });
+    let online = hub.online();
+    game::maybe_close_quiz_window(&state.pool, &code, &online).await;
+    game::maybe_advance_phase(&state.pool, &code, &online).await;
+    game::maybe_advance_by_votes(&state.pool, &code, &online).await;
+    touch(&state, &code).await;
+    (StatusCode::OK, Json(json!({"ok": true}))).into_response()
 }
 
 pub async fn admin_start(
@@ -726,7 +809,7 @@ pub async fn admin_start(
     // The lobby's settings ride the launch. Body optional: an empty or
     // unreadable one starts the room with the settings it already has.
     let data: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-    apply_settings(&state.pool, &code, &data).await;
+    apply_settings(&state.pool, &code, &data, false).await;
     match game::start_game(&state.pool, &code).await {
         Ok(true) => {}
         Ok(false) => return err(StatusCode::CONFLICT, "already started").into_response(),
