@@ -775,6 +775,9 @@ pub async fn bonus_round(pool: &SqlitePool, code: &str) -> Result<(), String> {
 pub async fn advance(pool: &SqlitePool, code: &str) -> Result<(), String> {
     let room = load(pool, code).await.map_err(|e| e.to_string())?;
     let r = match room.phase.as_str() {
+        // A window still open (not everyone answered) closes first: this
+        // press reveals the answer, and only the next one moves on.
+        "quiz" if room.quiz_open() => close_quiz(pool, &room).await,
         "quiz" => {
             let next = room.quiz_index + 1;
             if next < bank_size(pool, code).await {
