@@ -306,13 +306,16 @@ export default function App() {
 
 // The stream is open but no frame has arrived yet. This is the only state that is genuinely a
 // wait, and it is bounded: the hook gives up after three misses and routes to `Fault`.
-// Deliberately almost empty: one line says the board is loading.
+// Deliberately almost empty: a spinner says the board is loading; the text stays for screen readers.
 function Connecting({ link }: { link: Link }) {
   return (
     <div className="deck">
       <ConsoleBar link={link} />
       <main className="screen screen--solo" id="main" tabIndex={-1}>
-        <p className="prose prose--dim">Lecture du tableau…</p>
+        <div className="loader" role="status">
+          <span className="spinner spinner--lg" aria-hidden="true" />
+          <span className="visually-hidden">Chargement…</span>
+        </div>
       </main>
     </div>
   )

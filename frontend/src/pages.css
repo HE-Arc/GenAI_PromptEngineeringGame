@@ -475,3 +475,14 @@
 .foot__end {
   margin-left: auto;
 }
+
+/* The connecting screen: a lone spinner centred in the solo screen, nothing to read. */
+.loader {
+  display: grid;
+  justify-items: center;
+}
+.spinner--lg {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-width: 3px;
+}
