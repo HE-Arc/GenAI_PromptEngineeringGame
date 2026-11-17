@@ -1,0 +1,3 @@
+# sqlx records a checksum of each migration's bytes: a CRLF checkout on
+# Windows would build an image whose checksums differ from the CI build.
+*.sql text eol=lf

@@ -30,6 +30,7 @@ pub async fn connect_pool(url: &str) -> Result<SqlitePool, sqlx::Error> {
         .await?;
     log_applied_migrations(&pool).await;
     let migrator = sqlx::migrate!("./migrations");
+    heal_line_ending_checksums(&pool, &migrator).await;
     if let Err(e) = migrator.run(&pool).await {
         tracing::error!(error = %e, "migrations failed");
         log_version_mismatch(&e, &migrator);
@@ -56,6 +57,35 @@ async fn log_applied_migrations(pool: &SqlitePool) {
             tracing::info!(applied = %versions.join(", "), "migrations: already applied");
         }
         Err(_) => tracing::info!("migrations: fresh database, none applied yet"),
+    }
+}
+
+// A migration checked out on Windows carries CRLF line endings, so an image
+// built there records another checksum than the LF build from CI for the very
+// same SQL, and switching images crash-loops on VersionMismatch. A stored
+// checksum that matches the compiled SQL with only its line endings swapped is
+// rewritten to the compiled one; any other mismatch is left to fail.
+async fn heal_line_ending_checksums(pool: &SqlitePool, migrator: &sqlx::migrate::Migrator) {
+    use sha2::{Digest, Sha384};
+    for m in migrator.iter() {
+        let lf = m.sql.replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        for variant in [lf, crlf] {
+            if variant == m.sql {
+                continue;
+            }
+            let other = Sha384::digest(variant.as_bytes());
+            let healed = sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ? AND checksum = ?")
+                .bind(&m.checksum[..])
+                .bind(m.version)
+                .bind(&other[..])
+                .execute(pool)
+                .await;
+            // An error is a fresh database with no table yet: nothing to heal.
+            if healed.is_ok_and(|r| r.rows_affected() > 0) {
+                tracing::warn!(version = m.version, "migrations: checksum differed only by line endings, updated");
+            }
+        }
     }
 }
 
@@ -99,4 +129,39 @@ pub async fn test_pool() -> SqlitePool {
         .await
         .expect("migrate test db");
     pool
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha384};
+
+    // A database migrated by a CRLF build must open with the LF build, while a
+    // real edit of a migration still fails.
+    #[tokio::test]
+    async fn checksum_differing_only_by_line_endings_is_healed() {
+        let pool = test_pool().await;
+        let migrator = sqlx::migrate!("./migrations");
+        let first = migrator.iter().next().unwrap();
+        let crlf = first.sql.replace("\r\n", "\n").replace('\n', "\r\n");
+        let set = |sum: Vec<u8>| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 1")
+                    .bind(sum)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+
+        set(Sha384::digest(crlf.as_bytes()).to_vec()).await;
+        assert!(migrator.run(&pool).await.is_err(), "the mismatch is real before healing");
+        heal_line_ending_checksums(&pool, &migrator).await;
+        migrator.run(&pool).await.expect("healed checksum passes");
+
+        set(Sha384::digest(b"edited").to_vec()).await;
+        heal_line_ending_checksums(&pool, &migrator).await;
+        assert!(migrator.run(&pool).await.is_err(), "a real edit still fails");
+    }
 }
