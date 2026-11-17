@@ -271,7 +271,14 @@ h2.label {
   font-family: ui-monospace, monospace;
   font-size: 0.9em;
 }
+/* `width: 0; min-width: 100%`: a code block (or a table) counts for no width when its ancestors
+ * size themselves, then fills the card. Without it, its longest line sets the min-content width
+ * of every grid/flex item above it, the card grows past the screen and the deck's clip hides the
+ * rest of the page, buttons included. `overflow-x: auto` alone does not stop that. */
 .md pre {
+  width: 0;
+  min-width: 100%;
+  box-sizing: border-box;
   margin: 0.5rem 0;
   padding: 0.5rem 0.75rem;
   overflow-x: auto;
@@ -280,7 +287,7 @@ h2.label {
 }
 .md pre code { font-size: 0.8125rem; }
 /* Wide tables scroll inside the card rather than pushing the page sideways. */
-.md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.6rem 0; }
+.md table { display: block; width: 0; min-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.6rem 0; }
 .md th, .md td { border: 1px solid var(--rail); padding: 0.3rem 0.5rem; text-align: left; }
 .md a { color: var(--cool-lit); }
 .md--raw { margin: 0; font-family: inherit; white-space: pre-wrap; }

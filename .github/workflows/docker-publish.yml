@@ -2,7 +2,8 @@ name: Docker Publish
 
 "on":
   push:
-    branches: [main, master]
+    # `test` publishes the `:test` tag, to try a build before it reaches `latest`.
+    branches: [main, master, test]
     tags: ['v*']
   workflow_dispatch:
 
@@ -88,12 +89,14 @@ jobs:
 
       # One manifest list over both digests: `docker pull` picks the right
       # architecture on an amd64 server and on an arm64 Mac or Pi alike.
-      - name: Create multi-arch latest tag
+      - name: Create multi-arch tag
         working-directory: ${{ runner.temp }}/digests
         run: |
           image="${{ secrets.DOCKERHUB_USERNAME }}/genai-prompt-game"
-          docker buildx imagetools create -t "$image:latest" \
+          docker buildx imagetools create -t "$image:${{ env.TAG }}" \
             $(printf "$image@sha256:%s " *)
 
       - name: Inspect
-        run: docker buildx imagetools inspect "${{ secrets.DOCKERHUB_USERNAME }}/genai-prompt-game:latest"
+        run: docker buildx imagetools inspect "${{ secrets.DOCKERHUB_USERNAME }}/genai-prompt-game:${{ env.TAG }}"
+    env:
+      TAG: ${{ github.ref == 'refs/heads/test' && 'test' || 'latest' }}
