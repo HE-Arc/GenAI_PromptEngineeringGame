@@ -76,9 +76,9 @@ pub struct AnswerJob {
     player_name: String,
     target: String,
     prompt: String,
-    // Enriched play input (exercice + prompt eleve): the model never sees
-    // the raw prompt alone. The raw prompt is what the DB stores.
-    enriched: String,
+    // What the play model receives: the prompt, plus the earlier exchanges in
+    // a conversation round. Never the exercise (see llm::play_input).
+    model_input: String,
     // Conversation rounds only: the earlier exchanges this prompt continues.
     history: Option<Vec<crate::llm::Turn>>,
     // Held until the answer task finishes: the semaphore count is the live
@@ -256,10 +256,7 @@ pub async fn begin_answer(
     } else {
         None
     };
-    let enriched = match &history {
-        Some(h) => crate::llm::conversation_input(round.order, &round.target, h, prompt),
-        None => crate::llm::enriched_input(round.order, &round.target, prompt),
-    };
+    let model_input = crate::llm::play_input(history.as_deref().unwrap_or_default(), prompt);
     Ok(AnswerJob {
         hub,
         code: code.to_string(),
@@ -268,7 +265,7 @@ pub async fn begin_answer(
         player_name: player.name,
         target: round.target,
         prompt: prompt.to_string(),
-        enriched,
+        model_input,
         history,
         _slot: slot,
     })
@@ -325,7 +322,7 @@ async fn insert_answer_row(
 async fn text_answer(state: &AppState, job: &AnswerJob) -> (String, crate::llm::StreamResult) {
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let llm = state.llm.clone();
-    let prompt = job.enriched.clone();
+    let prompt = job.model_input.clone();
     let stream_done = tokio::spawn(async move { llm.stream_into(prompt, tx).await });
     let mut full = String::new();
     while let Some(delta) = rx.recv().await {
@@ -940,6 +937,27 @@ mod tests {
         assert_eq!(stored, 1, "the late answer is kept, not dropped");
         // Nothing in flight: the admin's next runs at once.
         assert!(!game::defer_while_answering(&state, "WT01", false).await);
+    }
+
+    // The model must not see the exercise, or it answers it whatever the
+    // player wrote: the round sends the player's prompt alone.
+    #[tokio::test]
+    async fn exercise_text_never_reaches_the_model() {
+        std::env::remove_var("OPENAI_API_KEY");
+        let pool = test_pool().await;
+        let state = AppState::new(pool.clone());
+        rooms::create_room(&pool, "HIDE").await.unwrap();
+        let player = rooms::add_player(&pool, "HIDE", "ana").await.unwrap();
+        sqlx::query("UPDATE room SET phase = 'playing' WHERE code = 'HIDE'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE round SET target = 'résume ce mail : rendez-vous lundi' WHERE room_code = 'HIDE'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let job = begin_answer(&state, "HIDE", &player.token, "<div>random</div>").await.unwrap();
+        assert_eq!(job.model_input, "<div>random</div>");
     }
 
     // The stored target IS the exercice: an empty target refuses with an

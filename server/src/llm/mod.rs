@@ -15,20 +15,6 @@ pub use stub::StubSource;
 pub const MISSING_EXERCISE_NOTICE: &str =
     "Aucun exercice pour cette manche : impossible d'interroger le modèle.";
 
-// The play call never receives the raw player prompt alone: the stored
-// target IS the exercice (round.target, see data/targets.json), so the model
-// always gets exercice + consigne + prompt eleve together and never answers
-// "aucun exercice precise".
-pub fn enriched_input(manche: i64, target: &str, prompt: &str) -> String {
-    format!(
-        "Exercice/manche {} : {}\nConsigne : {}\nRéponse attendue / cible : {}\nPrompt élève : {}",
-        manche,
-        target.trim(),
-        target.trim(),
-        target.trim(),
-        prompt.trim()
-    )
-}
 
 // One exchange of a conversation round (answer.turns).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -43,20 +29,23 @@ pub fn parse_turns(raw: Option<&str>) -> Vec<Turn> {
     raw.and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
 }
 
-// Play input of a conversation round: the exercise, then every earlier
-// exchange, then the new prompt, so the model answers in context.
-pub fn conversation_input(manche: i64, target: &str, history: &[Turn], prompt: &str) -> String {
-    let mut out = format!("Exercice/manche {} : {}\n", manche, target.trim());
-    if !history.is_empty() {
-        out.push_str("\nConversation précédente avec l'élève (réponds en tenant compte de ces échanges) :\n");
-        for (i, t) in history.iter().enumerate() {
-            out.push_str(&format!(
-                "\n--- Prompt {n} de l'élève ---\n{p}\n--- Ta réponse {n} ---\n{o}\n",
-                n = i + 1,
-                p = t.prompt.trim(),
-                o = t.output.trim()
-            ));
-        }
+// The play input. The model never sees the exercise (round.target): the game
+// is to write the prompt that gets the expected answer, so a model that knew
+// the exercise would answer it whatever the player wrote. A conversation round
+// adds every earlier exchange, so the model answers in context; with no
+// history the input is the player's prompt alone.
+pub fn play_input(history: &[Turn], prompt: &str) -> String {
+    if history.is_empty() {
+        return prompt.trim().to_string();
+    }
+    let mut out = String::from("Conversation précédente avec l'élève (réponds en tenant compte de ces échanges) :\n");
+    for (i, t) in history.iter().enumerate() {
+        out.push_str(&format!(
+            "\n--- Prompt {n} de l'élève ---\n{p}\n--- Ta réponse {n} ---\n{o}\n",
+            n = i + 1,
+            p = t.prompt.trim(),
+            o = t.output.trim()
+        ));
     }
     out.push_str(&format!(
         "\nNouveau prompt élève (prompt {}) : {}",
@@ -160,17 +149,16 @@ mod tests {
     }
 
     #[test]
-    fn conversation_input_carries_history_in_order() {
+    fn play_input_carries_history_in_order() {
         let history = vec![
             Turn { prompt: "voici les notions".into(), output: "compris".into() },
             Turn { prompt: "fais une synthèse".into(), output: "synthèse".into() },
         ];
-        let out = conversation_input(7, "prépare un examen", &history, "teste-moi");
+        let out = play_input(&history, "teste-moi");
         let a = out.find("voici les notions").unwrap();
         let b = out.find("synthèse").unwrap();
         let c = out.find("Nouveau prompt élève (prompt 3) : teste-moi").unwrap();
         assert!(a < b && b < c);
-        assert!(out.contains("prépare un examen"));
         assert_eq!(chain_prompt(&history), "Prompt 1 :\nvoici les notions\n\nPrompt 2 :\nfais une synthèse");
     }
 
@@ -182,12 +170,8 @@ mod tests {
     }
 
     #[test]
-    fn enriched_input_never_raw_prompt_alone() {
-        let out = enriched_input(3, "resume ce mail", "fais court");
-        assert!(out.contains("Exercice/manche 3"));
-        assert!(out.contains("resume ce mail"));
-        assert!(out.contains("Prompt élève : fais court"));
-        assert_ne!(out, "fais court");
+    fn play_input_without_history_is_the_prompt_alone() {
+        assert_eq!(play_input(&[], "  fais court \n"), "fais court");
     }
 }
 

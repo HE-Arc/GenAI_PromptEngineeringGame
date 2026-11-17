@@ -72,12 +72,11 @@ mod tests {
         assert_eq!(chunks.concat(), stub_answer("one two three four five six seven"));
     }
 
-    // Same enrichment as the live path (ws builds it before the llm call):
-    // the stub echoes exercice + prompt eleve.
+    // Same input as the live path (ws builds it before the llm call): the
+    // stub echoes the player's prompt and nothing else.
     #[test]
-    fn stub_mirrors_enriched_input() {
-        let enriched = super::super::enriched_input(2, "resume ce mail", "fais un resume concis, format liste");
-        assert!(stub_chunks(&enriched).concat().contains("resume ce mail"));
-        assert!(stub_chunks(&enriched).concat().contains("Prompt élève"));
+    fn stub_echoes_the_play_input() {
+        let input = super::super::play_input(&[], "fais un resume concis, format liste");
+        assert_eq!(stub_chunks(&input).concat(), "(reponse locale) fais un resume concis, format liste");
     }
 }
